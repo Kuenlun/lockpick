@@ -16,7 +16,6 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-use std::process::ExitStatus;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -24,9 +23,6 @@ pub enum LockpickError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("cargo {subcommand} failed with status {status}")]
-    CargoFailed {
-        subcommand: String,
-        status: ExitStatus,
-    },
+    #[error("{0} check(s) failed")]
+    ChecksFailed(usize),
 }
