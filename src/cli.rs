@@ -17,7 +17,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
 use clap::{
-    ArgAction, Parser,
+    ArgAction, Args, Parser,
     builder::styling::{AnsiColor, Effects, Styles},
 };
 
@@ -30,6 +30,12 @@ use clap::{
     styles = cli_styles()
 )]
 pub struct Cli {
+    #[command(flatten)]
+    pub opt_in: OptInFlags,
+
+    #[command(flatten)]
+    pub opt_out: OptOutFlags,
+
     #[arg(
         short = 'v',
         long = "verbose",
@@ -37,6 +43,32 @@ pub struct Cli {
         help = "Increase logging verbosity (..= -vvvv)"
     )]
     pub verbose: u8,
+}
+
+#[derive(Args, Debug)]
+pub struct OptInFlags {
+    /// Measure and enforce code coverage
+    #[arg(short = 'c', long)]
+    pub coverage: bool,
+
+    /// Run 'cargo check' (disabled by default in favor of clippy)
+    #[arg(long)]
+    pub check: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct OptOutFlags {
+    /// Disable running 'cargo clippy'
+    #[arg(long)]
+    pub no_clippy: bool,
+
+    /// Disable running 'cargo test'
+    #[arg(long)]
+    pub no_test: bool,
+
+    /// Disable running 'cargo fmt'
+    #[arg(long)]
+    pub no_fmt: bool,
 }
 
 const fn cli_styles() -> Styles {

@@ -29,5 +29,5 @@ use crate::error::LockpickError;
 fn main() -> Result<(), LockpickError> {
     let cli = Cli::parse();
     logger::init(cli.verbose);
-    runner::run(cli)
+    runner::run(&cli)
 }

@@ -23,6 +23,9 @@ pub enum LockpickError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("Indicatif error: {0}")]
+    Indicatif(#[from] indicatif::style::TemplateError),
+
     #[error("{0} check(s) failed")]
     ChecksFailed(usize),
 }

@@ -26,70 +26,99 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use crate::cli::Cli;
 use crate::error::LockpickError;
 
-pub fn run(_cli: Cli) -> Result<(), LockpickError> {
-    let checks: &[(&str, &[&str])] = &[
-        ("check", &["--workspace", "--all-targets", "--all-features"]),
-        (
-            "clippy",
-            &["--workspace", "--all-targets", "--all-features"],
-        ),
-        ("fmt", &["--check"]),
-        ("test", &["--workspace", "--all-targets", "--all-features"]),
-    ];
+struct Check {
+    name: &'static str,
+    args: &'static [&'static str],
+}
 
+pub fn run(cli: &Cli) -> Result<(), LockpickError> {
+    let checks = enabled_checks(cli);
+
+    if checks.is_empty() {
+        log::info!("All checks disabled, nothing to run");
+        return Ok(());
+    }
+
+    let failure_count = run_parallel(&checks)?;
+
+    if failure_count > 0 {
+        return Err(LockpickError::ChecksFailed(failure_count));
+    }
+
+    Ok(())
+}
+
+fn enabled_checks(cli: &Cli) -> Vec<Check> {
+    const COMMON_ARGS: &[&str] = &["--workspace", "--all-targets", "--all-features"];
+
+    let mut checks = Vec::new();
+
+    if cli.opt_in.check {
+        checks.push(Check {
+            name: "check",
+            args: COMMON_ARGS,
+        });
+    }
+    if !cli.opt_out.no_clippy {
+        checks.push(Check {
+            name: "clippy",
+            args: COMMON_ARGS,
+        });
+    }
+    if !cli.opt_out.no_fmt {
+        checks.push(Check {
+            name: "fmt",
+            args: &["--check"],
+        });
+    }
+    if !cli.opt_out.no_test {
+        checks.push(Check {
+            name: "test",
+            args: COMMON_ARGS,
+        });
+    }
+
+    checks
+}
+
+fn run_parallel(checks: &[Check]) -> Result<usize, LockpickError> {
     let mp = MultiProgress::new();
 
-    let spinner_style = ProgressStyle::with_template("  {spinner:.cyan}  {msg}")
-        .unwrap_or_else(|_| unreachable!())
-        .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]);
+    let spinner_tpl = String::from_utf8_lossy(b"  {msg:<8} {spinner:.cyan}");
+    let spinner_style = ProgressStyle::with_template(&spinner_tpl)?.tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏");
 
-    let done_style = ProgressStyle::with_template("  {msg}").unwrap_or_else(|_| unreachable!());
+    let done_tpl = String::from_utf8_lossy(b"  {msg}");
+    let done_style = ProgressStyle::with_template(&done_tpl)?;
 
-    let spinners: Vec<_> = checks
+    let spinners: Vec<ProgressBar> = checks
         .iter()
-        .map(|(subcommand, _)| {
+        .map(|check| {
             let pb = mp.add(ProgressBar::new_spinner());
             pb.set_style(spinner_style.clone());
-            pb.set_message(format!("{subcommand:<8}"));
+            pb.set_message(check.name.to_string());
             pb.enable_steady_tick(Duration::from_millis(80));
             pb
         })
         .collect();
 
     let failure_count = thread::scope(|s| {
-        // Collect is required: without it the iterator is lazy and threads
-        // would be spawned and joined one at a time, defeating parallelism.
-        #[allow(clippy::needless_collect)]
-        let handles: Vec<_> = checks
-            .iter()
-            .enumerate()
-            .map(|(i, (subcommand, args))| {
-                let pb = &spinners[i];
-                let style = done_style.clone();
-                s.spawn(move || {
-                    let success = run_cargo(subcommand, args).is_ok_and(|status| status.success());
+        let mut handles = Vec::with_capacity(checks.len());
 
-                    let label = format!("{subcommand:<8}");
-                    pb.set_style(style);
+        for (check, pb) in checks.iter().zip(&spinners) {
+            let style = done_style.clone();
+            handles.push(s.spawn(move || {
+                let passed = run_cargo(check.name, check.args).is_ok_and(|status| status.success());
 
-                    if success {
-                        pb.finish_with_message(format!(
-                            "{}  {label}{}",
-                            "✓".green().bold(),
-                            "PASS".green().bold(),
-                        ));
-                    } else {
-                        pb.finish_with_message(format!(
-                            "{}  {label}{}",
-                            "✗".red().bold(),
-                            "FAIL".red().bold(),
-                        ));
-                    }
+                pb.set_style(style);
+                if passed {
+                    pb.finish_with_message(format!("{:<8} {}", check.name, "PASS".green().bold()));
+                } else {
+                    pb.finish_with_message(format!("{:<8} {}", check.name, "FAIL".red().bold()));
+                }
 
-                    success
-                })
-            })
-            .collect();
+                passed
+            }));
+        }
 
         handles
             .into_iter()
@@ -98,11 +127,7 @@ pub fn run(_cli: Cli) -> Result<(), LockpickError> {
             .count()
     });
 
-    if failure_count > 0 {
-        return Err(LockpickError::ChecksFailed(failure_count));
-    }
-
-    Ok(())
+    Ok(failure_count)
 }
 
 fn run_cargo(subcommand: &str, args: &[&str]) -> Result<ExitStatus, LockpickError> {
