@@ -16,18 +16,16 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-mod cli;
-mod error;
-mod logger;
-mod runner;
+use log::LevelFilter;
 
-use clap::Parser;
+pub fn init(verbosity: u8) {
+    let level = match verbosity {
+        0 => LevelFilter::Error,
+        1 => LevelFilter::Warn,
+        2 => LevelFilter::Info,
+        3 => LevelFilter::Debug,
+        _ => LevelFilter::Trace,
+    };
 
-use crate::cli::Cli;
-use crate::error::LockpickError;
-
-fn main() -> Result<(), LockpickError> {
-    let cli = Cli::parse();
-    logger::init(cli.verbose);
-    runner::run(cli)
+    env_logger::Builder::new().filter_level(level).init();
 }
