@@ -1,0 +1,47 @@
+name: Rust
+
+on:
+  push:
+    branches: ["master", "develop"]
+  pull_request:
+    branches: ["master", "develop"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  license-check:
+    uses: ./.github/workflows/license-check.yml
+
+  check:
+    needs: [license-check]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
+      - name: Install lockpick
+        run: cargo install --git https://github.com/Kuenlun/lockpick
+      - name: Run checks
+        run: lockpick
+
+  merge-gate:
+    runs-on: ubuntu-latest
+    needs: [check, license-check]
+    if: always()
+    steps:
+      - name: Check results
+        run: |
+          if [[ "${{ needs.check.result }}" != "success" ]]; then
+            echo "::error::Check failed: ${{ needs.check.result }}"
+            exit 1
+          fi
+          if [[ "${{ needs.license-check.result }}" != "success" ]]; then
+            echo "::error::License check failed: ${{ needs.license-check.result }}"
+            exit 1
+          fi
