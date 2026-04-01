@@ -16,18 +16,16 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-mod cli;
-mod error;
-mod logger;
-mod runner;
+use thiserror::Error;
 
-use clap::Parser;
+#[derive(Error, Debug)]
+pub enum LockpickError {
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
 
-use crate::cli::Cli;
-use crate::error::LockpickError;
+    #[error("Indicatif error: {0}")]
+    Indicatif(#[from] indicatif::style::TemplateError),
 
-fn main() -> Result<(), LockpickError> {
-    let cli = Cli::parse();
-    logger::init(cli.verbose);
-    runner::run(&cli)
+    #[error("{0} check(s) failed")]
+    ChecksFailed(usize),
 }
