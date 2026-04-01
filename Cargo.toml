@@ -1,0 +1,21 @@
+[package]
+name = "lockpick"
+version = "0.1.0"
+edition = "2024"
+description = "Rust CLI to enforce merge checks and code quality"
+repository = "https://github.com/Kuenlun/lockpick"
+authors = ["Juan Luis Leal Contreras <kuenlunleal@gmail.com>"]
+license = "GPL-3.0-or-later"
+
+[dependencies]
+
+
+[lints.rust]
+unsafe_code = "forbid"
+warnings = "deny"
+
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
