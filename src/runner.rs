@@ -82,6 +82,27 @@ impl Reporter {
         let _ = self.mp.println(format!("  {label:<8} {tag}"));
         pb.finish_and_clear();
     }
+
+    fn print_error_section(&self, label: &str, output: &str) {
+        let output = output.trim();
+        if output.is_empty() {
+            return;
+        }
+
+        self.mp.println("").ok();
+
+        let header = format!(" ✖ {} ERRORS ", label.to_uppercase());
+        self.mp.println(header.red().bold().to_string()).ok();
+
+        let divider = "━".repeat(40).red().dimmed().to_string();
+        self.mp.println(divider).ok();
+
+        for line in output.lines() {
+            self.mp.println(format!(" │ {line}")).ok();
+        }
+
+        self.mp.println("").ok();
+    }
 }
 
 pub fn run(cli: &Cli) -> Result<(), LockpickError> {
@@ -185,20 +206,29 @@ fn run_parallel(tasks: &[Task], reporter: &Reporter) -> Vec<bool> {
         .map(|t| reporter.add_spinner(t.label))
         .collect();
 
-    let results: Vec<bool> = thread::scope(|s| {
+    let task_results: Vec<(bool, String)> = thread::scope(|s| {
         tasks
             .iter()
             .map(|task| {
-                s.spawn(move || run_cargo(task.subcommand, task.args).is_ok_and(|st| st.success()))
+                s.spawn(move || match run_cargo(task.subcommand, task.args) {
+                    Ok((status, out)) => (status.success(), out),
+                    Err(_) => (false, String::new()),
+                })
             })
             .collect::<Vec<_>>()
             .into_iter()
-            .map(|h| h.join().unwrap_or(false))
+            .map(|h| h.join().unwrap_or_default())
             .collect()
     });
 
-    for ((task, pb), &passed) in tasks.iter().zip(&spinners).zip(&results) {
-        let status = if passed {
+    for (task, (passed, output)) in tasks.iter().zip(&task_results) {
+        if !passed {
+            reporter.print_error_section(task.label, output);
+        }
+    }
+
+    for ((task, pb), (passed, _)) in tasks.iter().zip(&spinners).zip(&task_results) {
+        let status = if *passed {
             TaskStatus::Pass
         } else {
             TaskStatus::Fail
@@ -206,7 +236,7 @@ fn run_parallel(tasks: &[Task], reporter: &Reporter) -> Vec<bool> {
         reporter.finish_task(pb, task.label, status);
     }
 
-    results
+    task_results.into_iter().map(|(passed, _)| passed).collect()
 }
 
 fn run_coverage_report(tests_passed: bool, min_coverage: u8, reporter: &Reporter) -> bool {
@@ -219,8 +249,15 @@ fn run_coverage_report(tests_passed: bool, min_coverage: u8, reporter: &Reporter
     }
 
     let threshold = min_coverage.to_string();
-    let passed = run_cargo("llvm-cov", &["report", "--fail-under-lines", &threshold])
-        .is_ok_and(|st| st.success());
+    let (passed, output) =
+        match run_cargo("llvm-cov", &["report", "--fail-under-lines", &threshold]) {
+            Ok((status, out)) => (status.success(), out),
+            Err(_) => (false, String::new()),
+        };
+
+    if !passed {
+        reporter.print_error_section(label, &output);
+    }
 
     let status = if passed {
         TaskStatus::Pass
@@ -232,29 +269,33 @@ fn run_coverage_report(tests_passed: bool, min_coverage: u8, reporter: &Reporter
     passed
 }
 
-fn run_cargo(subcommand: &str, args: &[&str]) -> Result<ExitStatus, LockpickError> {
+fn run_cargo(subcommand: &str, args: &[&str]) -> Result<(ExitStatus, String), LockpickError> {
     log::debug!("cargo {subcommand} {}", args.join(" "));
-
-    let verbose = log::max_level() >= log::LevelFilter::Trace;
-    let stderr_cfg = if verbose {
-        Stdio::piped()
-    } else {
-        Stdio::null()
-    };
 
     let output = Command::new("cargo")
         .arg(subcommand)
         .args(args)
-        .stdout(Stdio::null())
-        .stderr(stderr_cfg)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .output()?;
 
-    if verbose {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if log::max_level() >= log::LevelFilter::Trace {
+        for line in stdout.lines() {
+            log::trace!("[{subcommand}] {line}");
+        }
         for line in stderr.lines() {
             log::trace!("[{subcommand}] {line}");
         }
     }
 
-    Ok(output.status)
+    let mut combined = stdout.into_owned();
+    if !combined.is_empty() && !combined.ends_with('\n') {
+        combined.push('\n');
+    }
+    combined.push_str(&stderr);
+
+    Ok((output.status, combined))
 }
