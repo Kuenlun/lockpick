@@ -17,9 +17,18 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
 use clap::{
-    ArgAction, Args, Parser,
+    ArgAction, Args, Parser, ValueEnum,
     builder::styling::{AnsiColor, Effects, Styles},
 };
+
+/// Steps that can be skipped via `--skip`
+#[derive(ValueEnum, Clone, Debug, PartialEq, Eq)]
+pub enum SkipOption {
+    Clippy,
+    Test,
+    DocTest,
+    Fmt,
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -33,8 +42,9 @@ pub struct Cli {
     #[command(flatten)]
     pub opt_in: OptInFlags,
 
-    #[command(flatten)]
-    pub opt_out: OptOutFlags,
+    /// Skip one or more checks (e.g. --skip clippy --skip fmt)
+    #[arg(long, value_enum)]
+    pub skip: Vec<SkipOption>,
 
     #[arg(
         short = 'v',
@@ -45,30 +55,30 @@ pub struct Cli {
     pub verbose: u8,
 }
 
+impl Cli {
+    pub fn skips(&self, option: &SkipOption) -> bool {
+        self.skip.contains(option)
+    }
+}
+
 #[derive(Args, Debug)]
 pub struct OptInFlags {
     /// Measure and enforce code coverage
     #[arg(short = 'c', long)]
     pub coverage: bool,
 
-    /// Run 'cargo check' (disabled by default in favor of clippy)
+    /// Minimum line coverage percentage (requires --coverage)
+    #[arg(
+        long,
+        default_value_t = 80,
+        requires = "coverage",
+        value_parser = clap::value_parser!(u8).range(0..=100)
+    )]
+    pub min_coverage: u8,
+
+    /// Run 'cargo check' (disabled by default in favor of Clippy)
     #[arg(long)]
     pub check: bool,
-}
-
-#[derive(Args, Debug)]
-pub struct OptOutFlags {
-    /// Disable running 'cargo clippy'
-    #[arg(long)]
-    pub no_clippy: bool,
-
-    /// Disable running 'cargo test'
-    #[arg(long)]
-    pub no_test: bool,
-
-    /// Disable running 'cargo fmt'
-    #[arg(long)]
-    pub no_fmt: bool,
 }
 
 const fn cli_styles() -> Styles {

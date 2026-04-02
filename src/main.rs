@@ -23,11 +23,17 @@ mod runner;
 
 use clap::Parser;
 
-use crate::cli::Cli;
+use crate::cli::{Cli, SkipOption};
 use crate::error::LockpickError;
 
 fn main() -> Result<(), LockpickError> {
     let cli = Cli::parse();
+
+    if cli.opt_in.coverage && cli.skips(&SkipOption::Test) {
+        eprintln!("error: --coverage and --skip test are mutually exclusive");
+        std::process::exit(2);
+    }
+
     logger::init(cli.verbose);
     runner::run(&cli)
 }
