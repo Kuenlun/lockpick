@@ -30,7 +30,7 @@ jobs:
           # Uncomment to enable coverage support in lockpick
           # tool: lockpick,cargo-llvm-cov
       - name: Run checks
-        run: lockpick
+        run: lockpick -vvvv
 
   merge-gate:
     runs-on: ubuntu-latest
