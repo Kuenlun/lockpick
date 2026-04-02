@@ -24,6 +24,7 @@ use clap::{
 /// Steps that can be skipped via `--skip`
 #[derive(ValueEnum, Clone, Debug, PartialEq, Eq)]
 pub enum SkipOption {
+    Check,
     Clippy,
     Test,
     DocTest,
@@ -76,7 +77,8 @@ pub struct OptInFlags {
     )]
     pub min_coverage: u8,
 
-    /// Run 'cargo check' (disabled by default in favor of Clippy)
+    /// Run `cargo check` explicitly. Also auto-enabled when `--skip clippy` is used,
+    /// since Clippy is a superset of check. Combine with `--skip check` to suppress that fallback.
     #[arg(long)]
     pub check: bool,
 }

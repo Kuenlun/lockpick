@@ -29,6 +29,11 @@ use crate::error::LockpickError;
 fn main() -> Result<(), LockpickError> {
     let cli = Cli::parse();
 
+    if cli.opt_in.check && cli.skips(&SkipOption::Check) {
+        eprintln!("error: --check and --skip check are mutually exclusive");
+        std::process::exit(2);
+    }
+
     if cli.opt_in.coverage && cli.skips(&SkipOption::Test) {
         eprintln!("error: --coverage and --skip test are mutually exclusive");
         std::process::exit(2);

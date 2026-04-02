@@ -123,7 +123,9 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
 fn build_tasks(cli: &Cli) -> Vec<Task> {
     let mut tasks = Vec::new();
 
-    if cli.opt_in.check {
+    let run_check =
+        (cli.opt_in.check || cli.skips(&SkipOption::Clippy)) && !cli.skips(&SkipOption::Check);
+    if run_check {
         tasks.push(Task {
             label: "check",
             subcommand: "check",
