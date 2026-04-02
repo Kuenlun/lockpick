@@ -76,11 +76,6 @@ pub struct OptInFlags {
         value_parser = clap::value_parser!(u8).range(0..=100)
     )]
     pub min_coverage: u8,
-
-    /// Run `cargo check` explicitly. Also auto-enabled when `--skip clippy` is used,
-    /// since Clippy is a superset of check. Combine with `--skip check` to suppress that fallback.
-    #[arg(long)]
-    pub check: bool,
 }
 
 const fn cli_styles() -> Styles {

@@ -132,22 +132,39 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
     let reporter = Reporter::new()?;
     crate::logger::init(cli.verbose, &reporter.mp);
 
+    let run_check = !cli.skips(&SkipOption::Check);
     let tasks = build_tasks(cli);
 
-    if tasks.is_empty() {
+    if !run_check && tasks.is_empty() {
         log::info!("All checks disabled, nothing to run");
         return Ok(());
     }
 
-    // Phase 1: execute all tasks
-    let task_results = run_parallel(&tasks, &reporter);
+    // Phase 1a: run cargo check first (gate for remaining tasks)
+    let check_result = if run_check {
+        Some(run_check_gate(&reporter))
+    } else {
+        None
+    };
+
+    let check_passed = check_result
+        .as_ref()
+        .is_none_or(|(s, _)| matches!(s, TaskStatus::Pass));
+
+    // Phase 1b: run remaining tasks in parallel (only if check passed)
+    let task_results: Vec<(bool, String)> = if check_passed {
+        run_parallel(&tasks, &reporter)
+    } else {
+        tasks.iter().map(|_| (false, String::new())).collect()
+    };
 
     let cov_result: Option<(TaskStatus, String)> = if cli.opt_in.coverage {
-        let tests_passed = tasks
-            .iter()
-            .zip(&task_results)
-            .find(|(t, _)| t.label == "test")
-            .is_some_and(|(_, (passed, _))| *passed);
+        let tests_passed = check_passed
+            && tasks
+                .iter()
+                .zip(&task_results)
+                .find(|(t, _)| t.label == "test")
+                .is_some_and(|(_, (passed, _))| *passed);
 
         if tests_passed {
             Some(run_coverage_check(cli.opt_in.min_coverage, &reporter))
@@ -160,8 +177,11 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
 
     // Phase 2: print output sections (PASS first, then FAIL)
     if cli.verbose >= 1 {
+        if let Some((TaskStatus::Pass, output)) = &check_result {
+            reporter.print_section("check", output, TaskStatus::Pass);
+        }
         for (task, (passed, output)) in tasks.iter().zip(&task_results) {
-            if *passed {
+            if *passed && check_passed {
                 reporter.print_section(task.label, output, TaskStatus::Pass);
             }
         }
@@ -170,8 +190,11 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
         }
     }
 
+    if let Some((TaskStatus::Fail, output)) = &check_result {
+        reporter.print_section("check", output, TaskStatus::Fail);
+    }
     for (task, (passed, output)) in tasks.iter().zip(&task_results) {
-        if !passed {
+        if !passed && check_passed {
             reporter.print_section(task.label, output, TaskStatus::Fail);
         }
     }
@@ -180,8 +203,13 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
     }
 
     // Phase 3: summary
+    if let Some((status, _)) = &check_result {
+        reporter.print_summary("check", *status);
+    }
     for (task, (passed, _)) in tasks.iter().zip(&task_results) {
-        let status = if *passed {
+        let status = if !check_passed {
+            TaskStatus::Skip
+        } else if *passed {
             TaskStatus::Pass
         } else {
             TaskStatus::Fail
@@ -192,7 +220,13 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
         reporter.print_summary("coverage", *status);
     }
 
-    let mut failure_count = task_results.iter().filter(|(passed, _)| !passed).count();
+    let mut failure_count = 0;
+    if matches!(&check_result, Some((TaskStatus::Fail, _))) {
+        failure_count += 1;
+    }
+    if check_passed {
+        failure_count += task_results.iter().filter(|(passed, _)| !passed).count();
+    }
     if matches!(&cov_result, Some((TaskStatus::Fail, _))) {
         failure_count += 1;
     }
@@ -207,15 +241,6 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
 fn build_tasks(cli: &Cli) -> Vec<Task> {
     let mut tasks = Vec::new();
 
-    let run_check =
-        (cli.opt_in.check || cli.skips(&SkipOption::Clippy)) && !cli.skips(&SkipOption::Check);
-    if run_check {
-        tasks.push(Task {
-            label: "check",
-            subcommand: "check",
-            args: COMMON_ARGS,
-        });
-    }
     if !cli.skips(&SkipOption::Clippy) {
         tasks.push(Task {
             label: "clippy",
@@ -290,6 +315,22 @@ fn run_parallel(tasks: &[Task], reporter: &Reporter) -> Vec<(bool, String)> {
     }
 
     task_results
+}
+
+fn run_check_gate(reporter: &Reporter) -> (TaskStatus, String) {
+    let pb = reporter.add_spinner("check");
+    let (passed, output) = match run_cargo("check", COMMON_ARGS) {
+        Ok((status, out)) => (status.success(), out),
+        Err(_) => (false, String::new()),
+    };
+    pb.finish_and_clear();
+
+    let status = if passed {
+        TaskStatus::Pass
+    } else {
+        TaskStatus::Fail
+    };
+    (status, output)
 }
 
 fn run_coverage_check(min_coverage: u8, reporter: &Reporter) -> (TaskStatus, String) {
