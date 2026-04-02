@@ -16,30 +16,102 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Command, ExitStatus, Output, Stdio};
 use std::thread;
 use std::time::Duration;
 
 use colored::Colorize;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
-use crate::cli::Cli;
+use crate::cli::{Cli, SkipOption};
 use crate::error::LockpickError;
 
-struct Check {
-    name: &'static str,
+const COMMON_ARGS: &[&str] = &["--workspace", "--all-targets", "--all-features"];
+const COV_TEST_ARGS: &[&str] = &[
+    "--workspace",
+    "--all-targets",
+    "--all-features",
+    "--no-fail-fast",
+];
+
+#[derive(Clone, Copy)]
+enum TaskStatus {
+    Pass,
+    Fail,
+    Skip,
+}
+
+struct Task {
+    label: &'static str,
+    subcommand: &'static str,
     args: &'static [&'static str],
 }
 
-pub fn run(cli: &Cli) -> Result<(), LockpickError> {
-    let checks = enabled_checks(cli);
+// Indicatif
+struct Reporter {
+    mp: MultiProgress,
+    spin_style: ProgressStyle,
+    done_style: ProgressStyle,
+}
 
-    if checks.is_empty() {
+impl Reporter {
+    fn new() -> Result<Self, LockpickError> {
+        #[allow(clippy::literal_string_with_formatting_args)]
+        let spin_template = "  {msg:<8} {spinner:.cyan}";
+        let spin_style = ProgressStyle::with_template(spin_template)?.tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏");
+        let done_style = ProgressStyle::with_template("  {msg}")?;
+
+        Ok(Self {
+            mp: MultiProgress::new(),
+            spin_style,
+            done_style,
+        })
+    }
+
+    fn add_spinner(&self, label: &str) -> ProgressBar {
+        let pb = self.mp.add(ProgressBar::new_spinner());
+        pb.set_style(self.spin_style.clone());
+        pb.set_message(label.to_string());
+        pb.enable_steady_tick(Duration::from_millis(80));
+        pb
+    }
+
+    fn finish_task(&self, pb: &ProgressBar, label: &str, status: TaskStatus) {
+        pb.set_style(self.done_style.clone());
+        let tag = match status {
+            TaskStatus::Pass => "PASS".green().bold(),
+            TaskStatus::Fail => "FAIL".red().bold(),
+            TaskStatus::Skip => "SKIP".yellow().bold(),
+        };
+        pb.finish_with_message(format!("{label:<8} {tag}"));
+    }
+}
+
+pub fn run(cli: &Cli) -> Result<(), LockpickError> {
+    let tasks = build_tasks(cli);
+
+    if tasks.is_empty() {
         log::info!("All checks disabled, nothing to run");
         return Ok(());
     }
 
-    let failure_count = run_parallel(&checks)?;
+    let reporter = Reporter::new()?;
+    let mut failure_count = 0;
+
+    let results = run_parallel(&tasks, &reporter);
+    failure_count += results.iter().filter(|&&passed| !passed).count();
+
+    if cli.opt_in.coverage {
+        let tests_passed = tasks
+            .iter()
+            .zip(&results)
+            .find(|(t, _)| t.label == "test")
+            .is_some_and(|(_, &passed)| passed);
+
+        if !run_coverage_report(tests_passed, cli.opt_in.min_coverage, &reporter) {
+            failure_count += 1;
+        }
+    }
 
     if failure_count > 0 {
         return Err(LockpickError::ChecksFailed(failure_count));
@@ -48,86 +120,115 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
     Ok(())
 }
 
-fn enabled_checks(cli: &Cli) -> Vec<Check> {
-    const COMMON_ARGS: &[&str] = &["--workspace", "--all-targets", "--all-features"];
-
-    let mut checks = Vec::new();
+fn build_tasks(cli: &Cli) -> Vec<Task> {
+    let mut tasks = Vec::new();
 
     if cli.opt_in.check {
-        checks.push(Check {
-            name: "check",
+        tasks.push(Task {
+            label: "check",
+            subcommand: "check",
             args: COMMON_ARGS,
         });
     }
-    if !cli.opt_out.no_clippy {
-        checks.push(Check {
-            name: "clippy",
+    if !cli.skips(&SkipOption::Clippy) {
+        tasks.push(Task {
+            label: "clippy",
+            subcommand: "clippy",
             args: COMMON_ARGS,
         });
     }
-    if !cli.opt_out.no_fmt {
-        checks.push(Check {
-            name: "fmt",
+    if !cli.skips(&SkipOption::Fmt) {
+        tasks.push(Task {
+            label: "fmt",
+            subcommand: "fmt",
             args: &["--check"],
         });
     }
-    if !cli.opt_out.no_test {
-        checks.push(Check {
-            name: "test",
-            args: COMMON_ARGS,
+    if !cli.skips(&SkipOption::Test) {
+        let (subcommand, args) = if cli.opt_in.coverage {
+            ("llvm-cov", COV_TEST_ARGS)
+        } else {
+            ("test", COMMON_ARGS)
+        };
+        tasks.push(Task {
+            label: "test",
+            subcommand,
+            args,
+        });
+    }
+    if !cli.skips(&SkipOption::DocTest) && workspace_has_lib_target() {
+        tasks.push(Task {
+            label: "doc test",
+            subcommand: "test",
+            args: &["--doc", "--workspace", "--all-features"],
         });
     }
 
-    checks
+    tasks
 }
 
-fn run_parallel(checks: &[Check]) -> Result<usize, LockpickError> {
-    let mp = MultiProgress::new();
+fn workspace_has_lib_target() -> bool {
+    Command::new("cargo")
+        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .stderr(Stdio::null())
+        .output()
+        .as_ref()
+        .ok()
+        .and_then(|o: &Output| std::str::from_utf8(&o.stdout).ok())
+        .is_some_and(|s| s.contains(r#""kind":["lib"]"#))
+}
 
-    let spinner_tpl = String::from_utf8_lossy(b"  {msg:<8} {spinner:.cyan}");
-    let spinner_style = ProgressStyle::with_template(&spinner_tpl)?.tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏");
-
-    let done_tpl = String::from_utf8_lossy(b"  {msg}");
-    let done_style = ProgressStyle::with_template(&done_tpl)?;
-
-    let spinners: Vec<ProgressBar> = checks
+fn run_parallel(tasks: &[Task], reporter: &Reporter) -> Vec<bool> {
+    let spinners: Vec<ProgressBar> = tasks
         .iter()
-        .map(|check| {
-            let pb = mp.add(ProgressBar::new_spinner());
-            pb.set_style(spinner_style.clone());
-            pb.set_message(check.name.to_string());
-            pb.enable_steady_tick(Duration::from_millis(80));
-            pb
-        })
+        .map(|t| reporter.add_spinner(t.label))
         .collect();
 
-    let failure_count = thread::scope(|s| {
-        let mut handles = Vec::with_capacity(checks.len());
+    thread::scope(|s| {
+        let mut handles = Vec::with_capacity(tasks.len());
 
-        for (check, pb) in checks.iter().zip(&spinners) {
-            let style = done_style.clone();
+        for (task, pb) in tasks.iter().zip(&spinners) {
             handles.push(s.spawn(move || {
-                let passed = run_cargo(check.name, check.args).is_ok_and(|status| status.success());
-
-                pb.set_style(style);
-                if passed {
-                    pb.finish_with_message(format!("{:<8} {}", check.name, "PASS".green().bold()));
+                let passed = run_cargo(task.subcommand, task.args).is_ok_and(|st| st.success());
+                let status = if passed {
+                    TaskStatus::Pass
                 } else {
-                    pb.finish_with_message(format!("{:<8} {}", check.name, "FAIL".red().bold()));
-                }
+                    TaskStatus::Fail
+                };
 
+                reporter.finish_task(pb, task.label, status);
                 passed
             }));
         }
 
         handles
             .into_iter()
-            .filter_map(|h| h.join().ok())
-            .filter(|&passed| !passed)
-            .count()
-    });
+            .map(|h| h.join().unwrap_or(false))
+            .collect()
+    })
+}
 
-    Ok(failure_count)
+fn run_coverage_report(tests_passed: bool, min_coverage: u8, reporter: &Reporter) -> bool {
+    let label = "coverage";
+    let pb = reporter.add_spinner(label);
+
+    if !tests_passed {
+        reporter.finish_task(&pb, label, TaskStatus::Skip);
+        return true;
+    }
+
+    let threshold = min_coverage.to_string();
+    let passed = run_cargo("llvm-cov", &["report", "--fail-under-lines", &threshold])
+        .is_ok_and(|st| st.success());
+
+    let status = if passed {
+        TaskStatus::Pass
+    } else {
+        TaskStatus::Fail
+    };
+    reporter.finish_task(&pb, label, status);
+
+    passed
 }
 
 fn run_cargo(subcommand: &str, args: &[&str]) -> Result<ExitStatus, LockpickError> {
