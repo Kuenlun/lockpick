@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4](https://github.com/Kuenlun/lockpick/compare/v0.3.3...v0.3.4) - 2026-04-02
+
+### Added
+
+- restructure task execution pipeline with sequential check gate, captured output, and structured reporting ([#16](https://github.com/Kuenlun/lockpick/pull/16))
+
+### Other
+
+- replace source compilation of lockpick with prebuilt binary installation ([#14](https://github.com/Kuenlun/lockpick/pull/14))
+
 ## [0.3.3](https://github.com/Kuenlun/lockpick/compare/v0.3.2...v0.3.3) - 2026-04-02
 
 ### Other
