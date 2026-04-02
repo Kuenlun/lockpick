@@ -16,8 +16,9 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+use colored::Colorize;
 use indicatif::MultiProgress;
-use log::{LevelFilter, Log, Metadata, Record};
+use log::{Level, LevelFilter, Log, Metadata, Record};
 
 struct MultiProgressLogger {
     mp: MultiProgress,
@@ -31,9 +32,11 @@ impl Log for MultiProgressLogger {
 
     fn log(&self, record: &Record) {
         if self.enabled(record.metadata()) {
-            let _ = self
-                .mp
-                .println(format!("[{}] {}", record.level(), record.args()));
+            let level_tag = match record.level() {
+                Level::Info => format!("[{}]", record.level()).green().to_string(),
+                _ => format!("[{}]", record.level()),
+            };
+            let _ = self.mp.println(format!("{level_tag} {}", record.args()));
         }
     }
 
