@@ -7,14 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.4](https://github.com/Kuenlun/lockpick/compare/v0.3.3...v0.3.4) - 2026-04-02
+## [0.4.0](https://github.com/Kuenlun/lockpick/compare/v0.3.3...v0.4.0) - 2026-04-02
 
 ### Added
 
-- restructure task execution pipeline with sequential check gate, captured output, and structured reporting ([#16](https://github.com/Kuenlun/lockpick/pull/16))
+- Run `cargo check` as a sequential gate before all parallel tasks, skipping remaining checks on failure ([#16](https://github.com/Kuenlun/lockpick/pull/16))
+- Display color-coded output sections for task results (`✔ OUTPUT`/`✖ ERRORS`) in verbose mode ([#16](https://github.com/Kuenlun/lockpick/pull/16))
+
+### Changed
+
+- Replace `--check` opt-in flag with `--skip check`, making `cargo check` run by default ([#16](https://github.com/Kuenlun/lockpick/pull/16))
+- Capture and display subprocess stdout/stderr inline instead of discarding output ([#16](https://github.com/Kuenlun/lockpick/pull/16))
+
+### Fixed
+
+- Route log output through `MultiProgress` to prevent spinner corruption ([#16](https://github.com/Kuenlun/lockpick/pull/16))
+- Suppress redundant error output when checks fail ([#16](https://github.com/Kuenlun/lockpick/pull/16))
 
 ### Other
 
+- Replace `env_logger` with a custom lightweight logger, removing 12 transitive dependencies ([#16](https://github.com/Kuenlun/lockpick/pull/16))
 - replace source compilation of lockpick with prebuilt binary installation ([#14](https://github.com/Kuenlun/lockpick/pull/14))
 
 ## [0.3.3](https://github.com/Kuenlun/lockpick/compare/v0.3.2...v0.3.3) - 2026-04-02
