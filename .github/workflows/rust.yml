@@ -24,7 +24,11 @@ jobs:
         with:
           components: rustfmt, clippy
       - name: Install lockpick
-        run: cargo install --git https://github.com/Kuenlun/lockpick
+        uses: taiki-e/install-action@v2
+        with:
+          tool: lockpick
+          # Uncomment to enable coverage support in lockpick
+          # tool: lockpick,cargo-llvm-cov
       - name: Run checks
         run: lockpick
 
