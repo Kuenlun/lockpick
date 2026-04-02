@@ -14,7 +14,7 @@ echo "lockpick passed."
 
 echo "Running license header check..."
 
-if ! ./scripts/check-license-headers.sh; then
+if ! ./.github/check-license-headers.sh; then
   echo ""
   echo "ERROR: License header check failed. Commit aborted."
   echo "Add the correct license header to all source files before committing."

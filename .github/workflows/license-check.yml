@@ -9,7 +9,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Check Rust license headers
-        run: ./scripts/check-license-headers.sh
+        run: ./.github/check-license-headers.sh
