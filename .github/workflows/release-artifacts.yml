@@ -1,0 +1,36 @@
+name: Release Binaries
+
+permissions:
+  contents: write
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  upload-assets:
+    name: Upload Binaries (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Upload binaries to release
+        uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: lockpick
+          target: ${{ matrix.target }}
+          token: ${{ secrets.GITHUB_TOKEN }}
