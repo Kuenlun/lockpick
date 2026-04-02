@@ -230,7 +230,6 @@ fn run_coverage_report(tests_passed: bool, min_coverage: u8, reporter: &Reporter
     reporter.finish_task(&pb, label, status);
 
     passed
-    
 }
 
 fn run_cargo(subcommand: &str, args: &[&str]) -> Result<ExitStatus, LockpickError> {
