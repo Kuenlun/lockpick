@@ -21,12 +21,14 @@ mod error;
 mod logger;
 mod runner;
 
+use std::process::ExitCode;
+
 use clap::Parser;
 
 use crate::cli::{Cli, SkipOption};
 use crate::error::LockpickError;
 
-fn main() -> Result<(), LockpickError> {
+fn main() -> ExitCode {
     let cli = Cli::parse();
 
     if cli.opt_in.coverage && cli.skips(&SkipOption::Test) {
@@ -34,6 +36,12 @@ fn main() -> Result<(), LockpickError> {
         std::process::exit(2);
     }
 
-    logger::init(cli.verbose);
-    runner::run(&cli)
+    match runner::run(&cli) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(LockpickError::ChecksFailed(_)) => ExitCode::FAILURE,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }

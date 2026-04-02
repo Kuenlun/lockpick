@@ -51,7 +51,6 @@ struct Task {
 struct Reporter {
     mp: MultiProgress,
     spin_style: ProgressStyle,
-    done_style: ProgressStyle,
 }
 
 impl Reporter {
@@ -59,12 +58,10 @@ impl Reporter {
         #[allow(clippy::literal_string_with_formatting_args)]
         let spin_template = "  {msg:<8} {spinner:.cyan}";
         let spin_style = ProgressStyle::with_template(spin_template)?.tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏");
-        let done_style = ProgressStyle::with_template("  {msg}")?;
 
         Ok(Self {
             mp: MultiProgress::new(),
             spin_style,
-            done_style,
         })
     }
 
@@ -76,41 +73,162 @@ impl Reporter {
         pb
     }
 
-    fn finish_task(&self, pb: &ProgressBar, label: &str, status: TaskStatus) {
-        pb.set_style(self.done_style.clone());
+    fn print_summary(&self, label: &str, status: TaskStatus) {
         let tag = match status {
             TaskStatus::Pass => "PASS".green().bold(),
             TaskStatus::Fail => "FAIL".red().bold(),
             TaskStatus::Skip => "SKIP".yellow().bold(),
         };
-        pb.finish_with_message(format!("{label:<8} {tag}"));
+        let _ = self.mp.println(format!("  {label:<8} {tag}"));
+    }
+
+    fn print_section(&self, label: &str, output: &str, status: TaskStatus) {
+        let output = output.trim();
+
+        self.mp.println("").ok();
+
+        let header = match status {
+            TaskStatus::Pass => format!(" ✔ {} OUTPUT ", label.to_uppercase())
+                .green()
+                .bold()
+                .to_string(),
+            TaskStatus::Fail => format!(" ✖ {} ERRORS ", label.to_uppercase())
+                .red()
+                .bold()
+                .to_string(),
+            TaskStatus::Skip => return,
+        };
+        self.mp.println(header).ok();
+
+        if output.is_empty() {
+            self.mp
+                .println(format!("  {}", "(no output)".dimmed()))
+                .ok();
+            return;
+        }
+
+        let divider_raw = "━".repeat(40);
+        let divider = match status {
+            TaskStatus::Pass => divider_raw.green().dimmed().to_string(),
+            TaskStatus::Fail => divider_raw.red().dimmed().to_string(),
+            TaskStatus::Skip => return,
+        };
+        self.mp.println(divider).ok();
+
+        let pipe = match status {
+            TaskStatus::Pass => "│".green().dimmed().to_string(),
+            TaskStatus::Fail => "│".red().dimmed().to_string(),
+            TaskStatus::Skip => return,
+        };
+        for line in output.lines() {
+            self.mp.println(format!(" {pipe} {line}")).ok();
+        }
+
+        self.mp.println("").ok();
     }
 }
 
 pub fn run(cli: &Cli) -> Result<(), LockpickError> {
+    let reporter = Reporter::new()?;
+    crate::logger::init(cli.verbose, &reporter.mp);
+
+    let run_check = !cli.skips(&SkipOption::Check);
     let tasks = build_tasks(cli);
 
-    if tasks.is_empty() {
+    if !run_check && tasks.is_empty() {
         log::info!("All checks disabled, nothing to run");
         return Ok(());
     }
 
-    let reporter = Reporter::new()?;
-    let mut failure_count = 0;
+    // Phase 1a: run cargo check first (gate for remaining tasks)
+    let check_result = if run_check {
+        Some(run_check_gate(&reporter))
+    } else {
+        None
+    };
 
-    let results = run_parallel(&tasks, &reporter);
-    failure_count += results.iter().filter(|&&passed| !passed).count();
+    let check_passed = check_result
+        .as_ref()
+        .is_none_or(|(s, _)| matches!(s, TaskStatus::Pass));
 
-    if cli.opt_in.coverage {
-        let tests_passed = tasks
-            .iter()
-            .zip(&results)
-            .find(|(t, _)| t.label == "test")
-            .is_some_and(|(_, &passed)| passed);
+    // Phase 1b: run remaining tasks in parallel (only if check passed)
+    let task_results: Vec<(bool, String)> = if check_passed {
+        run_parallel(&tasks, &reporter)
+    } else {
+        tasks.iter().map(|_| (false, String::new())).collect()
+    };
 
-        if !run_coverage_report(tests_passed, cli.opt_in.min_coverage, &reporter) {
-            failure_count += 1;
+    let cov_result: Option<(TaskStatus, String)> = if cli.opt_in.coverage {
+        let tests_passed = check_passed
+            && tasks
+                .iter()
+                .zip(&task_results)
+                .find(|(t, _)| t.label == "test")
+                .is_some_and(|(_, (passed, _))| *passed);
+
+        if tests_passed {
+            Some(run_coverage_check(cli.opt_in.min_coverage, &reporter))
+        } else {
+            Some((TaskStatus::Skip, String::new()))
         }
+    } else {
+        None
+    };
+
+    // Phase 2: print output sections (PASS first, then FAIL)
+    if cli.verbose >= 1 {
+        if let Some((TaskStatus::Pass, output)) = &check_result {
+            reporter.print_section("check", output, TaskStatus::Pass);
+        }
+        for (task, (passed, output)) in tasks.iter().zip(&task_results) {
+            if *passed && check_passed {
+                reporter.print_section(task.label, output, TaskStatus::Pass);
+            }
+        }
+        if let Some((TaskStatus::Pass, output)) = &cov_result {
+            reporter.print_section("coverage", output, TaskStatus::Pass);
+        }
+    }
+
+    if let Some((TaskStatus::Fail, output)) = &check_result {
+        reporter.print_section("check", output, TaskStatus::Fail);
+    }
+    for (task, (passed, output)) in tasks.iter().zip(&task_results) {
+        if !passed && check_passed {
+            reporter.print_section(task.label, output, TaskStatus::Fail);
+        }
+    }
+    if let Some((TaskStatus::Fail, output)) = &cov_result {
+        reporter.print_section("coverage", output, TaskStatus::Fail);
+    }
+
+    // Phase 3: summary
+    if let Some((status, _)) = &check_result {
+        reporter.print_summary("check", *status);
+    }
+    for (task, (passed, _)) in tasks.iter().zip(&task_results) {
+        let status = if !check_passed {
+            TaskStatus::Skip
+        } else if *passed {
+            TaskStatus::Pass
+        } else {
+            TaskStatus::Fail
+        };
+        reporter.print_summary(task.label, status);
+    }
+    if let Some((status, _)) = &cov_result {
+        reporter.print_summary("coverage", *status);
+    }
+
+    let mut failure_count = 0;
+    if matches!(&check_result, Some((TaskStatus::Fail, _))) {
+        failure_count += 1;
+    }
+    if check_passed {
+        failure_count += task_results.iter().filter(|(passed, _)| !passed).count();
+    }
+    if matches!(&cov_result, Some((TaskStatus::Fail, _))) {
+        failure_count += 1;
     }
 
     if failure_count > 0 {
@@ -123,13 +241,6 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
 fn build_tasks(cli: &Cli) -> Vec<Task> {
     let mut tasks = Vec::new();
 
-    if cli.opt_in.check {
-        tasks.push(Task {
-            label: "check",
-            subcommand: "check",
-            args: COMMON_ARGS,
-        });
-    }
     if !cli.skips(&SkipOption::Clippy) {
         tasks.push(Task {
             label: "clippy",
@@ -178,67 +289,88 @@ fn workspace_has_lib_target() -> bool {
         .is_some_and(|s| s.contains(r#""kind":["lib"]"#))
 }
 
-fn run_parallel(tasks: &[Task], reporter: &Reporter) -> Vec<bool> {
+fn run_parallel(tasks: &[Task], reporter: &Reporter) -> Vec<(bool, String)> {
     let spinners: Vec<ProgressBar> = tasks
         .iter()
         .map(|t| reporter.add_spinner(t.label))
         .collect();
 
-    thread::scope(|s| {
-        let mut handles = Vec::with_capacity(tasks.len());
-
-        for (task, pb) in tasks.iter().zip(&spinners) {
-            handles.push(s.spawn(move || {
-                let passed = run_cargo(task.subcommand, task.args).is_ok_and(|st| st.success());
-                let status = if passed {
-                    TaskStatus::Pass
-                } else {
-                    TaskStatus::Fail
-                };
-
-                reporter.finish_task(pb, task.label, status);
-                passed
-            }));
-        }
-
-        handles
+    let task_results: Vec<(bool, String)> = thread::scope(|s| {
+        tasks
+            .iter()
+            .map(|task| {
+                s.spawn(move || match run_cargo(task.subcommand, task.args) {
+                    Ok((status, out)) => (status.success(), out),
+                    Err(_) => (false, String::new()),
+                })
+            })
+            .collect::<Vec<_>>()
             .into_iter()
-            .map(|h| h.join().unwrap_or(false))
+            .map(|h| h.join().unwrap_or_default())
             .collect()
-    })
-}
+    });
 
-fn run_coverage_report(tests_passed: bool, min_coverage: u8, reporter: &Reporter) -> bool {
-    let label = "coverage";
-    let pb = reporter.add_spinner(label);
-
-    if !tests_passed {
-        reporter.finish_task(&pb, label, TaskStatus::Skip);
-        return true;
+    for pb in &spinners {
+        pb.finish_and_clear();
     }
 
-    let threshold = min_coverage.to_string();
-    let passed = run_cargo("llvm-cov", &["report", "--fail-under-lines", &threshold])
-        .is_ok_and(|st| st.success());
+    task_results
+}
+
+fn run_check_gate(reporter: &Reporter) -> (TaskStatus, String) {
+    let pb = reporter.add_spinner("check");
+    let (passed, output) = match run_cargo("check", COMMON_ARGS) {
+        Ok((status, out)) => (status.success(), out),
+        Err(_) => (false, String::new()),
+    };
+    pb.finish_and_clear();
 
     let status = if passed {
         TaskStatus::Pass
     } else {
         TaskStatus::Fail
     };
-    reporter.finish_task(&pb, label, status);
-
-    passed
+    (status, output)
 }
 
-fn run_cargo(subcommand: &str, args: &[&str]) -> Result<ExitStatus, LockpickError> {
-    log::debug!("Running cargo {subcommand}");
+fn run_coverage_check(min_coverage: u8, reporter: &Reporter) -> (TaskStatus, String) {
+    let pb = reporter.add_spinner("coverage");
 
-    Command::new("cargo")
+    let threshold = min_coverage.to_string();
+    let (passed, output) =
+        match run_cargo("llvm-cov", &["report", "--fail-under-lines", &threshold]) {
+            Ok((status, out)) => (status.success(), out),
+            Err(_) => (false, String::new()),
+        };
+
+    pb.finish_and_clear();
+
+    let status = if passed {
+        TaskStatus::Pass
+    } else {
+        TaskStatus::Fail
+    };
+    (status, output)
+}
+
+fn run_cargo(subcommand: &str, args: &[&str]) -> Result<(ExitStatus, String), LockpickError> {
+    log::info!("cargo {subcommand} {}", args.join(" "));
+
+    let output = Command::new("cargo")
         .arg(subcommand)
         .args(args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(LockpickError::from)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    let mut combined = stdout.into_owned();
+    if !combined.is_empty() && !combined.ends_with('\n') {
+        combined.push('\n');
+    }
+    combined.push_str(&stderr);
+
+    Ok((output.status, combined))
 }

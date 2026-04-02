@@ -24,6 +24,7 @@ use clap::{
 /// Steps that can be skipped via `--skip`
 #[derive(ValueEnum, Clone, Debug, PartialEq, Eq)]
 pub enum SkipOption {
+    Check,
     Clippy,
     Test,
     DocTest,
@@ -75,10 +76,6 @@ pub struct OptInFlags {
         value_parser = clap::value_parser!(u8).range(0..=100)
     )]
     pub min_coverage: u8,
-
-    /// Run 'cargo check' (disabled by default in favor of Clippy)
-    #[arg(long)]
-    pub check: bool,
 }
 
 const fn cli_styles() -> Styles {
