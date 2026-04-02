@@ -10,4 +10,15 @@ if ! ./lockpick; then
   exit 1
 fi
 
-echo "lockpick passed. Proceeding with commit."
+echo "lockpick passed."
+
+echo "Running license header check..."
+
+if ! ./scripts/check-license-headers.sh; then
+  echo ""
+  echo "ERROR: License header check failed. Commit aborted."
+  echo "Add the correct license header to all source files before committing."
+  exit 1
+fi
+
+echo "All pre-commit checks passed. Proceeding with commit."
