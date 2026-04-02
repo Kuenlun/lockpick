@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "Running lockpick pre-commit check..."
+
+if ! ./lockpick; then
+  echo ""
+  echo "ERROR: lockpick failed. Commit aborted."
+  echo "Fix the reported issues and run ./lockpick successfully before committing."
+  exit 1
+fi
+
+echo "lockpick passed."
+
+echo "Running license header check..."
+
+if ! ./scripts/check-license-headers.sh; then
+  echo ""
+  echo "ERROR: License header check failed. Commit aborted."
+  echo "Add the correct license header to all source files before committing."
+  exit 1
+fi
+
+echo "All pre-commit checks passed. Proceeding with commit."
