@@ -37,7 +37,7 @@ jobs:
         id: extract-tag
         if: steps.release-plz.outputs.releases_created == 'true'
         run: |
-          TAG=$(echo '${{ steps.release-plz.outputs.releases }}' | jq -r '.[0].tag_name')
+          TAG=$(echo '${{ steps.release-plz.outputs.releases }}' | jq -r '.[0].tag')
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
   upload-assets:
