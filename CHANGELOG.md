@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1](https://github.com/Kuenlun/lockpick/compare/v0.3.0...v0.3.1) - 2026-04-02
+
+### Added
+
+- *(cli)* replace opt-out flags with composable `--skip` and add coverage support ([#7](https://github.com/Kuenlun/lockpick/pull/7))
+
+### Other
+
+- add GitHub Actions workflow for releasing compiled binaries ([#6](https://github.com/Kuenlun/lockpick/pull/6))
+
 ## [0.3.0](https://github.com/Kuenlun/lockpick/releases/tag/v0.3.0) - 2026-04-02
 
 ### Added
