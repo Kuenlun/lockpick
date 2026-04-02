@@ -51,7 +51,6 @@ struct Task {
 struct Reporter {
     mp: MultiProgress,
     spin_style: ProgressStyle,
-    done_style: ProgressStyle,
 }
 
 impl Reporter {
@@ -59,12 +58,10 @@ impl Reporter {
         #[allow(clippy::literal_string_with_formatting_args)]
         let spin_template = "  {msg:<8} {spinner:.cyan}";
         let spin_style = ProgressStyle::with_template(spin_template)?.tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏");
-        let done_style = ProgressStyle::with_template("  {msg}")?;
 
         Ok(Self {
             mp: MultiProgress::new(),
             spin_style,
-            done_style,
         })
     }
 
@@ -77,17 +74,20 @@ impl Reporter {
     }
 
     fn finish_task(&self, pb: &ProgressBar, label: &str, status: TaskStatus) {
-        pb.set_style(self.done_style.clone());
         let tag = match status {
             TaskStatus::Pass => "PASS".green().bold(),
             TaskStatus::Fail => "FAIL".red().bold(),
             TaskStatus::Skip => "SKIP".yellow().bold(),
         };
-        pb.finish_with_message(format!("{label:<8} {tag}"));
+        let _ = self.mp.println(format!("  {label:<8} {tag}"));
+        pb.finish_and_clear();
     }
 }
 
 pub fn run(cli: &Cli) -> Result<(), LockpickError> {
+    let reporter = Reporter::new()?;
+    crate::logger::init(cli.verbose, &reporter.mp);
+
     let tasks = build_tasks(cli);
 
     if tasks.is_empty() {
@@ -95,7 +95,6 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
         return Ok(());
     }
 
-    let reporter = Reporter::new()?;
     let mut failure_count = 0;
 
     let results = run_parallel(&tasks, &reporter);
@@ -186,28 +185,28 @@ fn run_parallel(tasks: &[Task], reporter: &Reporter) -> Vec<bool> {
         .map(|t| reporter.add_spinner(t.label))
         .collect();
 
-    thread::scope(|s| {
-        let mut handles = Vec::with_capacity(tasks.len());
-
-        for (task, pb) in tasks.iter().zip(&spinners) {
-            handles.push(s.spawn(move || {
-                let passed = run_cargo(task.subcommand, task.args).is_ok_and(|st| st.success());
-                let status = if passed {
-                    TaskStatus::Pass
-                } else {
-                    TaskStatus::Fail
-                };
-
-                reporter.finish_task(pb, task.label, status);
-                passed
-            }));
-        }
-
-        handles
+    let results: Vec<bool> = thread::scope(|s| {
+        tasks
+            .iter()
+            .map(|task| {
+                s.spawn(move || run_cargo(task.subcommand, task.args).is_ok_and(|st| st.success()))
+            })
+            .collect::<Vec<_>>()
             .into_iter()
             .map(|h| h.join().unwrap_or(false))
             .collect()
-    })
+    });
+
+    for ((task, pb), &passed) in tasks.iter().zip(&spinners).zip(&results) {
+        let status = if passed {
+            TaskStatus::Pass
+        } else {
+            TaskStatus::Fail
+        };
+        reporter.finish_task(pb, task.label, status);
+    }
+
+    results
 }
 
 fn run_coverage_report(tests_passed: bool, min_coverage: u8, reporter: &Reporter) -> bool {
@@ -231,16 +230,32 @@ fn run_coverage_report(tests_passed: bool, min_coverage: u8, reporter: &Reporter
     reporter.finish_task(&pb, label, status);
 
     passed
+    
 }
 
 fn run_cargo(subcommand: &str, args: &[&str]) -> Result<ExitStatus, LockpickError> {
-    log::debug!("Running cargo {subcommand}");
+    log::debug!("cargo {subcommand} {}", args.join(" "));
 
-    Command::new("cargo")
+    let verbose = log::max_level() >= log::LevelFilter::Trace;
+    let stderr_cfg = if verbose {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    };
+
+    let output = Command::new("cargo")
         .arg(subcommand)
         .args(args)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(LockpickError::from)
+        .stderr(stderr_cfg)
+        .output()?;
+
+    if verbose {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        for line in stderr.lines() {
+            log::trace!("[{subcommand}] {line}");
+        }
+    }
+
+    Ok(output.status)
 }

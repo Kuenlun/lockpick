@@ -16,9 +16,31 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-use log::LevelFilter;
+use indicatif::MultiProgress;
+use log::{LevelFilter, Log, Metadata, Record};
 
-pub fn init(verbosity: u8) {
+struct MultiProgressLogger {
+    mp: MultiProgress,
+    level: LevelFilter,
+}
+
+impl Log for MultiProgressLogger {
+    fn enabled(&self, metadata: &Metadata) -> bool {
+        metadata.level() <= self.level
+    }
+
+    fn log(&self, record: &Record) {
+        if self.enabled(record.metadata()) {
+            let _ = self
+                .mp
+                .println(format!("[{}] {}", record.level(), record.args()));
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+pub fn init(verbosity: u8, mp: &MultiProgress) {
     let level = match verbosity {
         0 => LevelFilter::Error,
         1 => LevelFilter::Warn,
@@ -27,5 +49,11 @@ pub fn init(verbosity: u8) {
         _ => LevelFilter::Trace,
     };
 
-    env_logger::Builder::new().filter_level(level).init();
+    let logger = MultiProgressLogger {
+        mp: mp.clone(),
+        level,
+    };
+
+    let _ = log::set_boxed_logger(Box::new(logger));
+    log::set_max_level(level);
 }

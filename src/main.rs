@@ -39,6 +39,5 @@ fn main() -> Result<(), LockpickError> {
         std::process::exit(2);
     }
 
-    logger::init(cli.verbose);
     runner::run(&cli)
 }
