@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/Kuenlun/lockpick/compare/v0.4.0...v0.4.1) - 2026-04-05
+
+### Fixed
+
+- *(output)* bypass indicatif buffering in non-TTY environments ([#20](https://github.com/Kuenlun/lockpick/pull/20))
+
+### Other
+
+- *(runner)* overhaul Reporter to support non-TTY output and in-place spinner completion ([#18](https://github.com/Kuenlun/lockpick/pull/18))
+
 ## [0.4.0](https://github.com/Kuenlun/lockpick/compare/v0.3.3...v0.4.0) - 2026-04-02
 
 ### Added
