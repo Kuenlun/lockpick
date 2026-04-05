@@ -26,9 +26,7 @@ jobs:
       - name: Install lockpick
         uses: taiki-e/install-action@v2
         with:
-          tool: lockpick
-          # Uncomment to enable coverage support in lockpick
-          # tool: lockpick,cargo-llvm-cov
+          tool: lockpick,cargo-llvm-cov
       - name: Run checks
         run: lockpick -vvvv
 
