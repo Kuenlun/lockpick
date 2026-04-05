@@ -16,12 +16,13 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+use std::io::{IsTerminal, Write};
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::thread;
 use std::time::Duration;
 
 use colored::Colorize;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle, TermLike};
 
 use crate::cli::{Cli, SkipOption};
 use crate::error::LockpickError;
@@ -47,10 +48,49 @@ struct Task {
     args: &'static [&'static str],
 }
 
+/// Minimal [`TermLike`] that writes to stderr without any TTY checks.
+///
+/// Cursor movements and line clearing are no-ops so that piped output
+/// stays clean (no ANSI escape noise).
+#[derive(Debug)]
+struct PlainStderr;
+
+impl TermLike for PlainStderr {
+    fn width(&self) -> u16 {
+        80
+    }
+    fn move_cursor_up(&self, _n: usize) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn move_cursor_down(&self, _n: usize) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn move_cursor_right(&self, _n: usize) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn move_cursor_left(&self, _n: usize) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn write_line(&self, s: &str) -> std::io::Result<()> {
+        writeln!(std::io::stderr(), "{s}")
+    }
+    fn write_str(&self, s: &str) -> std::io::Result<()> {
+        write!(std::io::stderr(), "{s}")
+    }
+    fn clear_line(&self) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn flush(&self) -> std::io::Result<()> {
+        std::io::stderr().flush()
+    }
+}
+
 // Indicatif
 struct Reporter {
     mp: MultiProgress,
     spin_style: ProgressStyle,
+    done_style: ProgressStyle,
+    is_tty: bool,
 }
 
 impl Reporter {
@@ -58,10 +98,23 @@ impl Reporter {
         #[allow(clippy::literal_string_with_formatting_args)]
         let spin_template = "  {msg:<8} {spinner:.cyan}";
         let spin_style = ProgressStyle::with_template(spin_template)?.tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏");
+        let done_style = ProgressStyle::with_template("  {msg}")?;
+
+        let is_tty = std::io::stderr().is_terminal();
+        let mp = if is_tty {
+            MultiProgress::new()
+        } else {
+            MultiProgress::with_draw_target(ProgressDrawTarget::term_like_with_hz(
+                Box::new(PlainStderr),
+                20,
+            ))
+        };
 
         Ok(Self {
-            mp: MultiProgress::new(),
+            mp,
             spin_style,
+            done_style,
+            is_tty,
         })
     }
 
@@ -69,17 +122,20 @@ impl Reporter {
         let pb = self.mp.add(ProgressBar::new_spinner());
         pb.set_style(self.spin_style.clone());
         pb.set_message(label.to_string());
-        pb.enable_steady_tick(Duration::from_millis(80));
+        if self.is_tty {
+            pb.enable_steady_tick(Duration::from_millis(80));
+        }
         pb
     }
 
-    fn print_summary(&self, label: &str, status: TaskStatus) {
+    fn finish_spinner(&self, pb: &ProgressBar, label: &str, status: TaskStatus) {
         let tag = match status {
             TaskStatus::Pass => "PASS".green().bold(),
             TaskStatus::Fail => "FAIL".red().bold(),
             TaskStatus::Skip => "SKIP".yellow().bold(),
         };
-        let _ = self.mp.println(format!("  {label:<8} {tag}"));
+        pb.set_style(self.done_style.clone());
+        pb.finish_with_message(format!("{label:<8} {tag}"));
     }
 
     fn print_section(&self, label: &str, output: &str, status: TaskStatus) {
@@ -140,9 +196,29 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
         return Ok(());
     }
 
+    // Create all spinners upfront so every stage is visible from the start.
+    let check_pb = if run_check {
+        Some(reporter.add_spinner("check"))
+    } else {
+        None
+    };
+    let task_pbs: Vec<ProgressBar> = tasks
+        .iter()
+        .map(|t| reporter.add_spinner(t.label))
+        .collect();
+    let cov_pb = if cli.opt_in.coverage {
+        Some(reporter.add_spinner("coverage"))
+    } else {
+        None
+    };
+
     // Phase 1a: run cargo check first (gate for remaining tasks)
     let check_result = if run_check {
-        Some(run_check_gate(&reporter))
+        let result = run_task("check", COMMON_ARGS);
+        if let Some(pb) = &check_pb {
+            reporter.finish_spinner(pb, "check", result.0);
+        }
+        Some(result)
     } else {
         None
     };
@@ -153,10 +229,20 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
 
     // Phase 1b: run remaining tasks in parallel (only if check passed)
     let task_results: Vec<(bool, String)> = if check_passed {
-        run_parallel(&tasks, &reporter)
+        run_parallel(&tasks)
     } else {
         tasks.iter().map(|_| (false, String::new())).collect()
     };
+    for (i, pb) in task_pbs.iter().enumerate() {
+        let status = if !check_passed {
+            TaskStatus::Skip
+        } else if task_results[i].0 {
+            TaskStatus::Pass
+        } else {
+            TaskStatus::Fail
+        };
+        reporter.finish_spinner(pb, tasks[i].label, status);
+    }
 
     let cov_result: Option<(TaskStatus, String)> = if cli.opt_in.coverage {
         let tests_passed = check_passed
@@ -166,76 +252,85 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
                 .find(|(t, _)| t.label == "test")
                 .is_some_and(|(_, (passed, _))| *passed);
 
-        if tests_passed {
-            Some(run_coverage_check(cli.opt_in.min_coverage, &reporter))
+        let result = if tests_passed {
+            let threshold = cli.opt_in.min_coverage.to_string();
+            run_task("llvm-cov", &["report", "--fail-under-lines", &threshold])
         } else {
-            Some((TaskStatus::Skip, String::new()))
+            (TaskStatus::Skip, String::new())
+        };
+        if let Some(pb) = &cov_pb {
+            reporter.finish_spinner(pb, "coverage", result.0);
         }
+        Some(result)
     } else {
         None
     };
 
-    // Phase 2: print output sections (PASS first, then FAIL)
-    if cli.verbose >= 1 {
-        if let Some((TaskStatus::Pass, output)) = &check_result {
-            reporter.print_section("check", output, TaskStatus::Pass);
-        }
-        for (task, (passed, output)) in tasks.iter().zip(&task_results) {
-            if *passed && check_passed {
-                reporter.print_section(task.label, output, TaskStatus::Pass);
-            }
-        }
-        if let Some((TaskStatus::Pass, output)) = &cov_result {
-            reporter.print_section("coverage", output, TaskStatus::Pass);
-        }
-    }
-
-    if let Some((TaskStatus::Fail, output)) = &check_result {
-        reporter.print_section("check", output, TaskStatus::Fail);
-    }
-    for (task, (passed, output)) in tasks.iter().zip(&task_results) {
-        if !passed && check_passed {
-            reporter.print_section(task.label, output, TaskStatus::Fail);
-        }
-    }
-    if let Some((TaskStatus::Fail, output)) = &cov_result {
-        reporter.print_section("coverage", output, TaskStatus::Fail);
-    }
-
-    // Phase 3: summary
-    if let Some((status, _)) = &check_result {
-        reporter.print_summary("check", *status);
-    }
-    for (task, (passed, _)) in tasks.iter().zip(&task_results) {
-        let status = if !check_passed {
-            TaskStatus::Skip
-        } else if *passed {
-            TaskStatus::Pass
-        } else {
-            TaskStatus::Fail
-        };
-        reporter.print_summary(task.label, status);
-    }
-    if let Some((status, _)) = &cov_result {
-        reporter.print_summary("coverage", *status);
-    }
-
-    let mut failure_count = 0;
-    if matches!(&check_result, Some((TaskStatus::Fail, _))) {
-        failure_count += 1;
-    }
-    if check_passed {
-        failure_count += task_results.iter().filter(|(passed, _)| !passed).count();
-    }
-    if matches!(&cov_result, Some((TaskStatus::Fail, _))) {
-        failure_count += 1;
-    }
+    let failure_count = report_results(
+        &reporter,
+        cli.verbose,
+        check_result.as_ref(),
+        &tasks,
+        &task_results,
+        check_passed,
+        cov_result.as_ref(),
+    );
 
     if failure_count > 0 {
         return Err(LockpickError::ChecksFailed(failure_count));
     }
 
     Ok(())
+}
+
+fn report_results(
+    reporter: &Reporter,
+    verbose: u8,
+    check_result: Option<&(TaskStatus, String)>,
+    tasks: &[Task],
+    task_results: &[(bool, String)],
+    check_passed: bool,
+    cov_result: Option<&(TaskStatus, String)>,
+) -> usize {
+    // Print output sections (PASS first, then FAIL).
+    if verbose >= 1 {
+        if let Some((TaskStatus::Pass, output)) = check_result {
+            reporter.print_section("check", output, TaskStatus::Pass);
+        }
+        for (task, (passed, output)) in tasks.iter().zip(task_results) {
+            if *passed && check_passed {
+                reporter.print_section(task.label, output, TaskStatus::Pass);
+            }
+        }
+        if let Some((TaskStatus::Pass, output)) = cov_result {
+            reporter.print_section("coverage", output, TaskStatus::Pass);
+        }
+    }
+
+    if let Some((TaskStatus::Fail, output)) = check_result {
+        reporter.print_section("check", output, TaskStatus::Fail);
+    }
+    for (task, (passed, output)) in tasks.iter().zip(task_results) {
+        if !passed && check_passed {
+            reporter.print_section(task.label, output, TaskStatus::Fail);
+        }
+    }
+    if let Some((TaskStatus::Fail, output)) = cov_result {
+        reporter.print_section("coverage", output, TaskStatus::Fail);
+    }
+
+    // Count failures.
+    let mut count = 0;
+    if matches!(check_result, Some((TaskStatus::Fail, _))) {
+        count += 1;
+    }
+    if check_passed {
+        count += task_results.iter().filter(|(passed, _)| !passed).count();
+    }
+    if matches!(cov_result, Some((TaskStatus::Fail, _))) {
+        count += 1;
+    }
+    count
 }
 
 fn build_tasks(cli: &Cli) -> Vec<Task> {
@@ -289,13 +384,8 @@ fn workspace_has_lib_target() -> bool {
         .is_some_and(|s| s.contains(r#""kind":["lib"]"#))
 }
 
-fn run_parallel(tasks: &[Task], reporter: &Reporter) -> Vec<(bool, String)> {
-    let spinners: Vec<ProgressBar> = tasks
-        .iter()
-        .map(|t| reporter.add_spinner(t.label))
-        .collect();
-
-    let task_results: Vec<(bool, String)> = thread::scope(|s| {
+fn run_parallel(tasks: &[Task]) -> Vec<(bool, String)> {
+    thread::scope(|s| {
         tasks
             .iter()
             .map(|task| {
@@ -308,43 +398,14 @@ fn run_parallel(tasks: &[Task], reporter: &Reporter) -> Vec<(bool, String)> {
             .into_iter()
             .map(|h| h.join().unwrap_or_default())
             .collect()
-    });
-
-    for pb in &spinners {
-        pb.finish_and_clear();
-    }
-
-    task_results
+    })
 }
 
-fn run_check_gate(reporter: &Reporter) -> (TaskStatus, String) {
-    let pb = reporter.add_spinner("check");
-    let (passed, output) = match run_cargo("check", COMMON_ARGS) {
+fn run_task(subcommand: &str, args: &[&str]) -> (TaskStatus, String) {
+    let (passed, output) = match run_cargo(subcommand, args) {
         Ok((status, out)) => (status.success(), out),
         Err(_) => (false, String::new()),
     };
-    pb.finish_and_clear();
-
-    let status = if passed {
-        TaskStatus::Pass
-    } else {
-        TaskStatus::Fail
-    };
-    (status, output)
-}
-
-fn run_coverage_check(min_coverage: u8, reporter: &Reporter) -> (TaskStatus, String) {
-    let pb = reporter.add_spinner("coverage");
-
-    let threshold = min_coverage.to_string();
-    let (passed, output) =
-        match run_cargo("llvm-cov", &["report", "--fail-under-lines", &threshold]) {
-            Ok((status, out)) => (status.success(), out),
-            Err(_) => (false, String::new()),
-        };
-
-    pb.finish_and_clear();
-
     let status = if passed {
         TaskStatus::Pass
     } else {
