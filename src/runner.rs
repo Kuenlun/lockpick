@@ -16,13 +16,13 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-use std::io::{IsTerminal, Write};
+use std::io::IsTerminal;
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::thread;
 use std::time::Duration;
 
 use colored::Colorize;
-use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle, TermLike};
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 
 use crate::cli::{Cli, SkipOption};
 use crate::error::LockpickError;
@@ -48,43 +48,6 @@ struct Task {
     args: &'static [&'static str],
 }
 
-/// Minimal [`TermLike`] that writes to stderr without any TTY checks.
-///
-/// Cursor movements and line clearing are no-ops so that piped output
-/// stays clean (no ANSI escape noise).
-#[derive(Debug)]
-struct PlainStderr;
-
-impl TermLike for PlainStderr {
-    fn width(&self) -> u16 {
-        80
-    }
-    fn move_cursor_up(&self, _n: usize) -> std::io::Result<()> {
-        Ok(())
-    }
-    fn move_cursor_down(&self, _n: usize) -> std::io::Result<()> {
-        Ok(())
-    }
-    fn move_cursor_right(&self, _n: usize) -> std::io::Result<()> {
-        Ok(())
-    }
-    fn move_cursor_left(&self, _n: usize) -> std::io::Result<()> {
-        Ok(())
-    }
-    fn write_line(&self, s: &str) -> std::io::Result<()> {
-        writeln!(std::io::stderr(), "{s}")
-    }
-    fn write_str(&self, s: &str) -> std::io::Result<()> {
-        write!(std::io::stderr(), "{s}")
-    }
-    fn clear_line(&self) -> std::io::Result<()> {
-        Ok(())
-    }
-    fn flush(&self) -> std::io::Result<()> {
-        std::io::stderr().flush()
-    }
-}
-
 // Indicatif
 struct Reporter {
     mp: MultiProgress,
@@ -104,10 +67,7 @@ impl Reporter {
         let mp = if is_tty {
             MultiProgress::new()
         } else {
-            MultiProgress::with_draw_target(ProgressDrawTarget::term_like_with_hz(
-                Box::new(PlainStderr),
-                20,
-            ))
+            MultiProgress::with_draw_target(ProgressDrawTarget::hidden())
         };
 
         Ok(Self {
@@ -134,14 +94,27 @@ impl Reporter {
             TaskStatus::Fail => "FAIL".red().bold(),
             TaskStatus::Skip => "SKIP".yellow().bold(),
         };
-        pb.set_style(self.done_style.clone());
-        pb.finish_with_message(format!("{label:<8} {tag}"));
+        if self.is_tty {
+            pb.set_style(self.done_style.clone());
+            pb.finish_with_message(format!("{label:<8} {tag}"));
+        } else {
+            pb.finish_and_clear();
+            eprintln!("  {label:<8} {tag}");
+        }
+    }
+
+    fn println(&self, msg: impl AsRef<str>) {
+        if self.is_tty {
+            self.mp.println(msg).ok();
+        } else {
+            eprintln!("{}", msg.as_ref());
+        }
     }
 
     fn print_section(&self, label: &str, output: &str, status: TaskStatus) {
         let output = output.trim();
 
-        self.mp.println("").ok();
+        self.println("");
 
         let header = match status {
             TaskStatus::Pass => format!(" ✔ {} OUTPUT ", label.to_uppercase())
@@ -154,12 +127,10 @@ impl Reporter {
                 .to_string(),
             TaskStatus::Skip => return,
         };
-        self.mp.println(header).ok();
+        self.println(header);
 
         if output.is_empty() {
-            self.mp
-                .println(format!("  {}", "(no output)".dimmed()))
-                .ok();
+            self.println(format!("  {}", "(no output)".dimmed()));
             return;
         }
 
@@ -169,7 +140,7 @@ impl Reporter {
             TaskStatus::Fail => divider_raw.red().dimmed().to_string(),
             TaskStatus::Skip => return,
         };
-        self.mp.println(divider).ok();
+        self.println(divider);
 
         let pipe = match status {
             TaskStatus::Pass => "│".green().dimmed().to_string(),
@@ -177,16 +148,16 @@ impl Reporter {
             TaskStatus::Skip => return,
         };
         for line in output.lines() {
-            self.mp.println(format!(" {pipe} {line}")).ok();
+            self.println(format!(" {pipe} {line}"));
         }
 
-        self.mp.println("").ok();
+        self.println("");
     }
 }
 
 pub fn run(cli: &Cli) -> Result<(), LockpickError> {
     let reporter = Reporter::new()?;
-    crate::logger::init(cli.verbose, &reporter.mp);
+    crate::logger::init(cli.verbose, &reporter.mp, reporter.is_tty);
 
     let run_check = !cli.skips(&SkipOption::Check);
     let tasks = build_tasks(cli);
