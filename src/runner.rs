@@ -160,7 +160,8 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
     crate::logger::init(cli.verbose, &reporter.mp, reporter.is_tty);
 
     let run_check = !cli.skips(&SkipOption::Check);
-    let tasks = build_tasks(cli);
+    let has_llvm_cov = cli.opt_in.coverage && llvm_cov_available();
+    let tasks = build_tasks(cli, has_llvm_cov);
 
     if !run_check && tasks.is_empty() {
         log::info!("All checks disabled, nothing to run");
@@ -216,17 +217,22 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
     }
 
     let cov_result: Option<(TaskStatus, String)> = if cli.opt_in.coverage {
-        let tests_passed = check_passed
-            && tasks
-                .iter()
-                .zip(&task_results)
-                .find(|(t, _)| t.label == "test")
-                .is_some_and(|(_, (passed, _))| *passed);
+        let result = if has_llvm_cov {
+            let tests_passed = check_passed
+                && tasks
+                    .iter()
+                    .zip(&task_results)
+                    .find(|(t, _)| t.label == "test")
+                    .is_some_and(|(_, (passed, _))| *passed);
 
-        let result = if tests_passed {
-            let threshold = cli.opt_in.min_coverage.to_string();
-            run_task("llvm-cov", &["report", "--fail-under-lines", &threshold])
+            if tests_passed {
+                let threshold = cli.opt_in.min_coverage.to_string();
+                run_task("llvm-cov", &["report", "--fail-under-lines", &threshold])
+            } else {
+                (TaskStatus::Skip, String::new())
+            }
         } else {
+            log::warn!("cargo-llvm-cov is not installed, skipping coverage");
             (TaskStatus::Skip, String::new())
         };
         if let Some(pb) = &cov_pb {
@@ -304,7 +310,7 @@ fn report_results(
     count
 }
 
-fn build_tasks(cli: &Cli) -> Vec<Task> {
+fn build_tasks(cli: &Cli, has_llvm_cov: bool) -> Vec<Task> {
     let mut tasks = Vec::new();
 
     if !cli.skips(&SkipOption::Clippy) {
@@ -322,7 +328,7 @@ fn build_tasks(cli: &Cli) -> Vec<Task> {
         });
     }
     if !cli.skips(&SkipOption::Test) {
-        let (subcommand, args) = if cli.opt_in.coverage {
+        let (subcommand, args) = if cli.opt_in.coverage && has_llvm_cov {
             ("llvm-cov", COV_TEST_ARGS)
         } else {
             ("test", COMMON_ARGS)
@@ -385,15 +391,39 @@ fn run_task(subcommand: &str, args: &[&str]) -> (TaskStatus, String) {
     (status, output)
 }
 
+fn llvm_cov_available() -> bool {
+    Command::new("cargo")
+        .args(["llvm-cov", "--version"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// Returns `true` when the running binary lives inside the project's `target/`
+/// directory (i.e. launched via `cargo run`).  In that case, child cargo
+/// invocations would contend with the parent for the same target directory,
+/// and on Windows the running `.exe` is locked by the OS so a rebuild would
+/// fail with "Access denied".  When this returns `true`, [`run_cargo`]
+/// redirects builds to a separate target directory.
+fn exe_in_target_dir() -> bool {
+    let (Ok(exe), Ok(cwd)) = (std::env::current_exe(), std::env::current_dir()) else {
+        return false;
+    };
+    exe.starts_with(cwd.join("target"))
+}
+
 fn run_cargo(subcommand: &str, args: &[&str]) -> Result<(ExitStatus, String), LockpickError> {
     log::info!("cargo {subcommand} {}", args.join(" "));
 
-    let output = Command::new("cargo")
-        .arg(subcommand)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()?;
+    let mut cmd = Command::new("cargo");
+    cmd.arg(subcommand).args(args);
+
+    if exe_in_target_dir() && std::env::var_os("CARGO_TARGET_DIR").is_none() {
+        cmd.env("CARGO_TARGET_DIR", "target/lockpick");
+    }
+
+    let output = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).output()?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
