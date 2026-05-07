@@ -1,0 +1,15 @@
+# Build with native CPU features on x86_64/aarch64 hosts
+[target.'cfg(any(target_arch = "x86_64", target_arch = "aarch64"))']
+rustflags = ["-C", "target-cpu=native"]
+
+# Coverage shortcuts. cargo-llvm-cov on nightly auto-sets `--cfg=coverage_nightly`,
+# which the test modules already use to opt out of instrumentation.
+[alias]
+# Production-only coverage, excluding test modules
+cov = "llvm-cov --branch --html --open"
+# Same as cov but also runs #[ignore]d tests
+cov-all = "cov -- --include-ignored"
+# Full coverage including test modules
+cov-tests = "llvm-cov --branch --no-cfg-coverage-nightly --html --open"
+# Same as cov-tests but also runs #[ignore]d tests
+cov-tests-all = "cov-tests -- --include-ignored"
