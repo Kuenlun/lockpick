@@ -250,7 +250,7 @@ fn skipping_all_checks_succeeds_with_info() {
 
 /// `--coverage` adds a coverage gate that succeeds when line coverage meets the threshold.
 #[test]
-#[cfg_attr(coverage, ignore = "avoid nested cargo-llvm-cov invocations")]
+#[cfg_attr(coverage_nightly, ignore = "avoid nested cargo-llvm-cov invocations")]
 fn coverage_flag_adds_coverage_gate() {
     let project = dummy_cargo_project();
 
