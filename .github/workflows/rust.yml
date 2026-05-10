@@ -20,8 +20,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: nightly-2026-04-15
           components: rustfmt, clippy
       - name: Install lockpick
         uses: taiki-e/install-action@v2
@@ -30,9 +31,25 @@ jobs:
       - name: Run checks
         run: lockpick -vvvv
 
+  coverage:
+    needs: [license-check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-04-15
+          components: llvm-tools-preview
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: Enforce 100% coverage
+        run: ./.github/check-coverage.sh
+
   merge-gate:
     runs-on: ubuntu-latest
-    needs: [check, license-check]
+    needs: [check, license-check, coverage]
     if: always()
     steps:
       - name: Check results
@@ -43,5 +60,9 @@ jobs:
           fi
           if [[ "${{ needs.license-check.result }}" != "success" ]]; then
             echo "::error::License check failed: ${{ needs.license-check.result }}"
+            exit 1
+          fi
+          if [[ "${{ needs.coverage.result }}" != "success" ]]; then
+            echo "::error::Coverage check failed: ${{ needs.coverage.result }}"
             exit 1
           fi
