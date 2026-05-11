@@ -12,6 +12,7 @@ use crate::cli::{Cli, SkipOption};
 use crate::config::Config;
 use crate::error::LockpickError;
 use crate::reporter::{CheckOutcome, TaskStatus};
+use crate::tooling;
 
 pub mod audit;
 pub mod clippy;
@@ -26,22 +27,12 @@ pub mod test;
 
 pub const COMMON_ARGS: &[&str] = &["--workspace", "--all-targets", "--all-features"];
 
-/// Arguments for `cargo llvm-cov` when used as a drop-in replacement
-/// for `cargo test`. `--no-report` suppresses the text summary so the
-/// dedicated coverage check can emit its own (and parse the JSON).
-pub const COV_TEST_ARGS: &[&str] = &[
-    "--branch",
-    "--no-report",
-    "--workspace",
-    "--all-targets",
-    "--all-features",
-    "--no-fail-fast",
-];
-
 /// A single quality check that lockpick can execute.
 pub trait Check: Send + Sync {
     /// Label shown in the spinner and in section headers.
     fn label(&self) -> &'static str;
+    /// Human-readable command line for `--verbose` output.
+    fn cmd(&self) -> String;
     /// Execute the check and capture its outcome.
     fn run(&self) -> CheckOutcome;
 }
@@ -64,6 +55,7 @@ pub fn build_parallel(cli: &Cli, coverage_active: bool, config: &Config) -> Vec<
     if !cli.skips(&SkipOption::Test) {
         checks.push(Box::new(test::TestCheck {
             instrumented: coverage_active,
+            nextest: tooling::has_nextest(),
         }));
     }
     if !cli.skips(&SkipOption::DocTest) && doctest::workspace_has_lib_target() {
@@ -104,8 +96,6 @@ pub fn run_cargo_with_env(
     args: &[&str],
     extra_envs: &[(&str, &str)],
 ) -> Result<(ExitStatus, String), LockpickError> {
-    log::info!("cargo {subcommand} {}", args.join(" "));
-
     let mut cmd = Command::new("cargo");
     cmd.arg(subcommand).args(args);
     for (k, v) in extra_envs {
@@ -155,6 +145,15 @@ pub fn run_cargo_outcome_with_env(
             status: TaskStatus::Fail,
             output: String::new(),
         },
+    }
+}
+
+/// Helper to format a cargo command line for display.
+pub fn fmt_cargo_cmd(subcommand: &str, args: &[&str]) -> String {
+    if args.is_empty() {
+        format!("cargo {subcommand}")
+    } else {
+        format!("cargo {subcommand} {}", args.join(" "))
     }
 }
 

@@ -261,7 +261,7 @@ fn skipping_all_checks_succeeds_with_info() {
         .args([
             "--skip", "check", "--skip", "clippy", "--skip", "fmt", "--skip", "test", "--skip",
             "doc-test", "--skip", "doc", "--skip", "machete", "--skip", "audit", "--skip",
-            "license", "--skip", "coverage", "-vv",
+            "license", "--skip", "coverage",
         ])
         .output()
         .expect("failed to execute lockpick");

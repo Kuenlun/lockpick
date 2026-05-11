@@ -16,6 +16,10 @@ impl Check for AuditCheck {
         "audit"
     }
 
+    fn cmd(&self) -> String {
+        "cargo audit".to_string()
+    }
+
     fn run(&self) -> CheckOutcome {
         run_cargo_outcome("audit", &[])
     }

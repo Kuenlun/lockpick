@@ -14,8 +14,7 @@ use crate::reporter::{CheckOutcome, Reporter, TaskStatus};
 use crate::tooling::{self, INSTALL_AUDIT, INSTALL_LLVM_COV, INSTALL_MACHETE};
 
 pub fn run(cli: &Cli) -> Result<(), LockpickError> {
-    let reporter = Reporter::new()?;
-    crate::logger::init(cli.verbose, &reporter.mp, reporter.is_tty);
+    let reporter = Reporter::new(cli.verbose)?;
 
     let config = Config::load();
 
@@ -28,16 +27,26 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
 
     require_tooling(cli, coverage_active)?;
     if coverage_skipped_by_test && !coverage_skipped_by_user {
-        log::info!("--skip test implies coverage will be skipped");
+        reporter.info("--skip test implies coverage will be skipped");
     }
 
     let run_compile = !cli.skips(&SkipOption::Check);
     let parallel = checks::build_parallel(cli, coverage_active, &config);
+    let coverage_check = coverage_active.then_some(CoverageCheck {
+        thresholds: config.coverage,
+    });
 
-    if !run_compile && parallel.is_empty() && !coverage_active {
-        log::info!("All checks disabled, nothing to run");
+    if !run_compile && parallel.is_empty() && coverage_check.is_none() {
+        reporter.note("All checks disabled, nothing to run");
         return Ok(());
     }
+
+    print_planned_commands(
+        &reporter,
+        run_compile,
+        &parallel,
+        coverage_check.as_ref().map(|c| c as &dyn Check),
+    );
 
     // Create all spinners upfront so every stage is visible from the start.
     let compile_pb = run_compile.then(|| reporter.add_spinner("check"));
@@ -45,7 +54,9 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
         .iter()
         .map(|c| reporter.add_spinner(c.label()))
         .collect();
-    let coverage_pb = coverage_active.then(|| reporter.add_spinner("coverage"));
+    let coverage_pb = coverage_check
+        .as_ref()
+        .map(|c| reporter.add_spinner(c.label()));
 
     // Phase 1: compile gate.
     let compile_outcome = run_compile.then(|| {
@@ -75,8 +86,18 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
     }
 
     // Phase 3: coverage gate (only if active and tests succeeded).
-    let coverage_outcome = coverage_active.then(|| {
-        let outcome = run_coverage_phase(&parallel, &parallel_outcomes, compile_passed, &config);
+    let coverage_outcome = coverage_check.as_ref().map(|cov| {
+        let tests_passed = compile_passed
+            && parallel
+                .iter()
+                .zip(&parallel_outcomes)
+                .find(|(c, _)| c.label() == "test")
+                .is_some_and(|(_, o)| o.passed());
+        let outcome = if tests_passed {
+            cov.run()
+        } else {
+            CheckOutcome::skipped()
+        };
         if let Some(pb) = &coverage_pb {
             reporter.finish_spinner(pb, "coverage", outcome.status);
         }
@@ -85,7 +106,6 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
 
     let failure_count = report_results(
         &reporter,
-        cli.verbose,
         compile_outcome.as_ref(),
         &parallel,
         &parallel_outcomes,
@@ -125,6 +145,27 @@ fn require_tooling(cli: &Cli, coverage_active: bool) -> Result<(), LockpickError
     Ok(())
 }
 
+fn print_planned_commands(
+    reporter: &Reporter,
+    run_compile: bool,
+    parallel: &[Box<dyn Check>],
+    coverage: Option<&dyn Check>,
+) {
+    if !reporter.is_verbose {
+        return;
+    }
+    if run_compile {
+        reporter.command(&checks::compile::CompileCheck.cmd());
+    }
+    for c in parallel {
+        reporter.command(&c.cmd());
+    }
+    if let Some(c) = coverage {
+        reporter.command(&c.cmd());
+    }
+    reporter.println("");
+}
+
 fn run_parallel(checks: &[Box<dyn Check>]) -> Vec<CheckOutcome> {
     thread::scope(|s| {
         checks
@@ -142,30 +183,8 @@ fn run_parallel(checks: &[Box<dyn Check>]) -> Vec<CheckOutcome> {
     })
 }
 
-fn run_coverage_phase(
-    parallel: &[Box<dyn Check>],
-    outcomes: &[CheckOutcome],
-    compile_passed: bool,
-    config: &Config,
-) -> CheckOutcome {
-    let tests_passed = compile_passed
-        && parallel
-            .iter()
-            .zip(outcomes)
-            .find(|(c, _)| c.label() == "test")
-            .is_some_and(|(_, o)| o.passed());
-    if !tests_passed {
-        return CheckOutcome::skipped();
-    }
-    CoverageCheck {
-        thresholds: config.coverage,
-    }
-    .run()
-}
-
 fn report_results(
     reporter: &Reporter,
-    verbose: u8,
     compile_outcome: Option<&CheckOutcome>,
     parallel: &[Box<dyn Check>],
     parallel_outcomes: &[CheckOutcome],
@@ -173,7 +192,7 @@ fn report_results(
     coverage_outcome: Option<&CheckOutcome>,
 ) -> usize {
     // PASS sections first when verbose so the operator can scan green-to-red.
-    if verbose >= 1 {
+    if reporter.is_verbose {
         if let Some(o) = compile_outcome
             && o.passed()
         {
@@ -208,16 +227,36 @@ fn report_results(
         reporter.print_section("coverage", &o.output, TaskStatus::Fail);
     }
 
-    // Count failures.
-    let mut count = 0;
-    if compile_outcome.is_some_and(CheckOutcome::failed) {
-        count += 1;
+    // Collect failed labels for the footer.
+    let mut failed: Vec<&str> = Vec::new();
+    if let Some(o) = compile_outcome
+        && o.failed()
+    {
+        failed.push("check");
     }
     if compile_passed {
-        count += parallel_outcomes.iter().filter(|o| o.failed()).count();
+        for (check, outcome) in parallel.iter().zip(parallel_outcomes) {
+            if outcome.failed() {
+                failed.push(check.label());
+            }
+        }
     }
-    if coverage_outcome.is_some_and(CheckOutcome::failed) {
-        count += 1;
+    if let Some(o) = coverage_outcome
+        && o.failed()
+    {
+        failed.push("coverage");
     }
-    count
+
+    // Total visible checks (those that produced a spinner).
+    let mut total = parallel.len();
+    if compile_outcome.is_some() {
+        total += 1;
+    }
+    if coverage_outcome.is_some() {
+        total += 1;
+    }
+
+    reporter.summary(total, &failed);
+
+    failed.len()
 }

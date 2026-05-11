@@ -35,12 +35,11 @@ impl Check for LicenseHeaderCheck {
         "license"
     }
 
-    fn run(&self) -> CheckOutcome {
-        log::info!(
-            "license-header check against {}",
-            self.header_path.display()
-        );
+    fn cmd(&self) -> String {
+        format!("license-header against `{}`", self.header_path.display())
+    }
 
+    fn run(&self) -> CheckOutcome {
         let header = match fs::read(&self.header_path) {
             Ok(bytes) => bytes,
             Err(e) => {
@@ -102,7 +101,7 @@ impl Check for LicenseHeaderCheck {
             };
         }
 
-        let mut lines: Vec<String> = vec![format!("files missing the expected license header:")];
+        let mut lines: Vec<String> = vec!["files missing the expected license header:".to_string()];
         for path in &offenders {
             lines.push(format!("  - {}", path.display()));
         }

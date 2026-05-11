@@ -6,8 +6,10 @@
 //! Catches broken intra-doc links, unresolvable references and missing
 //! examples in code blocks.
 
-use super::{Check, run_cargo_outcome_with_env};
+use super::{Check, fmt_cargo_cmd, run_cargo_outcome_with_env};
 use crate::reporter::CheckOutcome;
+
+const DOC_ARGS: &[&str] = &["--no-deps", "--workspace", "--all-features"];
 
 pub struct DocCheck;
 
@@ -16,11 +18,14 @@ impl Check for DocCheck {
         "doc"
     }
 
-    fn run(&self) -> CheckOutcome {
-        run_cargo_outcome_with_env(
-            "doc",
-            &["--no-deps", "--workspace", "--all-features"],
-            &[("RUSTDOCFLAGS", "-D warnings")],
+    fn cmd(&self) -> String {
+        format!(
+            "RUSTDOCFLAGS='-D warnings' {}",
+            fmt_cargo_cmd("doc", DOC_ARGS)
         )
+    }
+
+    fn run(&self) -> CheckOutcome {
+        run_cargo_outcome_with_env("doc", DOC_ARGS, &[("RUSTDOCFLAGS", "-D warnings")])
     }
 }

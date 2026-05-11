@@ -3,7 +3,7 @@
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
 use clap::{
-    ArgAction, Parser, ValueEnum,
+    Parser, ValueEnum,
     builder::styling::{AnsiColor, Effects, Styles},
 };
 
@@ -35,13 +35,9 @@ pub struct Cli {
     #[arg(long, value_enum)]
     pub skip: Vec<SkipOption>,
 
-    #[arg(
-        short = 'v',
-        long = "verbose",
-        action = ArgAction::Count,
-        help = "Increase logging verbosity (..= -vvvv)"
-    )]
-    pub verbose: u8,
+    /// Show every command and the full output of all checks (CI mode)
+    #[arg(short = 'v', long = "verbose")]
+    pub verbose: bool,
 }
 
 impl Cli {

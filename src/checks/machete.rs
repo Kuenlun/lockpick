@@ -15,6 +15,10 @@ impl Check for MacheteCheck {
         "machete"
     }
 
+    fn cmd(&self) -> String {
+        "cargo machete".to_string()
+    }
+
     fn run(&self) -> CheckOutcome {
         run_cargo_outcome("machete", &[])
     }

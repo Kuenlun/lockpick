@@ -6,7 +6,6 @@ mod checks;
 mod cli;
 mod config;
 mod error;
-mod logger;
 mod reporter;
 mod runner;
 mod tooling;

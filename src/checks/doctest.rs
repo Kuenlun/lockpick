@@ -4,8 +4,10 @@
 
 use std::process::{Command, Output, Stdio};
 
-use super::{Check, run_cargo_outcome};
+use super::{Check, fmt_cargo_cmd, run_cargo_outcome};
 use crate::reporter::CheckOutcome;
+
+const DOCTEST_ARGS: &[&str] = &["--doc", "--workspace", "--all-features"];
 
 pub struct DocTestCheck;
 
@@ -14,8 +16,12 @@ impl Check for DocTestCheck {
         "doc test"
     }
 
+    fn cmd(&self) -> String {
+        fmt_cargo_cmd("test", DOCTEST_ARGS)
+    }
+
     fn run(&self) -> CheckOutcome {
-        run_cargo_outcome("test", &["--doc", "--workspace", "--all-features"])
+        run_cargo_outcome("test", DOCTEST_ARGS)
     }
 }
 

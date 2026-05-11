@@ -69,7 +69,7 @@ impl Config {
             return Self::default();
         };
         serde_json::from_value(section).unwrap_or_else(|e| {
-            log::warn!("invalid [*.metadata.lockpick] section: {e} — using defaults");
+            eprintln!("warning: invalid [*.metadata.lockpick] section: {e} — using defaults");
             Self::default()
         })
     }

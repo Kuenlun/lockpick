@@ -47,10 +47,11 @@ pub struct Reporter {
     spin_style: ProgressStyle,
     done_style: ProgressStyle,
     pub is_tty: bool,
+    pub is_verbose: bool,
 }
 
 impl Reporter {
-    pub fn new() -> Result<Self, LockpickError> {
+    pub fn new(is_verbose: bool) -> Result<Self, LockpickError> {
         #[allow(clippy::literal_string_with_formatting_args)]
         let spin_template = "  {msg:<8} {spinner:.cyan}";
         let spin_style = ProgressStyle::with_template(spin_template)?.tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏");
@@ -68,6 +69,7 @@ impl Reporter {
             spin_style,
             done_style,
             is_tty,
+            is_verbose,
         })
     }
 
@@ -102,6 +104,26 @@ impl Reporter {
         } else {
             eprintln!("{}", msg.as_ref());
         }
+    }
+
+    /// Print the cargo invocation about to run. Hidden unless `--verbose`.
+    pub fn command(&self, cmd: &str) {
+        if self.is_verbose {
+            self.println(format!("  {} {cmd}", "$".dimmed()));
+        }
+    }
+
+    /// Print an informational message; hidden unless `--verbose`.
+    pub fn info(&self, msg: &str) {
+        if self.is_verbose {
+            self.println(format!("  {} {msg}", "info:".cyan().bold()));
+        }
+    }
+
+    /// Print a message that is always visible (used for explanatory notes
+    /// such as "All checks disabled, nothing to run").
+    pub fn note(&self, msg: &str) {
+        self.println(format!("  {msg}"));
     }
 
     pub fn print_section(&self, label: &str, output: &str, status: TaskStatus) {
@@ -145,5 +167,20 @@ impl Reporter {
         }
 
         self.println("");
+    }
+
+    /// Final summary line. Lists the labels that failed when any did,
+    /// otherwise reports total checks that passed.
+    pub fn summary(&self, total: usize, failures: &[&str]) {
+        self.println("");
+        if failures.is_empty() {
+            let msg = format!("OK: {total}/{total} checks passed").green().bold();
+            self.println(format!("  {msg}"));
+        } else {
+            let failed = failures.len();
+            let list = failures.join(", ");
+            let msg = format!("Failed: {failed}/{total} ({list})").red().bold();
+            self.println(format!("  {msg}"));
+        }
     }
 }

@@ -15,6 +15,8 @@ use super::Check;
 use crate::config::CoverageConfig;
 use crate::reporter::{CheckOutcome, TaskStatus};
 
+const COV_REPORT_ARGS: &[&str] = &["report", "--json", "--summary-only", "--branch"];
+
 pub struct CoverageCheck {
     pub thresholds: CoverageConfig,
 }
@@ -24,8 +26,11 @@ impl Check for CoverageCheck {
         "coverage"
     }
 
+    fn cmd(&self) -> String {
+        format!("cargo llvm-cov {}", COV_REPORT_ARGS.join(" "))
+    }
+
     fn run(&self) -> CheckOutcome {
-        log::info!("cargo llvm-cov report --json --summary-only --branch");
         match collect_report() {
             Ok(report) => evaluate(&report, self.thresholds),
             Err(output) => CheckOutcome {
@@ -37,8 +42,9 @@ impl Check for CoverageCheck {
 }
 
 fn collect_report() -> Result<Report, String> {
-    let out = Command::new("cargo")
-        .args(["llvm-cov", "report", "--json", "--summary-only", "--branch"])
+    let mut cmd = Command::new("cargo");
+    cmd.arg("llvm-cov").args(COV_REPORT_ARGS);
+    let out = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()

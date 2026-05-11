@@ -435,7 +435,6 @@ dependencies = [
  "glob",
  "indicatif",
  "indoc",
- "log",
  "serde",
  "serde_json",
  "thiserror",
