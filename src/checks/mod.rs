@@ -14,12 +14,19 @@ use crate::reporter::{CheckOutcome, TaskStatus};
 
 pub mod clippy;
 pub mod compile;
+pub mod coverage;
 pub mod doctest;
 pub mod fmt;
 pub mod test;
 
 pub const COMMON_ARGS: &[&str] = &["--workspace", "--all-targets", "--all-features"];
+
+/// Arguments for `cargo llvm-cov` when used as a drop-in replacement
+/// for `cargo test`. `--no-report` suppresses the text summary so the
+/// dedicated coverage check can emit its own (and parse the JSON).
 pub const COV_TEST_ARGS: &[&str] = &[
+    "--branch",
+    "--no-report",
     "--workspace",
     "--all-targets",
     "--all-features",
@@ -36,8 +43,11 @@ pub trait Check: Send + Sync {
 
 /// Build the list of parallel checks to run after the `compile` gate.
 /// Skipped checks are excluded entirely so they don't appear in the output.
+///
+/// `coverage_active` enables instrumentation in the `test` check so its
+/// `.profraw` files can be consumed by the coverage gate in phase 3.
 #[must_use]
-pub fn build_parallel(cli: &Cli, has_llvm_cov: bool) -> Vec<Box<dyn Check>> {
+pub fn build_parallel(cli: &Cli, coverage_active: bool) -> Vec<Box<dyn Check>> {
     let mut checks: Vec<Box<dyn Check>> = Vec::new();
 
     if !cli.skips(&SkipOption::Clippy) {
@@ -48,7 +58,7 @@ pub fn build_parallel(cli: &Cli, has_llvm_cov: bool) -> Vec<Box<dyn Check>> {
     }
     if !cli.skips(&SkipOption::Test) {
         checks.push(Box::new(test::TestCheck {
-            instrumented: cli.opt_in.coverage && has_llvm_cov,
+            instrumented: coverage_active,
         }));
     }
     if !cli.skips(&SkipOption::DocTest) && doctest::workspace_has_lib_target() {

@@ -6,24 +6,40 @@ use std::thread;
 
 use indicatif::ProgressBar;
 
-use crate::checks::{self, Check};
+use crate::checks::{self, Check, coverage::CoverageCheck};
 use crate::cli::{Cli, SkipOption};
 use crate::config::Config;
 use crate::error::LockpickError;
 use crate::reporter::{CheckOutcome, Reporter, TaskStatus};
-use crate::tooling;
+use crate::tooling::{self, INSTALL_LLVM_COV};
 
 pub fn run(cli: &Cli) -> Result<(), LockpickError> {
     let reporter = Reporter::new()?;
     crate::logger::init(cli.verbose, &reporter.mp, reporter.is_tty);
 
-    let _config = Config::load();
+    let config = Config::load();
+
+    // Coverage runs by default; --skip coverage disables it, and --skip
+    // test implicitly disables it because there are no .profraw files
+    // to evaluate.
+    let coverage_skipped_by_user = cli.skips(&SkipOption::Coverage);
+    let coverage_skipped_by_test = cli.skips(&SkipOption::Test);
+    let coverage_active = !coverage_skipped_by_user && !coverage_skipped_by_test;
+
+    if coverage_active && !tooling::has_llvm_cov() {
+        return Err(LockpickError::MissingTool {
+            tool: "cargo-llvm-cov",
+            install: INSTALL_LLVM_COV,
+        });
+    }
+    if coverage_skipped_by_test && !coverage_skipped_by_user {
+        log::info!("--skip test implies coverage will be skipped");
+    }
 
     let run_compile = !cli.skips(&SkipOption::Check);
-    let has_llvm_cov = cli.opt_in.coverage && tooling::has_llvm_cov();
-    let parallel = checks::build_parallel(cli, has_llvm_cov);
+    let parallel = checks::build_parallel(cli, coverage_active);
 
-    if !run_compile && parallel.is_empty() {
+    if !run_compile && parallel.is_empty() && !coverage_active {
         log::info!("All checks disabled, nothing to run");
         return Ok(());
     }
@@ -34,10 +50,7 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
         .iter()
         .map(|c| reporter.add_spinner(c.label()))
         .collect();
-    let coverage_pb = cli
-        .opt_in
-        .coverage
-        .then(|| reporter.add_spinner("coverage"));
+    let coverage_pb = coverage_active.then(|| reporter.add_spinner("coverage"));
 
     // Phase 1: compile gate.
     let compile_outcome = run_compile.then(|| {
@@ -66,15 +79,9 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
         reporter.finish_spinner(pb, check.label(), status);
     }
 
-    // Phase 3: coverage gate (only if --coverage and tests succeeded).
-    let coverage_outcome = cli.opt_in.coverage.then(|| {
-        let outcome = run_coverage(
-            cli,
-            &parallel,
-            &parallel_outcomes,
-            compile_passed,
-            has_llvm_cov,
-        );
+    // Phase 3: coverage gate (only if active and tests succeeded).
+    let coverage_outcome = coverage_active.then(|| {
+        let outcome = run_coverage_phase(&parallel, &parallel_outcomes, compile_passed, &config);
         if let Some(pb) = &coverage_pb {
             reporter.finish_spinner(pb, "coverage", outcome.status);
         }
@@ -115,17 +122,12 @@ fn run_parallel(checks: &[Box<dyn Check>]) -> Vec<CheckOutcome> {
     })
 }
 
-fn run_coverage(
-    cli: &Cli,
+fn run_coverage_phase(
     parallel: &[Box<dyn Check>],
     outcomes: &[CheckOutcome],
     compile_passed: bool,
-    has_llvm_cov: bool,
+    config: &Config,
 ) -> CheckOutcome {
-    if !has_llvm_cov {
-        log::warn!("cargo-llvm-cov is not installed, skipping coverage");
-        return CheckOutcome::skipped();
-    }
     let tests_passed = compile_passed
         && parallel
             .iter()
@@ -135,8 +137,10 @@ fn run_coverage(
     if !tests_passed {
         return CheckOutcome::skipped();
     }
-    let threshold = cli.opt_in.min_coverage.to_string();
-    checks::run_cargo_outcome("llvm-cov", &["report", "--fail-under-lines", &threshold])
+    CoverageCheck {
+        thresholds: config.coverage,
+    }
+    .run()
 }
 
 fn report_results(

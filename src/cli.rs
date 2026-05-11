@@ -3,7 +3,7 @@
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
 use clap::{
-    ArgAction, Args, Parser, ValueEnum,
+    ArgAction, Parser, ValueEnum,
     builder::styling::{AnsiColor, Effects, Styles},
 };
 
@@ -15,20 +15,18 @@ pub enum SkipOption {
     Test,
     DocTest,
     Fmt,
+    Coverage,
 }
 
 #[derive(Parser, Debug)]
 #[command(
     version,
-    about = "Rust merge check CLI to enforce successful build, \
-             formatting, Clippy lints, passing tests and code coverage",
+    about = "Rust merge-check CLI. Runs compile, lints, formatting, tests \
+             and 100% coverage in a single invocation.",
     long_about = None,
     styles = cli_styles()
 )]
 pub struct Cli {
-    #[command(flatten)]
-    pub opt_in: OptInFlags,
-
     /// Skip one or more checks (e.g. --skip clippy --skip fmt)
     #[arg(long, value_enum)]
     pub skip: Vec<SkipOption>,
@@ -43,25 +41,10 @@ pub struct Cli {
 }
 
 impl Cli {
+    #[must_use]
     pub fn skips(&self, option: &SkipOption) -> bool {
         self.skip.contains(option)
     }
-}
-
-#[derive(Args, Debug)]
-pub struct OptInFlags {
-    /// Measure and enforce code coverage
-    #[arg(short = 'c', long)]
-    pub coverage: bool,
-
-    /// Minimum line coverage percentage (requires --coverage)
-    #[arg(
-        long,
-        default_value_t = 80,
-        requires = "coverage",
-        value_parser = clap::value_parser!(u8).range(0..=100)
-    )]
-    pub min_coverage: u8,
 }
 
 const fn cli_styles() -> Styles {

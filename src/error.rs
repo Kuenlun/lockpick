@@ -14,4 +14,10 @@ pub enum LockpickError {
 
     #[error("{0} check(s) failed")]
     ChecksFailed(usize),
+
+    #[error("required tool `{tool}` is not installed.\nInstall it with: {install}")]
+    MissingTool {
+        tool: &'static str,
+        install: &'static str,
+    },
 }

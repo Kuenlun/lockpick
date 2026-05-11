@@ -7,8 +7,7 @@ use crate::reporter::CheckOutcome;
 
 pub struct TestCheck {
     /// When `true`, run tests through `cargo llvm-cov` so the resulting
-    /// `.profraw` files can be consumed by the coverage gate. The flag
-    /// is currently driven by `--coverage` together with tool detection.
+    /// `.profraw` files can be consumed by the coverage gate.
     pub instrumented: bool,
 }
 

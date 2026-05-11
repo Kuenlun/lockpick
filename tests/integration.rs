@@ -50,11 +50,22 @@ fn dummy_cargo_project() -> TempDir {
     dir
 }
 
-/// Returns a [`Command`] for the `lockpick` binary.
+/// Returns a [`Command`] for the `lockpick` binary with `--skip coverage`
+/// preset. Most tests exercise the orchestration layer and do not care
+/// about coverage instrumentation, which would also require
+/// `cargo-llvm-cov` to be installed in the test environment.
 ///
 /// When stderr is piped (not a TTY), lockpick falls back to a plain writer
 /// so that summaries and sections are still captured in `Output::stderr`.
 fn lockpick() -> Command {
+    let mut cmd = Command::cargo_bin("lockpick").unwrap();
+    cmd.args(["--skip", "coverage"]);
+    cmd
+}
+
+/// Returns a [`Command`] for the `lockpick` binary with NO default flags.
+/// Use this when testing coverage-related behavior specifically.
+fn lockpick_raw() -> Command {
     Command::cargo_bin("lockpick").unwrap()
 }
 
@@ -65,7 +76,7 @@ fn stderr_text(output: &std::process::Output) -> String {
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
-/// All checks pass on a correctly formatted project.
+/// All checks pass on a correctly formatted project (coverage skipped).
 #[test]
 fn succeeds_on_valid_project() {
     let project = dummy_cargo_project();
@@ -167,7 +178,7 @@ fn verbose_pass_sections_appear_before_fail() {
 /// `--help` prints usage information and exits with code 0.
 #[test]
 fn help_flag_exits_successfully() {
-    lockpick()
+    lockpick_raw()
         .arg("--help")
         .output()
         .expect("failed to execute lockpick")
@@ -175,16 +186,36 @@ fn help_flag_exits_successfully() {
         .success();
 }
 
-/// `--coverage` combined with `--skip test` is rejected with exit code 2.
+/// Removed `--coverage` and `--min-coverage` flags are rejected with exit 2.
 #[test]
-fn coverage_and_skip_test_are_mutually_exclusive() {
-    lockpick()
-        .args(["--coverage", "--skip", "test"])
+fn removed_coverage_flag_is_rejected() {
+    lockpick_raw()
+        .arg("--coverage")
         .output()
         .expect("failed to execute lockpick")
         .assert()
         .failure()
         .code(2);
+}
+
+/// `--skip test` implicitly skips coverage too, so no `cargo-llvm-cov`
+/// is required and no `coverage` line appears in the output.
+#[test]
+fn skip_test_implies_skip_coverage() {
+    let project = dummy_cargo_project();
+
+    let output = lockpick_raw()
+        .current_dir(project.path())
+        .args(["--skip", "test"])
+        .output()
+        .expect("failed to execute lockpick");
+
+    let stderr = stderr_text(&output);
+    output.assert().success();
+    assert!(
+        !stderr.contains("coverage"),
+        "expected no coverage section when test is skipped, got:\n{stderr}"
+    );
 }
 
 /// A project that fails `cargo check` causes remaining checks to be skipped.
@@ -219,9 +250,10 @@ fn check_failure_skips_remaining_checks() {
 /// Skipping every check succeeds immediately and logs an informational message.
 #[test]
 fn skipping_all_checks_succeeds_with_info() {
-    let output = lockpick()
+    let output = lockpick_raw()
         .args([
-            "--skip", "check", "--skip", "clippy", "--skip", "fmt", "--skip", "test", "-vv",
+            "--skip", "check", "--skip", "clippy", "--skip", "fmt", "--skip", "test", "--skip",
+            "coverage", "-vv",
         ])
         .output()
         .expect("failed to execute lockpick");
@@ -231,25 +263,5 @@ fn skipping_all_checks_succeeds_with_info() {
     assert!(
         stderr.contains("All checks disabled, nothing to run"),
         "expected informational message, got:\n{stderr}"
-    );
-}
-
-/// `--coverage` adds a coverage gate that succeeds when line coverage meets the threshold.
-#[test]
-#[cfg_attr(coverage_nightly, ignore = "avoid nested cargo-llvm-cov invocations")]
-fn coverage_flag_adds_coverage_gate() {
-    let project = dummy_cargo_project();
-
-    let output = lockpick()
-        .current_dir(project.path())
-        .args(["-c", "--min-coverage", "0"])
-        .output()
-        .expect("failed to execute lockpick");
-
-    let stderr = stderr_text(&output);
-    output.assert().success();
-    assert!(
-        stderr.contains("coverage"),
-        "expected coverage summary line, got:\n{stderr}"
     );
 }
