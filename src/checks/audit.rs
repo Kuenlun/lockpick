@@ -24,3 +24,18 @@ impl Check for AuditCheck {
         run_cargo_outcome("audit", &[])
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn label_is_audit() {
+        assert_eq!(AuditCheck.label(), "audit");
+    }
+
+    #[test]
+    fn cmd_is_cargo_audit() {
+        assert_eq!(AuditCheck.cmd(), "cargo audit");
+    }
+}

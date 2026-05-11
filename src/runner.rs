@@ -260,3 +260,171 @@ fn report_results(
 
     failed.len()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::checks::clippy::ClippyCheck;
+    use crate::checks::fmt::FmtCheck;
+    use crate::cli::SkipOption;
+
+    fn pass(label: &str) -> CheckOutcome {
+        CheckOutcome {
+            status: TaskStatus::Pass,
+            output: format!("{label} output"),
+        }
+    }
+
+    fn fail(label: &str) -> CheckOutcome {
+        CheckOutcome {
+            status: TaskStatus::Fail,
+            output: format!("{label} error"),
+        }
+    }
+
+    fn cli_skipping(skips: &[SkipOption]) -> Cli {
+        Cli {
+            skip: skips.to_vec(),
+            verbose: false,
+        }
+    }
+
+    #[test]
+    fn report_results_returns_zero_when_everything_passes() {
+        let reporter = Reporter::new(false).unwrap();
+        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck), Box::new(FmtCheck)];
+        let outcomes = vec![pass("clippy"), pass("fmt")];
+        let n = report_results(
+            &reporter,
+            Some(&pass("check")),
+            &parallel,
+            &outcomes,
+            true,
+            Some(&pass("coverage")),
+        );
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn report_results_counts_a_failing_parallel_check() {
+        let reporter = Reporter::new(false).unwrap();
+        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck), Box::new(FmtCheck)];
+        let outcomes = vec![pass("clippy"), fail("fmt")];
+        let n = report_results(
+            &reporter,
+            Some(&pass("check")),
+            &parallel,
+            &outcomes,
+            true,
+            None,
+        );
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn report_results_counts_a_failing_compile_check() {
+        let reporter = Reporter::new(false).unwrap();
+        let parallel: Vec<Box<dyn Check>> = vec![];
+        let outcomes: Vec<CheckOutcome> = vec![];
+        let n = report_results(
+            &reporter,
+            Some(&fail("check")),
+            &parallel,
+            &outcomes,
+            false,
+            None,
+        );
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn report_results_counts_a_failing_coverage_gate() {
+        let reporter = Reporter::new(false).unwrap();
+        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck)];
+        let outcomes = vec![pass("clippy")];
+        let n = report_results(
+            &reporter,
+            Some(&pass("check")),
+            &parallel,
+            &outcomes,
+            true,
+            Some(&fail("coverage")),
+        );
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn report_results_does_not_count_parallel_when_compile_failed() {
+        // When compile fails, parallel outcomes are marked Skip but we
+        // don't count the parallel positions as failures: only the compile
+        // step is failing.
+        let reporter = Reporter::new(false).unwrap();
+        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck), Box::new(FmtCheck)];
+        let outcomes = vec![CheckOutcome::skipped(), CheckOutcome::skipped()];
+        let n = report_results(
+            &reporter,
+            Some(&fail("check")),
+            &parallel,
+            &outcomes,
+            false,
+            None,
+        );
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn report_results_verbose_path_still_returns_correct_count() {
+        let reporter = Reporter::new(true).unwrap();
+        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck)];
+        let outcomes = vec![pass("clippy")];
+        let n = report_results(
+            &reporter,
+            Some(&pass("check")),
+            &parallel,
+            &outcomes,
+            true,
+            Some(&pass("coverage")),
+        );
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn report_results_works_without_compile_outcome_when_skipped() {
+        let reporter = Reporter::new(false).unwrap();
+        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck)];
+        let outcomes = vec![pass("clippy")];
+        // compile_passed=true reflects that compile was *skipped*, not failed.
+        let n = report_results(&reporter, None, &parallel, &outcomes, true, None);
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn require_tooling_passes_when_every_tool_dependent_check_is_skipped() {
+        let cli = cli_skipping(&[SkipOption::Machete, SkipOption::Audit, SkipOption::Coverage]);
+        let result = require_tooling(&cli, false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn print_planned_commands_is_no_op_when_verbose_is_false() {
+        let reporter = Reporter::new(false).unwrap();
+        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck)];
+        // Just ensure it doesn't panic. Non-verbose path returns early.
+        print_planned_commands(&reporter, true, &parallel, None);
+    }
+
+    #[test]
+    fn print_planned_commands_prints_when_verbose() {
+        let reporter = Reporter::new(true).unwrap();
+        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck)];
+        // Smoke test: verbose path includes compile + parallel + coverage.
+        print_planned_commands(
+            &reporter,
+            true,
+            &parallel,
+            Some(&CoverageCheck {
+                thresholds: crate::config::CoverageConfig::default(),
+            } as &dyn Check),
+        );
+    }
+}

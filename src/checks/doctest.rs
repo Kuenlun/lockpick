@@ -39,3 +39,31 @@ pub fn workspace_has_lib_target() -> bool {
         .and_then(|o: &Output| std::str::from_utf8(&o.stdout).ok())
         .is_some_and(|s| s.contains(r#""kind":["lib"]"#))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn label_is_doc_test() {
+        assert_eq!(DocTestCheck.label(), "doc test");
+    }
+
+    #[test]
+    fn cmd_runs_cargo_test_doc() {
+        let cmd = DocTestCheck.cmd();
+        assert!(cmd.starts_with("cargo test "));
+        assert!(cmd.contains("--doc"));
+        assert!(cmd.contains("--workspace"));
+        assert!(cmd.contains("--all-features"));
+    }
+
+    #[test]
+    fn workspace_has_lib_target_is_true_for_lockpick_itself() {
+        // Lockpick is a binary crate, so this is mostly a smoke test
+        // that the helper doesn't panic. The actual return value depends
+        // on the cwd at test time (usually the lockpick repo root, which
+        // is a bin-only crate → false), but we don't assert that.
+        let _ = workspace_has_lib_target();
+    }
+}

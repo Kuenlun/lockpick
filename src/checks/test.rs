@@ -59,3 +59,65 @@ impl Check for TestCheck {
         run_cargo_outcome(sub, args)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn label_is_test() {
+        let c = TestCheck {
+            instrumented: false,
+            nextest: false,
+        };
+        assert_eq!(c.label(), "test");
+    }
+
+    #[test]
+    fn dispatch_plain_uses_cargo_test() {
+        let c = TestCheck {
+            instrumented: false,
+            nextest: false,
+        };
+        let (sub, _) = c.dispatch();
+        assert_eq!(sub, "test");
+        assert!(c.cmd().starts_with("cargo test "));
+    }
+
+    #[test]
+    fn dispatch_nextest_uses_cargo_nextest_run() {
+        let c = TestCheck {
+            instrumented: false,
+            nextest: true,
+        };
+        let (sub, args) = c.dispatch();
+        assert_eq!(sub, "nextest");
+        assert_eq!(args[0], "run");
+        assert!(c.cmd().starts_with("cargo nextest run"));
+    }
+
+    #[test]
+    fn dispatch_instrumented_uses_llvm_cov() {
+        let c = TestCheck {
+            instrumented: true,
+            nextest: false,
+        };
+        let (sub, args) = c.dispatch();
+        assert_eq!(sub, "llvm-cov");
+        assert!(args.contains(&"--branch"));
+        assert!(args.contains(&"--no-report"));
+        assert!(c.cmd().contains("--no-fail-fast"));
+    }
+
+    #[test]
+    fn dispatch_instrumented_with_nextest_uses_llvm_cov_nextest() {
+        let c = TestCheck {
+            instrumented: true,
+            nextest: true,
+        };
+        let (sub, args) = c.dispatch();
+        assert_eq!(sub, "llvm-cov");
+        assert_eq!(args[0], "nextest");
+        assert!(c.cmd().contains("llvm-cov nextest"));
+    }
+}

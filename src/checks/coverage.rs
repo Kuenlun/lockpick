@@ -166,3 +166,132 @@ struct Metric {
     #[serde(default)]
     covered: u64,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn report_from(json: &str) -> Report {
+        serde_json::from_str(json).expect("valid json")
+    }
+
+    #[test]
+    fn label_is_coverage() {
+        let c = CoverageCheck {
+            thresholds: CoverageConfig::default(),
+        };
+        assert_eq!(c.label(), "coverage");
+    }
+
+    #[test]
+    fn cmd_runs_cargo_llvm_cov_report() {
+        let c = CoverageCheck {
+            thresholds: CoverageConfig::default(),
+        };
+        let cmd = c.cmd();
+        assert!(cmd.contains("cargo llvm-cov report"));
+        assert!(cmd.contains("--json"));
+        assert!(cmd.contains("--summary-only"));
+        assert!(cmd.contains("--branch"));
+    }
+
+    #[test]
+    fn evaluate_passes_when_all_metrics_at_100() {
+        let report = report_from(
+            r#"{ "data": [{ "files": [{}], "totals": {
+                "functions": { "count": 10, "covered": 10 },
+                "lines": { "count": 100, "covered": 100 },
+                "regions": { "count": 50, "covered": 50 },
+                "branches": { "count": 20, "covered": 20 }
+            } }] }"#,
+        );
+        let outcome = evaluate(&report, CoverageConfig::default());
+        assert!(outcome.passed(), "got status {:?}", outcome.output);
+    }
+
+    #[test]
+    fn evaluate_fails_when_branch_below_threshold() {
+        let report = report_from(
+            r#"{ "data": [{ "files": [{}], "totals": {
+                "functions": { "count": 10, "covered": 10 },
+                "lines": { "count": 100, "covered": 100 },
+                "regions": { "count": 50, "covered": 50 },
+                "branches": { "count": 20, "covered": 10 }
+            } }] }"#,
+        );
+        let outcome = evaluate(&report, CoverageConfig::default());
+        assert!(outcome.failed());
+        assert!(outcome.output.contains("FAIL branches"));
+        assert!(outcome.output.contains("missing 10"));
+    }
+
+    #[test]
+    fn evaluate_passes_with_relaxed_threshold() {
+        let report = report_from(
+            r#"{ "data": [{ "files": [{}], "totals": {
+                "functions": { "count": 10, "covered": 10 },
+                "lines": { "count": 100, "covered": 100 },
+                "regions": { "count": 50, "covered": 50 },
+                "branches": { "count": 20, "covered": 10 }
+            } }] }"#,
+        );
+        let thresholds = CoverageConfig {
+            functions: 100,
+            lines: 100,
+            regions: 100,
+            branches: 50,
+        };
+        let outcome = evaluate(&report, thresholds);
+        assert!(outcome.passed(), "got: {}", outcome.output);
+    }
+
+    #[test]
+    fn evaluate_treats_zero_count_as_vacuous() {
+        let report = report_from(
+            r#"{ "data": [{ "files": [{}], "totals": {
+                "functions": { "count": 10, "covered": 10 },
+                "lines": { "count": 100, "covered": 100 },
+                "regions": { "count": 50, "covered": 50 },
+                "branches": { "count": 0, "covered": 0 }
+            } }] }"#,
+        );
+        let outcome = evaluate(&report, CoverageConfig::default());
+        assert!(outcome.passed());
+        assert!(outcome.output.contains("0/0 (vacuous)"));
+    }
+
+    #[test]
+    fn evaluate_rejects_report_with_no_data_entries() {
+        let report = report_from(r#"{ "data": [] }"#);
+        let outcome = evaluate(&report, CoverageConfig::default());
+        assert!(outcome.failed());
+        assert!(outcome.output.contains("no data entries"));
+    }
+
+    #[test]
+    fn evaluate_rejects_entries_with_no_files() {
+        let report = report_from(
+            r#"{ "data": [{ "files": [], "totals": {
+                "functions": { "count": 1, "covered": 1 }
+            } }] }"#,
+        );
+        let outcome = evaluate(&report, CoverageConfig::default());
+        assert!(outcome.failed());
+        assert!(outcome.output.contains("no files reported"));
+    }
+
+    #[test]
+    fn evaluate_rejects_all_zero_metrics_as_broken_instrumentation() {
+        let report = report_from(
+            r#"{ "data": [{ "files": [{}], "totals": {
+                "functions": { "count": 0, "covered": 0 },
+                "lines": { "count": 0, "covered": 0 },
+                "regions": { "count": 0, "covered": 0 },
+                "branches": { "count": 0, "covered": 0 }
+            } }] }"#,
+        );
+        let outcome = evaluate(&report, CoverageConfig::default());
+        assert!(outcome.failed());
+        assert!(outcome.output.contains("broken instrumentation"));
+    }
+}

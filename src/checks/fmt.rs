@@ -22,3 +22,18 @@ impl Check for FmtCheck {
         run_cargo_outcome("fmt", FMT_ARGS)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn label_is_fmt() {
+        assert_eq!(FmtCheck.label(), "fmt");
+    }
+
+    #[test]
+    fn cmd_runs_cargo_fmt_check() {
+        assert_eq!(FmtCheck.cmd(), "cargo fmt --check");
+    }
+}

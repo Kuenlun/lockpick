@@ -29,3 +29,21 @@ impl Check for DocCheck {
         run_cargo_outcome_with_env("doc", DOC_ARGS, &[("RUSTDOCFLAGS", "-D warnings")])
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn label_is_doc() {
+        assert_eq!(DocCheck.label(), "doc");
+    }
+
+    #[test]
+    fn cmd_shows_rustdocflags_prefix() {
+        let cmd = DocCheck.cmd();
+        assert!(cmd.starts_with("RUSTDOCFLAGS='-D warnings' cargo doc "));
+        assert!(cmd.contains("--no-deps"));
+        assert!(cmd.contains("--workspace"));
+    }
+}

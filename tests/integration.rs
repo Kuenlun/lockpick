@@ -254,6 +254,233 @@ fn check_failure_skips_remaining_checks() {
     }
 }
 
+/// An unknown value for `--skip` is rejected by clap with exit code 2.
+#[test]
+fn unknown_skip_value_is_rejected_with_exit_2() {
+    lockpick_raw()
+        .args(["--skip", "definitely-not-a-real-check"])
+        .output()
+        .expect("failed to execute lockpick")
+        .assert()
+        .failure()
+        .code(2);
+}
+
+/// `-v` prints the planned cargo invocations as a banner before the spinners.
+#[test]
+fn verbose_prints_planned_commands_banner() {
+    let project = dummy_cargo_project();
+
+    let output = lockpick()
+        .current_dir(project.path())
+        .arg("-v")
+        .output()
+        .expect("failed to execute lockpick");
+
+    let stderr = stderr_text(&output);
+    output.assert().success();
+    assert!(
+        stderr.contains("$ cargo check"),
+        "expected planned command banner, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("$ cargo clippy"),
+        "expected planned command banner, got:\n{stderr}"
+    );
+}
+
+/// Successful runs end with an "OK: N/N checks passed" footer.
+#[test]
+fn footer_reports_success_count() {
+    let project = dummy_cargo_project();
+
+    let output = lockpick()
+        .current_dir(project.path())
+        .output()
+        .expect("failed to execute lockpick");
+
+    let stderr = stderr_text(&output);
+    output.assert().success();
+    assert!(
+        stderr.contains("checks passed"),
+        "expected success footer, got:\n{stderr}"
+    );
+}
+
+/// Failed runs end with a "Failed: K/N (labels)" footer that lists which checks failed.
+#[test]
+fn footer_lists_failed_checks() {
+    let project = dummy_cargo_project();
+    project
+        .child("src/main.rs")
+        .write_str(UNFORMATTED_MAIN_RS)
+        .unwrap();
+
+    let output = lockpick()
+        .current_dir(project.path())
+        .output()
+        .expect("failed to execute lockpick");
+
+    let stderr = stderr_text(&output);
+    output.assert().failure();
+    assert!(
+        stderr.contains("Failed:") && stderr.contains("fmt"),
+        "expected failure footer mentioning fmt, got:\n{stderr}"
+    );
+}
+
+/// A project configured with `[package.metadata.lockpick] license-header = ...`
+/// runs the license-header check and succeeds when every source file starts
+/// with the configured header bytes.
+#[test]
+fn license_header_passes_when_files_match() {
+    let project = TempDir::new().unwrap();
+    project
+        .child("Cargo.toml")
+        .write_str(indoc! {r#"
+            [package]
+            name = "header_ok"
+            version = "0.1.0"
+            edition = "2024"
+
+            [package.metadata.lockpick]
+            license-header = ".header.txt"
+        "#})
+        .unwrap();
+    project
+        .child(".header.txt")
+        .write_str("// (c) Lockpick test\n")
+        .unwrap();
+    project
+        .child("src/main.rs")
+        .write_str("// (c) Lockpick test\n\nfn main() {}\n")
+        .unwrap();
+
+    let output = lockpick()
+        .current_dir(project.path())
+        .output()
+        .expect("failed to execute lockpick");
+
+    let stderr = stderr_text(&output);
+    output.assert().success();
+    assert!(
+        stderr.contains("license") && stderr.contains("PASS"),
+        "expected license PASS line, got:\n{stderr}"
+    );
+}
+
+/// A source file whose header bytes don't match the canonical file is reported
+/// by name in the FAIL section and causes lockpick to exit non-zero.
+#[test]
+fn license_header_fails_and_names_offenders() {
+    let project = TempDir::new().unwrap();
+    project
+        .child("Cargo.toml")
+        .write_str(indoc! {r#"
+            [package]
+            name = "header_bad"
+            version = "0.1.0"
+            edition = "2024"
+
+            [package.metadata.lockpick]
+            license-header = ".header.txt"
+        "#})
+        .unwrap();
+    project
+        .child(".header.txt")
+        .write_str("// (c) Lockpick test\n")
+        .unwrap();
+    // Header missing in this file:
+    project
+        .child("src/main.rs")
+        .write_str("fn main() {}\n")
+        .unwrap();
+
+    let output = lockpick()
+        .current_dir(project.path())
+        .output()
+        .expect("failed to execute lockpick");
+
+    let stderr = stderr_text(&output);
+    output.assert().failure();
+    assert!(
+        stderr.contains("license") && stderr.contains("FAIL"),
+        "expected license FAIL line, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("main.rs"),
+        "expected offending file path in output, got:\n{stderr}"
+    );
+}
+
+/// End-to-end: a lib project with 100% coverage of its own code passes the
+/// always-on coverage gate. Skipped under nested `cargo llvm-cov` so it does
+/// not interfere with lockpick's own coverage measurement.
+#[test]
+#[cfg_attr(coverage_nightly, ignore = "avoid nested cargo-llvm-cov invocations")]
+fn coverage_passes_end_to_end_on_fully_covered_lib() {
+    let project = TempDir::new().unwrap();
+    project
+        .child("Cargo.toml")
+        .write_str(indoc! {r#"
+            [package]
+            name = "cov_ok"
+            version = "0.1.0"
+            edition = "2024"
+        "#})
+        .unwrap();
+    project
+        .child("src/lib.rs")
+        .write_str(indoc! {r"
+            pub fn add(a: u32, b: u32) -> u32 {
+                a + b
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+
+                #[test]
+                fn add_works() {
+                    assert_eq!(add(2, 3), 5);
+                }
+            }
+        "})
+        .unwrap();
+
+    let output = lockpick_raw()
+        .current_dir(project.path())
+        .args(["--skip", "machete", "--skip", "audit"])
+        .output()
+        .expect("failed to execute lockpick");
+
+    let stderr = stderr_text(&output);
+    output.assert().success();
+    assert!(
+        stderr.contains("coverage") && stderr.contains("PASS"),
+        "expected coverage PASS, got:\n{stderr}"
+    );
+}
+
+/// Without `[package.metadata.lockpick] license-header`, the license check is
+/// silently absent from the output.
+#[test]
+fn license_header_silently_skipped_when_not_configured() {
+    let project = dummy_cargo_project();
+
+    let output = lockpick()
+        .current_dir(project.path())
+        .output()
+        .expect("failed to execute lockpick");
+
+    let stderr = stderr_text(&output);
+    output.assert().success();
+    assert!(
+        !stderr.contains("license"),
+        "expected no license check in output without config, got:\n{stderr}"
+    );
+}
+
 /// Skipping every check succeeds immediately and logs an informational message.
 #[test]
 fn skipping_all_checks_succeeds_with_info() {

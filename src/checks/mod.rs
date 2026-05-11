@@ -168,3 +168,27 @@ fn exe_in_target_dir() -> bool {
     };
     exe.starts_with(cwd.join("target"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fmt_cargo_cmd_with_args_joins_them_with_spaces() {
+        let s = fmt_cargo_cmd("check", &["--workspace", "--all-features"]);
+        assert_eq!(s, "cargo check --workspace --all-features");
+    }
+
+    #[test]
+    fn fmt_cargo_cmd_with_no_args_drops_trailing_space() {
+        let s = fmt_cargo_cmd("audit", &[]);
+        assert_eq!(s, "cargo audit");
+    }
+
+    #[test]
+    fn common_args_targets_workspace_with_all_targets_and_features() {
+        assert!(COMMON_ARGS.contains(&"--workspace"));
+        assert!(COMMON_ARGS.contains(&"--all-targets"));
+        assert!(COMMON_ARGS.contains(&"--all-features"));
+    }
+}

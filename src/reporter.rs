@@ -184,3 +184,55 @@ impl Reporter {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_outcome_passed_is_true_only_when_status_is_pass() {
+        let pass = CheckOutcome {
+            status: TaskStatus::Pass,
+            output: String::new(),
+        };
+        let fail = CheckOutcome {
+            status: TaskStatus::Fail,
+            output: String::new(),
+        };
+        let skip = CheckOutcome::skipped();
+        assert!(pass.passed());
+        assert!(!fail.passed());
+        assert!(!skip.passed());
+    }
+
+    #[test]
+    fn check_outcome_failed_is_true_only_when_status_is_fail() {
+        let pass = CheckOutcome {
+            status: TaskStatus::Pass,
+            output: String::new(),
+        };
+        let fail = CheckOutcome {
+            status: TaskStatus::Fail,
+            output: String::new(),
+        };
+        let skip = CheckOutcome::skipped();
+        assert!(!pass.failed());
+        assert!(fail.failed());
+        assert!(!skip.failed());
+    }
+
+    #[test]
+    fn skipped_outcome_has_empty_output() {
+        let s = CheckOutcome::skipped();
+        assert!(s.output.is_empty());
+        assert!(matches!(s.status, TaskStatus::Skip));
+    }
+
+    #[test]
+    fn reporter_construction_is_independent_of_verbose_flag() {
+        let r1 = Reporter::new(false).unwrap();
+        let r2 = Reporter::new(true).unwrap();
+        assert!(!r1.is_verbose);
+        assert!(r2.is_verbose);
+    }
+}

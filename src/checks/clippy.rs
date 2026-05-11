@@ -20,3 +20,22 @@ impl Check for ClippyCheck {
         run_cargo_outcome("clippy", COMMON_ARGS)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn label_is_clippy() {
+        assert_eq!(ClippyCheck.label(), "clippy");
+    }
+
+    #[test]
+    fn cmd_runs_cargo_clippy_on_workspace() {
+        let cmd = ClippyCheck.cmd();
+        assert!(cmd.starts_with("cargo clippy "));
+        assert!(cmd.contains("--workspace"));
+        assert!(cmd.contains("--all-targets"));
+        assert!(cmd.contains("--all-features"));
+    }
+}

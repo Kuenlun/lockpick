@@ -23,3 +23,18 @@ impl Check for MacheteCheck {
         run_cargo_outcome("machete", &[])
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn label_is_machete() {
+        assert_eq!(MacheteCheck.label(), "machete");
+    }
+
+    #[test]
+    fn cmd_is_cargo_machete() {
+        assert_eq!(MacheteCheck.cmd(), "cargo machete");
+    }
+}

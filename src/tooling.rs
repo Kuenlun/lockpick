@@ -42,3 +42,37 @@ pub fn has_machete() -> bool {
 pub fn has_audit() -> bool {
     has_cargo_subcommand("audit")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_hints_are_non_empty() {
+        for hint in [
+            INSTALL_LLVM_COV,
+            INSTALL_NEXTEST,
+            INSTALL_MACHETE,
+            INSTALL_AUDIT,
+        ] {
+            assert!(hint.starts_with("cargo install "), "got: {hint}");
+            assert!(hint.len() > "cargo install ".len());
+        }
+    }
+
+    #[test]
+    fn detection_does_not_panic() {
+        // Smoke test: every detector returns a bool without panicking.
+        let _ = has_llvm_cov();
+        let _ = has_nextest();
+        let _ = has_machete();
+        let _ = has_audit();
+    }
+
+    #[test]
+    fn unknown_subcommand_is_not_detected() {
+        assert!(!has_cargo_subcommand(
+            "definitely-not-a-real-cargo-subcommand"
+        ));
+    }
+}
