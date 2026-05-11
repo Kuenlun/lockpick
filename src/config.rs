@@ -7,7 +7,7 @@
 //! via `cargo metadata --format-version 1 --no-deps`.
 
 use std::path::PathBuf;
-use std::process::Stdio;
+use std::process::{Output, Stdio};
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -44,7 +44,7 @@ pub struct Config {
 }
 
 #[derive(Deserialize, Default)]
-struct CargoMetadata {
+pub struct CargoMetadata {
     #[serde(default)]
     workspace_metadata: Value,
     #[serde(default)]
@@ -64,7 +64,13 @@ impl Config {
     /// cannot run (e.g. outside a cargo project).
     #[must_use]
     pub fn load() -> Self {
-        let Some(metadata) = run_cargo_metadata() else {
+        Self::load_from(run_cargo_metadata())
+    }
+
+    /// Pure variant of [`Self::load`] that takes the already-fetched
+    /// metadata so unit tests can drive every branch deterministically.
+    pub fn load_from(metadata: Option<CargoMetadata>) -> Self {
+        let Some(metadata) = metadata else {
             return Self::default();
         };
         let Some(section) = extract_lockpick(&metadata) else {
@@ -78,11 +84,20 @@ impl Config {
 }
 
 fn run_cargo_metadata() -> Option<CargoMetadata> {
-    let output = cargo_command()
-        .args(["metadata", "--format-version", "1", "--no-deps"])
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
+    parse_cargo_metadata(
+        cargo_command()
+            .args(["metadata", "--format-version", "1", "--no-deps"])
+            .stderr(Stdio::null())
+            .output(),
+    )
+}
+
+/// Pure helper: lower a `cargo metadata` spawn result into the parsed
+/// [`CargoMetadata`]. Returns `None` for every error path the production
+/// code already silently tolerates (spawn failed, cargo exited non-zero,
+/// stdout was not valid metadata JSON).
+fn parse_cargo_metadata(result: std::io::Result<Output>) -> Option<CargoMetadata> {
+    let output = result.ok()?;
     if !output.status.success() {
         return None;
     }
@@ -90,18 +105,15 @@ fn run_cargo_metadata() -> Option<CargoMetadata> {
 }
 
 fn extract_lockpick(metadata: &CargoMetadata) -> Option<Value> {
-    if let Value::Object(map) = &metadata.workspace_metadata
-        && let Some(v) = map.get("lockpick")
-    {
-        return Some(v.clone());
+    fn lockpick_in(value: &Value) -> Option<Value> {
+        value.as_object().and_then(|m| m.get("lockpick")).cloned()
     }
-    if let [package] = metadata.packages.as_slice()
-        && let Value::Object(map) = &package.metadata
-        && let Some(v) = map.get("lockpick")
-    {
-        return Some(v.clone());
-    }
-    None
+    lockpick_in(&metadata.workspace_metadata).or_else(|| {
+        let [package] = metadata.packages.as_slice() else {
+            return None;
+        };
+        lockpick_in(&package.metadata)
+    })
 }
 
 #[cfg(test)]
@@ -158,7 +170,6 @@ mod tests {
 
     #[test]
     fn extract_lockpick_skips_package_metadata_when_multi_crate_workspace() {
-        // With multiple packages and no workspace metadata, we don't aggregate.
         let meta = meta_with(
             Value::Null,
             vec![
@@ -172,6 +183,18 @@ mod tests {
     #[test]
     fn extract_lockpick_returns_none_when_section_is_absent() {
         let meta = meta_with(json!({ "other": {} }), vec![json!({ "other": {} })]);
+        assert!(extract_lockpick(&meta).is_none());
+    }
+
+    #[test]
+    fn extract_lockpick_returns_none_when_workspace_metadata_lacks_lockpick_key() {
+        let meta = meta_with(json!({ "other": "x" }), vec![]);
+        assert!(extract_lockpick(&meta).is_none());
+    }
+
+    #[test]
+    fn extract_lockpick_returns_none_when_single_package_metadata_is_not_object() {
+        let meta = meta_with(Value::Null, vec![json!("a string, not an object")]);
         assert!(extract_lockpick(&meta).is_none());
     }
 
@@ -193,8 +216,91 @@ mod tests {
         );
         assert_eq!(cfg.coverage.functions, 90);
         assert_eq!(cfg.coverage.lines, 95);
-        // Omitted fields keep their default of 100.
         assert_eq!(cfg.coverage.regions, 100);
         assert_eq!(cfg.coverage.branches, 100);
+    }
+
+    #[test]
+    fn load_from_none_returns_defaults() {
+        let cfg = Config::load_from(None);
+        assert!(cfg.license_header.is_none());
+    }
+
+    #[test]
+    fn load_from_metadata_without_lockpick_section_returns_defaults() {
+        let cfg = Config::load_from(Some(meta_with(json!({ "other": {} }), vec![])));
+        assert!(cfg.license_header.is_none());
+    }
+
+    #[test]
+    fn load_from_metadata_with_lockpick_section_applies_overrides() {
+        let cfg = Config::load_from(Some(meta_with(
+            json!({ "lockpick": { "license-header": "hdr.txt" } }),
+            vec![],
+        )));
+        assert_eq!(
+            cfg.license_header.as_deref(),
+            Some(std::path::Path::new("hdr.txt"))
+        );
+    }
+
+    #[test]
+    fn load_from_falls_back_to_defaults_on_invalid_section_and_warns() {
+        // `coverage` must deserialize to CoverageConfig; passing a string
+        // forces a deserialization error and exercises the warning branch.
+        let cfg = Config::load_from(Some(meta_with(
+            json!({ "lockpick": { "coverage": "not a number" } }),
+            vec![],
+        )));
+        assert!(cfg.license_header.is_none());
+        assert_eq!(cfg.coverage.functions, 100);
+    }
+
+    #[test]
+    fn load_smoke_test_against_real_cargo_metadata() {
+        // Real cargo metadata works in lockpick's own repo; this exercises
+        // the production `Config::load` wrapper end-to-end.
+        let _ = Config::load();
+    }
+
+    #[test]
+    fn run_cargo_metadata_returns_some_when_invoked_inside_cargo_project() {
+        let meta = run_cargo_metadata();
+        assert!(meta.is_some(), "expected cargo metadata to succeed");
+    }
+
+    #[test]
+    fn parse_cargo_metadata_returns_none_when_spawn_failed() {
+        let result: std::io::Result<std::process::Output> = Err(std::io::Error::other("ENOENT"));
+        assert!(parse_cargo_metadata(result).is_none());
+    }
+
+    #[test]
+    fn parse_cargo_metadata_returns_none_when_cargo_exited_non_zero() {
+        let out = std::process::Command::new("cargo")
+            .arg("definitely-not-a-real-subcommand-config")
+            .output()
+            .expect("cargo runs");
+        assert!(!out.status.success());
+        assert!(parse_cargo_metadata(Ok(out)).is_none());
+    }
+
+    #[test]
+    fn parse_cargo_metadata_returns_none_when_stdout_is_not_metadata_json() {
+        let out = std::process::Command::new("cargo")
+            .arg("--version")
+            .output()
+            .expect("cargo runs");
+        assert!(out.status.success());
+        assert!(parse_cargo_metadata(Ok(out)).is_none());
+    }
+
+    #[test]
+    fn parse_cargo_metadata_returns_some_for_real_cargo_metadata_output() {
+        let out = std::process::Command::new("cargo")
+            .args(["metadata", "--format-version", "1", "--no-deps"])
+            .output()
+            .expect("cargo runs");
+        assert!(parse_cargo_metadata(Ok(out)).is_some());
     }
 }

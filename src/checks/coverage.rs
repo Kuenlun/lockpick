@@ -7,14 +7,11 @@
 //! branches). The report is generated from `.profraw` files emitted by
 //! the previous `test` check when it ran with instrumentation.
 
-use std::process::Stdio;
-
 use serde::Deserialize;
 
-use super::Check;
+use super::{Check, Runner};
 use crate::config::CoverageConfig;
 use crate::reporter::{CheckOutcome, TaskStatus};
-use crate::tooling::cargo_command;
 
 const COV_REPORT_ARGS: &[&str] = &["report", "--json", "--summary-only", "--branch"];
 
@@ -49,24 +46,18 @@ impl Check for CoverageCheck {
         format!("cargo llvm-cov {}", COV_REPORT_ARGS.join(" "))
     }
 
-    fn run(&self) -> CheckOutcome {
-        self.run_with(collect_report)
+    fn run(&self, runner: &dyn Runner) -> CheckOutcome {
+        self.run_with(|| collect_report(runner))
     }
 }
 
-fn collect_report() -> Result<Report, String> {
-    let mut cmd = cargo_command();
-    cmd.arg("llvm-cov").args(COV_REPORT_ARGS);
-    let out = cmd
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|e| format!("failed to launch `cargo llvm-cov`: {e}"))?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+fn collect_report(runner: &dyn Runner) -> Result<Report, String> {
+    match runner.spawn("llvm-cov", COV_REPORT_ARGS, &[]) {
+        Ok(sr) if sr.success => serde_json::from_slice::<Report>(&sr.stdout)
+            .map_err(|e| format!("malformed llvm-cov JSON: {e}")),
+        Ok(sr) => Err(String::from_utf8_lossy(&sr.stderr).into_owned()),
+        Err(e) => Err(format!("failed to launch `cargo llvm-cov`: {e}")),
     }
-    serde_json::from_slice::<Report>(&out.stdout)
-        .map_err(|e| format!("malformed llvm-cov JSON: {e}"))
 }
 
 // Coverage counts are not large enough in practice for the u64→f64 cast
@@ -147,12 +138,12 @@ const fn metric_rows(entry: &DataEntry, t: CoverageConfig) -> [(&'static str, Me
     ]
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct Report {
     data: Vec<DataEntry>,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, Debug)]
 struct DataEntry {
     #[serde(default)]
     totals: Metrics,
@@ -160,7 +151,7 @@ struct DataEntry {
     files: Vec<serde_json::Value>,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, Debug)]
 struct Metrics {
     #[serde(default)]
     functions: Metric,
@@ -172,7 +163,7 @@ struct Metrics {
     branches: Metric,
 }
 
-#[derive(Deserialize, Default, Clone, Copy)]
+#[derive(Deserialize, Default, Clone, Copy, Debug)]
 struct Metric {
     #[serde(default)]
     count: u64,
@@ -183,6 +174,15 @@ struct Metric {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checks::{FakeRunner, SpawnResult};
+    use std::io;
+
+    const COVERED_REPORT: &str = r#"{ "data": [{ "files": [{}], "totals": {
+        "functions": { "count": 10, "covered": 10 },
+        "lines": { "count": 100, "covered": 100 },
+        "regions": { "count": 50, "covered": 50 },
+        "branches": { "count": 20, "covered": 20 }
+    } }] }"#;
 
     fn report_from(json: &str) -> Report {
         serde_json::from_str(json).expect("valid json")
@@ -210,14 +210,7 @@ mod tests {
 
     #[test]
     fn evaluate_passes_when_all_metrics_at_100() {
-        let report = report_from(
-            r#"{ "data": [{ "files": [{}], "totals": {
-                "functions": { "count": 10, "covered": 10 },
-                "lines": { "count": 100, "covered": 100 },
-                "regions": { "count": 50, "covered": 50 },
-                "branches": { "count": 20, "covered": 20 }
-            } }] }"#,
-        );
+        let report = report_from(COVERED_REPORT);
         let outcome = evaluate(&report, CoverageConfig::default());
         assert!(outcome.passed(), "got status {:?}", outcome.output);
     }
@@ -298,17 +291,7 @@ mod tests {
         let check = CoverageCheck {
             thresholds: CoverageConfig::default(),
         };
-        let outcome = check.run_with(|| {
-            Ok(serde_json::from_str(
-                r#"{ "data": [{ "files": [{}], "totals": {
-                    "functions": { "count": 10, "covered": 10 },
-                    "lines": { "count": 100, "covered": 100 },
-                    "regions": { "count": 50, "covered": 50 },
-                    "branches": { "count": 20, "covered": 20 }
-                } }] }"#,
-            )
-            .unwrap())
-        });
+        let outcome = check.run_with(|| Ok(report_from(COVERED_REPORT)));
         assert!(outcome.passed());
     }
 
@@ -328,15 +311,14 @@ mod tests {
             thresholds: CoverageConfig::default(),
         };
         let outcome = check.run_with(|| {
-            Ok(serde_json::from_str(
+            Ok(report_from(
                 r#"{ "data": [{ "files": [{}], "totals": {
                     "functions": { "count": 10, "covered": 9 },
                     "lines": { "count": 100, "covered": 100 },
                     "regions": { "count": 50, "covered": 50 },
                     "branches": { "count": 20, "covered": 20 }
                 } }] }"#,
-            )
-            .unwrap())
+            ))
         });
         assert!(outcome.failed());
         assert!(outcome.output.contains("FAIL functions"));
@@ -355,5 +337,64 @@ mod tests {
         let outcome = evaluate(&report, CoverageConfig::default());
         assert!(outcome.failed());
         assert!(outcome.output.contains("broken instrumentation"));
+    }
+
+    #[test]
+    fn collect_report_parses_runner_stdout_on_success() {
+        let fake = FakeRunner::with_responses(vec![Ok(SpawnResult {
+            success: true,
+            stdout: COVERED_REPORT.as_bytes().to_vec(),
+            stderr: Vec::new(),
+        })]);
+        let report = collect_report(&fake).expect("parsed");
+        let outcome = evaluate(&report, CoverageConfig::default());
+        assert!(outcome.passed());
+    }
+
+    #[test]
+    fn collect_report_surfaces_stderr_on_non_zero_status() {
+        let fake = FakeRunner::with_responses(vec![Ok(SpawnResult {
+            success: false,
+            stdout: Vec::new(),
+            stderr: b"llvm-cov boom".to_vec(),
+        })]);
+        let err = collect_report(&fake).unwrap_err();
+        assert!(err.contains("llvm-cov boom"));
+    }
+
+    #[test]
+    fn collect_report_complains_about_malformed_json() {
+        let fake = FakeRunner::with_responses(vec![Ok(SpawnResult {
+            success: true,
+            stdout: b"definitely not json".to_vec(),
+            stderr: Vec::new(),
+        })]);
+        let err = collect_report(&fake).unwrap_err();
+        assert!(err.contains("malformed llvm-cov JSON"));
+    }
+
+    #[test]
+    fn collect_report_surfaces_io_error_with_launch_message() {
+        let fake = FakeRunner::with_responses(vec![Err(io::Error::other("ENOENT"))]);
+        let err = collect_report(&fake).unwrap_err();
+        assert!(err.contains("failed to launch"));
+        assert!(err.contains("ENOENT"));
+    }
+
+    #[test]
+    fn run_drives_run_with_using_runner() {
+        let fake = FakeRunner::with_responses(vec![Ok(SpawnResult {
+            success: true,
+            stdout: COVERED_REPORT.as_bytes().to_vec(),
+            stderr: Vec::new(),
+        })]);
+        let check = CoverageCheck {
+            thresholds: CoverageConfig::default(),
+        };
+        let outcome = check.run(&fake);
+        assert!(outcome.passed());
+        let calls = fake.calls.lock().unwrap().clone();
+        assert_eq!(calls[0].sub, "llvm-cov");
+        assert!(calls[0].args.contains(&"report".to_string()));
     }
 }

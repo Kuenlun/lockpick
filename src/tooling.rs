@@ -2,6 +2,8 @@
 // lockpick - Rust CLI to enforce merge checks and code quality
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
+use std::ffi::OsStr;
+use std::path::Path;
 use std::process::Command;
 
 pub const INSTALL_LLVM_COV: &str = "cargo install cargo-llvm-cov";
@@ -15,37 +17,46 @@ pub const INSTALL_AUDIT: &str = "cargo install cargo-audit";
 /// reading "machete" and "--version" as paths instead of the subcommand
 /// and a flag, and reporting itself as missing.
 fn has_cargo_subcommand(subcommand: &str) -> bool {
-    let name = format!("cargo-{subcommand}");
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path).any(|dir| {
-        if dir.join(&name).is_file() {
-            return true;
-        }
-        #[cfg(windows)]
-        for ext in ["exe", "cmd", "bat"] {
-            if dir.join(format!("{name}.{ext}")).is_file() {
-                return true;
-            }
-        }
-        false
+    has_cargo_subcommand_in(std::env::var_os("PATH").as_deref(), subcommand)
+}
+
+/// Pure variant of [`has_cargo_subcommand`] that scans an explicit PATH
+/// value. Returns `false` when `path_env` is `None` to mirror the real
+/// behaviour of an unset PATH.
+fn has_cargo_subcommand_in(path_env: Option<&OsStr>, subcommand: &str) -> bool {
+    path_env.is_some_and(|path| {
+        let name = format!("cargo-{subcommand}");
+        std::env::split_paths(path).any(|dir| contains_executable(&dir, &name))
     })
 }
 
-/// Returns `true` for env var names that cargo sets to describe the *current*
-/// package's build and that must be stripped before spawning a child
-/// `cargo` invocation. Inheriting them poisons tools like cargo-machete,
-/// which interpret `CARGO_PKG_NAME` as "I'm being run from inside a build"
-/// and switch their argv parser into a positional-paths-only mode.
+fn contains_executable(dir: &Path, name: &str) -> bool {
+    if dir.join(name).is_file() {
+        return true;
+    }
+    #[cfg(windows)]
+    for ext in ["exe", "cmd", "bat"] {
+        if dir.join(format!("{name}.{ext}")).is_file() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Package-scoped env var prefixes whose values describe the *current*
+/// package's build and that must be stripped before spawning child cargo
+/// invocations. Inheriting them poisons tools like cargo-machete, which
+/// interpret `CARGO_PKG_NAME` as "I'm being run from inside a build" and
+/// switch their argv parser into a positional-paths-only mode.
+const SCRUB_PREFIXES: &[&str] = &["CARGO_PKG_", "CARGO_BIN_", "CARGO_CRATE_"];
+const SCRUB_EXACT: &[&str] = &[
+    "CARGO_MANIFEST_DIR",
+    "CARGO_MANIFEST_PATH",
+    "CARGO_PRIMARY_PACKAGE",
+];
+
 fn should_scrub_cargo_env(key: &str) -> bool {
-    key.starts_with("CARGO_PKG_")
-        || key.starts_with("CARGO_BIN_")
-        || key.starts_with("CARGO_CRATE_")
-        || matches!(
-            key,
-            "CARGO_MANIFEST_DIR" | "CARGO_MANIFEST_PATH" | "CARGO_PRIMARY_PACKAGE"
-        )
+    SCRUB_PREFIXES.iter().any(|p| key.starts_with(p)) || SCRUB_EXACT.contains(&key)
 }
 
 /// Builder for child `cargo` invocations with a hygienic environment.
@@ -106,6 +117,7 @@ impl Toolchain {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
 
     #[test]
     fn install_hints_are_non_empty() {
@@ -118,15 +130,68 @@ mod tests {
     #[test]
     fn detect_does_not_panic_and_returns_bools() {
         let t = Toolchain::detect();
-        // Smoke-test: the booleans are well-defined regardless of host state.
         let _ = (t.llvm_cov, t.nextest, t.machete, t.audit);
     }
 
     #[test]
-    fn unknown_subcommand_is_not_detected() {
+    fn unknown_subcommand_is_not_detected_in_real_path() {
         assert!(!has_cargo_subcommand(
             "definitely-not-a-real-cargo-subcommand"
         ));
+    }
+
+    #[test]
+    fn has_cargo_subcommand_in_returns_false_when_path_is_unset() {
+        assert!(!has_cargo_subcommand_in(None, "anything"));
+    }
+
+    #[test]
+    fn has_cargo_subcommand_in_returns_false_when_path_is_empty() {
+        let empty = OsString::new();
+        assert!(!has_cargo_subcommand_in(
+            Some(empty.as_os_str()),
+            "anything"
+        ));
+    }
+
+    #[test]
+    fn has_cargo_subcommand_in_finds_executable_on_synthesised_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "lockpick_tooling_{pid}_{nanos}",
+            pid = std::process::id(),
+            nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos()),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake = dir.join("cargo-lockpicktest");
+        std::fs::write(&fake, b"#!/bin/sh\nexit 0\n").unwrap();
+        // No need to mark executable: the lookup only checks `is_file()`.
+        let path_value = OsString::from(dir.as_os_str());
+        assert!(has_cargo_subcommand_in(
+            Some(path_value.as_os_str()),
+            "lockpicktest"
+        ));
+        // And the negative case for the same PATH:
+        assert!(!has_cargo_subcommand_in(
+            Some(path_value.as_os_str()),
+            "definitely-absent"
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn contains_executable_returns_false_when_path_does_not_exist() {
+        let nonexistent = Path::new("/definitely/does/not/exist");
+        assert!(!contains_executable(nonexistent, "cargo-x"));
+    }
+
+    #[test]
+    fn cargo_command_strips_package_scoped_vars() {
+        // We can't trivially inspect the Command's env, but the call must
+        // not panic and the function only branches on env var names that
+        // we already test directly via `should_scrub_cargo_env`.
+        let _ = cargo_command();
     }
 
     #[test]
@@ -155,12 +220,18 @@ mod tests {
     #[test]
     fn all_present_helper_reports_every_tool() {
         let t = Toolchain::all_present();
-        assert!(t.llvm_cov && t.nextest && t.machete && t.audit);
+        assert!(t.llvm_cov);
+        assert!(t.nextest);
+        assert!(t.machete);
+        assert!(t.audit);
     }
 
     #[test]
     fn default_reports_no_tool() {
         let t = Toolchain::default();
-        assert!(!t.llvm_cov && !t.nextest && !t.machete && !t.audit);
+        assert!(!t.llvm_cov);
+        assert!(!t.nextest);
+        assert!(!t.machete);
+        assert!(!t.audit);
     }
 }

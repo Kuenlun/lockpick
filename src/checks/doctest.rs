@@ -4,7 +4,7 @@
 
 use std::process::{Output, Stdio};
 
-use super::{Check, fmt_cargo_cmd, run_cargo_outcome};
+use super::{Check, Runner, cargo_outcome, fmt_cargo_cmd};
 use crate::reporter::CheckOutcome;
 use crate::tooling::cargo_command;
 
@@ -21,8 +21,8 @@ impl Check for DocTestCheck {
         fmt_cargo_cmd("test", DOCTEST_ARGS)
     }
 
-    fn run(&self) -> CheckOutcome {
-        run_cargo_outcome("test", DOCTEST_ARGS)
+    fn run(&self, runner: &dyn Runner) -> CheckOutcome {
+        cargo_outcome(runner, "test", DOCTEST_ARGS)
     }
 }
 
@@ -31,19 +31,41 @@ impl Check for DocTestCheck {
 /// error from cargo.
 #[must_use]
 pub fn workspace_has_lib_target() -> bool {
-    cargo_command()
-        .args(["metadata", "--no-deps", "--format-version", "1"])
-        .stderr(Stdio::null())
-        .output()
-        .as_ref()
-        .ok()
-        .and_then(|o: &Output| std::str::from_utf8(&o.stdout).ok())
-        .is_some_and(|s| s.contains(r#""kind":["lib"]"#))
+    has_lib_target_in(&cargo_metadata_stdout().unwrap_or_default())
+}
+
+/// Pure detector that scans a `cargo metadata` JSON blob for a `lib` kind
+/// entry. Factored out so callers can unit-test both outcomes without
+/// having to spawn cargo or build a JSON-emitting workspace. The
+/// substring deliberately omits the closing `]` so a multi-kind target
+/// like `["lib","cdylib"]` is still recognised; cargo emits the array
+/// in compact form so spacing is stable.
+#[must_use]
+pub fn has_lib_target_in(metadata_json: &str) -> bool {
+    metadata_json.contains(r#""kind":["lib""#)
+}
+
+fn cargo_metadata_stdout() -> Option<String> {
+    decode_metadata_stdout(
+        cargo_command()
+            .args(["metadata", "--no-deps", "--format-version", "1"])
+            .stderr(Stdio::null())
+            .output(),
+    )
+}
+
+/// Pure helper: lower a `cargo metadata` spawn result into UTF-8 stdout.
+/// Returns `None` for every error path the production code already
+/// silently tolerates (spawn failed, stdout was not valid UTF-8).
+fn decode_metadata_stdout(result: std::io::Result<Output>) -> Option<String> {
+    let output = result.ok()?;
+    String::from_utf8(output.stdout).ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checks::FakeRunner;
 
     #[test]
     fn label_is_doc_test() {
@@ -60,11 +82,70 @@ mod tests {
     }
 
     #[test]
-    fn workspace_has_lib_target_is_true_for_lockpick_itself() {
-        // Lockpick is a binary crate, so this is mostly a smoke test
-        // that the helper doesn't panic. The actual return value depends
-        // on the cwd at test time (usually the lockpick repo root, which
-        // is a bin-only crate → false), but we don't assert that.
+    fn run_invokes_cargo_test_with_doc_args() {
+        let fake = FakeRunner::passing();
+        assert!(DocTestCheck.run(&fake).passed());
+        let calls = fake.calls.lock().unwrap().clone();
+        assert_eq!(calls[0].sub, "test");
+        assert!(calls[0].args.contains(&"--doc".to_string()));
+    }
+
+    #[test]
+    fn has_lib_target_in_detects_lib_kind() {
+        let metadata = r#"{"packages":[{"targets":[{"kind":["lib"],"name":"foo"}]}]}"#;
+        assert!(has_lib_target_in(metadata));
+    }
+
+    #[test]
+    fn has_lib_target_in_returns_false_for_bin_only_workspace() {
+        let metadata = r#"{"packages":[{"targets":[{"kind":["bin"],"name":"foo"}]}]}"#;
+        assert!(!has_lib_target_in(metadata));
+    }
+
+    #[test]
+    fn has_lib_target_in_detects_lib_inside_a_multi_kind_target() {
+        // A single target with `crate-type = ["lib", "cdylib"]` is emitted
+        // by cargo as `"kind":["lib","cdylib"]`. The detector must still
+        // recognise the lib entry.
+        let metadata = r#"{"packages":[{"targets":[{"kind":["lib","cdylib"],"name":"foo"}]}]}"#;
+        assert!(has_lib_target_in(metadata));
+    }
+
+    #[test]
+    fn has_lib_target_in_returns_false_on_empty_input() {
+        assert!(!has_lib_target_in(""));
+    }
+
+    #[test]
+    fn workspace_has_lib_target_does_not_panic() {
+        // Smoke-test the production wrapper. The boolean depends on the
+        // cwd at test time, so we don't assert on it.
         let _ = workspace_has_lib_target();
+    }
+
+    #[test]
+    fn decode_metadata_stdout_returns_none_when_spawn_failed() {
+        let err: std::io::Result<std::process::Output> = Err(std::io::Error::other("ENOENT"));
+        assert!(decode_metadata_stdout(err).is_none());
+    }
+
+    #[test]
+    fn decode_metadata_stdout_returns_some_for_utf8_stdout() {
+        let out = std::process::Command::new("cargo")
+            .arg("--version")
+            .output()
+            .expect("cargo runs");
+        let s = decode_metadata_stdout(Ok(out)).expect("utf8");
+        assert!(s.starts_with("cargo"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn decode_metadata_stdout_returns_none_for_non_utf8_stdout() {
+        let out = std::process::Command::new("printf")
+            .arg(r"\xff\xfe")
+            .output()
+            .expect("printf runs");
+        assert!(decode_metadata_stdout(Ok(out)).is_none());
     }
 }

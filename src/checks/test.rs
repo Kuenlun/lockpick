@@ -2,7 +2,7 @@
 // lockpick - Rust CLI to enforce merge checks and code quality
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
-use super::{Check, fmt_cargo_cmd, run_cargo_outcome};
+use super::{Check, Runner, cargo_outcome, fmt_cargo_cmd};
 use crate::reporter::CheckOutcome;
 
 const TEST_PLAIN_ARGS: &[&str] = &["--workspace", "--all-targets", "--all-features"];
@@ -54,15 +54,16 @@ impl Check for TestCheck {
         fmt_cargo_cmd(sub, args)
     }
 
-    fn run(&self) -> CheckOutcome {
+    fn run(&self, runner: &dyn Runner) -> CheckOutcome {
         let (sub, args) = self.dispatch();
-        run_cargo_outcome(sub, args)
+        cargo_outcome(runner, sub, args)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checks::FakeRunner;
 
     #[test]
     fn label_is_test() {
@@ -119,5 +120,27 @@ mod tests {
         assert_eq!(sub, "llvm-cov");
         assert_eq!(args[0], "nextest");
         assert!(c.cmd().contains("llvm-cov nextest"));
+    }
+
+    #[test]
+    fn run_forwards_dispatch_choice_to_runner() {
+        for (instrumented, nextest, expected_sub) in [
+            (false, false, "test"),
+            (false, true, "nextest"),
+            (true, false, "llvm-cov"),
+            (true, true, "llvm-cov"),
+        ] {
+            let fake = FakeRunner::passing();
+            let check = TestCheck {
+                instrumented,
+                nextest,
+            };
+            assert!(check.run(&fake).passed());
+            let calls = fake.calls.lock().unwrap().clone();
+            assert_eq!(
+                calls[0].sub, expected_sub,
+                "instrumented={instrumented} nextest={nextest}"
+            );
+        }
     }
 }

@@ -481,6 +481,97 @@ fn license_header_silently_skipped_when_not_configured() {
     );
 }
 
+/// Install a canned `cargo-llvm-cov` shim at `shim_dir` and return a
+/// PATH value with the shim prepended. The shim accepts both phases that
+/// lockpick drives:
+///   * test phase: `cargo llvm-cov --branch --no-report …` → exit 0.
+///   * coverage phase: `cargo llvm-cov report --json … --branch` → JSON
+///     supplied via the `LOCKPICK_TEST_COV_JSON` env var.
+#[cfg(unix)]
+fn install_cargo_llvm_cov_shim(shim_dir: &TempDir) -> String {
+    use std::os::unix::fs::PermissionsExt;
+
+    let shim_src = indoc! {r#"#!/bin/sh
+        # When invoked via cargo plugin convention the first arg is the
+        # subcommand name ("llvm-cov"); strip it so `$1` is the subcommand
+        # lockpick passes.
+        if [ "$1" = "llvm-cov" ]; then shift; fi
+        case "$1" in
+            report)
+                printf '%s' "$LOCKPICK_TEST_COV_JSON"
+                ;;
+            *)
+                : # pretend `cargo llvm-cov --no-report …` succeeded
+                ;;
+        esac
+    "#};
+    let shim_path = shim_dir.child("cargo-llvm-cov");
+    shim_path.write_str(shim_src).unwrap();
+    let mut perms = std::fs::metadata(shim_path.path()).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(shim_path.path(), perms).unwrap();
+
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    format!("{}:{}", shim_dir.path().display(), original_path)
+}
+
+/// Run lockpick's coverage gate end-to-end against a mocked
+/// `cargo-llvm-cov` shim. This is the only way to exercise the production
+/// binary's `evaluate`/`collect_report` code paths without nesting a real
+/// cargo-llvm-cov invocation (which conflicts with the outer one).
+#[cfg(unix)]
+#[test]
+fn coverage_runs_against_mocked_cargo_llvm_cov() {
+    let shim_dir = TempDir::new().unwrap();
+    let new_path = install_cargo_llvm_cov_shim(&shim_dir);
+
+    let project = dummy_cargo_project();
+    let canned_json = r#"{ "data": [{ "files": [{}], "totals": { "functions": { "count": 1, "covered": 1 }, "lines": { "count": 1, "covered": 1 }, "regions": { "count": 1, "covered": 1 }, "branches": { "count": 1, "covered": 1 } } }] }"#;
+
+    // `-v` exercises `Check::cmd` for the verbose banner, which is dead
+    // in non-verbose runs and therefore otherwise uncovered.
+    let output = lockpick_raw()
+        .current_dir(project.path())
+        .env("PATH", &new_path)
+        .env("LOCKPICK_TEST_COV_JSON", canned_json)
+        .args(["--skip", "machete", "--skip", "audit", "-v"])
+        .output()
+        .expect("failed to execute lockpick");
+
+    let stderr = stderr_text(&output);
+    output.assert().success();
+    assert!(
+        stderr.contains("coverage") && stderr.contains("PASS"),
+        "expected coverage PASS via shim, got:\n{stderr}"
+    );
+}
+
+/// Same shim setup, but the shim emits malformed JSON so lockpick's
+/// `collect_report` exercises its `map_err` arm and lockpick exits with
+/// a coverage failure.
+#[cfg(unix)]
+#[test]
+fn coverage_fails_when_shim_returns_malformed_json() {
+    let shim_dir = TempDir::new().unwrap();
+    let new_path = install_cargo_llvm_cov_shim(&shim_dir);
+    let project = dummy_cargo_project();
+
+    let output = lockpick_raw()
+        .current_dir(project.path())
+        .env("PATH", &new_path)
+        .env("LOCKPICK_TEST_COV_JSON", "definitely not JSON")
+        .args(["--skip", "machete", "--skip", "audit"])
+        .output()
+        .expect("failed to execute lockpick");
+
+    let stderr = stderr_text(&output);
+    output.assert().failure();
+    assert!(
+        stderr.contains("malformed llvm-cov JSON") || stderr.contains("FAIL"),
+        "expected malformed JSON failure, got:\n{stderr}"
+    );
+}
+
 /// Skipping every check succeeds immediately and logs an informational message.
 #[test]
 fn skipping_all_checks_succeeds_with_info() {
