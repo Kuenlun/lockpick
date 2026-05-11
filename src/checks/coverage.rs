@@ -7,18 +7,37 @@
 //! branches). The report is generated from `.profraw` files emitted by
 //! the previous `test` check when it ran with instrumentation.
 
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use serde::Deserialize;
 
 use super::Check;
 use crate::config::CoverageConfig;
 use crate::reporter::{CheckOutcome, TaskStatus};
+use crate::tooling::cargo_command;
 
 const COV_REPORT_ARGS: &[&str] = &["report", "--json", "--summary-only", "--branch"];
 
 pub struct CoverageCheck {
     pub thresholds: CoverageConfig,
+}
+
+impl CoverageCheck {
+    /// Run with an injectable report collector. The default collector
+    /// (`collect_report`) shells out to `cargo llvm-cov`; tests substitute
+    /// a closure that returns fixture JSON.
+    pub fn run_with<F>(&self, collector: F) -> CheckOutcome
+    where
+        F: FnOnce() -> Result<Report, String>,
+    {
+        match collector() {
+            Ok(report) => evaluate(&report, self.thresholds),
+            Err(output) => CheckOutcome {
+                status: TaskStatus::Fail,
+                output,
+            },
+        }
+    }
 }
 
 impl Check for CoverageCheck {
@@ -31,18 +50,12 @@ impl Check for CoverageCheck {
     }
 
     fn run(&self) -> CheckOutcome {
-        match collect_report() {
-            Ok(report) => evaluate(&report, self.thresholds),
-            Err(output) => CheckOutcome {
-                status: TaskStatus::Fail,
-                output,
-            },
-        }
+        self.run_with(collect_report)
     }
 }
 
 fn collect_report() -> Result<Report, String> {
-    let mut cmd = Command::new("cargo");
+    let mut cmd = cargo_command();
     cmd.arg("llvm-cov").args(COV_REPORT_ARGS);
     let out = cmd
         .stdout(Stdio::piped())
@@ -135,7 +148,7 @@ const fn metric_rows(entry: &DataEntry, t: CoverageConfig) -> [(&'static str, Me
 }
 
 #[derive(Deserialize)]
-struct Report {
+pub struct Report {
     data: Vec<DataEntry>,
 }
 
@@ -278,6 +291,55 @@ mod tests {
         let outcome = evaluate(&report, CoverageConfig::default());
         assert!(outcome.failed());
         assert!(outcome.output.contains("no files reported"));
+    }
+
+    #[test]
+    fn run_with_pass_path_via_fake_collector() {
+        let check = CoverageCheck {
+            thresholds: CoverageConfig::default(),
+        };
+        let outcome = check.run_with(|| {
+            Ok(serde_json::from_str(
+                r#"{ "data": [{ "files": [{}], "totals": {
+                    "functions": { "count": 10, "covered": 10 },
+                    "lines": { "count": 100, "covered": 100 },
+                    "regions": { "count": 50, "covered": 50 },
+                    "branches": { "count": 20, "covered": 20 }
+                } }] }"#,
+            )
+            .unwrap())
+        });
+        assert!(outcome.passed());
+    }
+
+    #[test]
+    fn run_with_propagates_collector_failure() {
+        let check = CoverageCheck {
+            thresholds: CoverageConfig::default(),
+        };
+        let outcome = check.run_with(|| Err("simulated llvm-cov failure".to_string()));
+        assert!(outcome.failed());
+        assert!(outcome.output.contains("simulated llvm-cov failure"));
+    }
+
+    #[test]
+    fn run_with_fails_when_report_below_threshold() {
+        let check = CoverageCheck {
+            thresholds: CoverageConfig::default(),
+        };
+        let outcome = check.run_with(|| {
+            Ok(serde_json::from_str(
+                r#"{ "data": [{ "files": [{}], "totals": {
+                    "functions": { "count": 10, "covered": 9 },
+                    "lines": { "count": 100, "covered": 100 },
+                    "regions": { "count": 50, "covered": 50 },
+                    "branches": { "count": 20, "covered": 20 }
+                } }] }"#,
+            )
+            .unwrap())
+        });
+        assert!(outcome.failed());
+        assert!(outcome.output.contains("FAIL functions"));
     }
 
     #[test]

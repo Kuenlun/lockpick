@@ -7,6 +7,20 @@ repository = "https://github.com/Kuenlun/lockpick"
 authors = ["Juan Luis Leal Contreras <kuenlunleal@gmail.com>"]
 license = "MIT OR Apache-2.0"
 
+# Dogfooded configuration consumed by lockpick when it runs against
+# itself. Thresholds sit below 100% because self-hosted coverage has
+# inherent gaps: the subprocess paths exercised by cargo audit / machete
+# and the end-to-end coverage flow integration test are ignored under
+# nested `cargo llvm-cov` to avoid double instrumentation.
+[package.metadata.lockpick]
+license-header = ".github/license_header.rs"
+
+[package.metadata.lockpick.coverage]
+functions = 93
+lines = 94
+regions = 94
+branches = 75
+
 [dependencies]
 clap = { version = "4.6.0", features = ["derive"] }
 colored = "3.1.1"

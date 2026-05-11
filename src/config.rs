@@ -7,10 +7,12 @@
 //! via `cargo metadata --format-version 1 --no-deps`.
 
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use serde::Deserialize;
 use serde_json::Value;
+
+use crate::tooling::cargo_command;
 
 /// Per-metric coverage thresholds. Defaults to 100% on every metric.
 #[derive(Deserialize, Debug, Clone, Copy)]
@@ -76,7 +78,7 @@ impl Config {
 }
 
 fn run_cargo_metadata() -> Option<CargoMetadata> {
-    let output = Command::new("cargo")
+    let output = cargo_command()
         .args(["metadata", "--format-version", "1", "--no-deps"])
         .stderr(Stdio::null())
         .output()

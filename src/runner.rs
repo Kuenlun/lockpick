@@ -11,27 +11,26 @@ use crate::cli::{Cli, SkipOption};
 use crate::config::Config;
 use crate::error::LockpickError;
 use crate::reporter::{CheckOutcome, Reporter, TaskStatus};
-use crate::tooling::{self, INSTALL_AUDIT, INSTALL_LLVM_COV, INSTALL_MACHETE};
+use crate::tooling::{INSTALL_AUDIT, INSTALL_LLVM_COV, INSTALL_MACHETE, Toolchain};
 
 pub fn run(cli: &Cli) -> Result<(), LockpickError> {
     let reporter = Reporter::new(cli.verbose)?;
 
     let config = Config::load();
+    let toolchain = Toolchain::detect();
 
     // Coverage runs by default; --skip coverage disables it, and --skip
     // test implicitly disables it because there are no .profraw files
     // to evaluate.
-    let coverage_skipped_by_user = cli.skips(&SkipOption::Coverage);
-    let coverage_skipped_by_test = cli.skips(&SkipOption::Test);
-    let coverage_active = !coverage_skipped_by_user && !coverage_skipped_by_test;
+    let coverage_active = is_coverage_active(cli);
 
-    require_tooling(cli, coverage_active)?;
-    if coverage_skipped_by_test && !coverage_skipped_by_user {
+    require_tooling(cli, coverage_active, toolchain)?;
+    if cli.skips(&SkipOption::Test) && !cli.skips(&SkipOption::Coverage) {
         reporter.info("--skip test implies coverage will be skipped");
     }
 
     let run_compile = !cli.skips(&SkipOption::Check);
-    let parallel = checks::build_parallel(cli, coverage_active, &config);
+    let parallel = checks::build_parallel(cli, coverage_active, toolchain, &config);
     let coverage_check = coverage_active.then_some(CoverageCheck {
         thresholds: config.coverage,
     });
@@ -87,13 +86,7 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
 
     // Phase 3: coverage gate (only if active and tests succeeded).
     let coverage_outcome = coverage_check.as_ref().map(|cov| {
-        let tests_passed = compile_passed
-            && parallel
-                .iter()
-                .zip(&parallel_outcomes)
-                .find(|(c, _)| c.label() == "test")
-                .is_some_and(|(_, o)| o.passed());
-        let outcome = if tests_passed {
+        let outcome = if should_run_coverage_phase(compile_passed, &parallel, &parallel_outcomes) {
             cov.run()
         } else {
             CheckOutcome::skipped()
@@ -120,29 +113,55 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
     Ok(())
 }
 
+/// Whether the coverage gate should run at all. The user can disable it
+/// explicitly (`--skip coverage`) or implicitly by skipping tests.
+fn is_coverage_active(cli: &Cli) -> bool {
+    !cli.skips(&SkipOption::Coverage) && !cli.skips(&SkipOption::Test)
+}
+
 /// Fail fast if any enabled check requires an external cargo subcommand
 /// that is not installed. Coverage, machete and audit are the only
 /// tool-dependent checks in v1.
-fn require_tooling(cli: &Cli, coverage_active: bool) -> Result<(), LockpickError> {
-    if coverage_active && !tooling::has_llvm_cov() {
+fn require_tooling(
+    cli: &Cli,
+    coverage_active: bool,
+    toolchain: Toolchain,
+) -> Result<(), LockpickError> {
+    if coverage_active && !toolchain.llvm_cov {
         return Err(LockpickError::MissingTool {
             tool: "cargo-llvm-cov",
             install: INSTALL_LLVM_COV,
         });
     }
-    if !cli.skips(&SkipOption::Machete) && !tooling::has_machete() {
+    if !cli.skips(&SkipOption::Machete) && !toolchain.machete {
         return Err(LockpickError::MissingTool {
             tool: "cargo-machete",
             install: INSTALL_MACHETE,
         });
     }
-    if !cli.skips(&SkipOption::Audit) && !tooling::has_audit() {
+    if !cli.skips(&SkipOption::Audit) && !toolchain.audit {
         return Err(LockpickError::MissingTool {
             tool: "cargo-audit",
             install: INSTALL_AUDIT,
         });
     }
     Ok(())
+}
+
+/// Whether phase 3 should actually invoke the coverage check. Coverage
+/// runs only when the compile gate and the `test` check both succeed —
+/// otherwise the `.profraw` files are missing or stale.
+fn should_run_coverage_phase(
+    compile_passed: bool,
+    parallel: &[Box<dyn Check>],
+    outcomes: &[CheckOutcome],
+) -> bool {
+    compile_passed
+        && parallel
+            .iter()
+            .zip(outcomes)
+            .find(|(c, _)| c.label() == "test")
+            .is_some_and(|(_, o)| o.passed())
 }
 
 fn print_planned_commands(
@@ -401,8 +420,94 @@ mod tests {
     #[test]
     fn require_tooling_passes_when_every_tool_dependent_check_is_skipped() {
         let cli = cli_skipping(&[SkipOption::Machete, SkipOption::Audit, SkipOption::Coverage]);
-        let result = require_tooling(&cli, false);
+        let toolchain = Toolchain::default();
+        let result = require_tooling(&cli, false, toolchain);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn require_tooling_passes_when_every_tool_is_present() {
+        let cli = cli_skipping(&[]);
+        let toolchain = Toolchain::all_present();
+        let result = require_tooling(&cli, true, toolchain);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn require_tooling_errors_when_llvm_cov_missing_and_coverage_active() {
+        let cli = cli_skipping(&[]);
+        let toolchain = Toolchain {
+            llvm_cov: false,
+            ..Toolchain::all_present()
+        };
+        let err = require_tooling(&cli, true, toolchain).unwrap_err();
+        assert!(matches!(err, LockpickError::MissingTool { tool, .. } if tool == "cargo-llvm-cov"));
+    }
+
+    #[test]
+    fn require_tooling_errors_when_machete_missing_and_not_skipped() {
+        let cli = cli_skipping(&[]);
+        let toolchain = Toolchain {
+            machete: false,
+            ..Toolchain::all_present()
+        };
+        let err = require_tooling(&cli, false, toolchain).unwrap_err();
+        assert!(matches!(err, LockpickError::MissingTool { tool, .. } if tool == "cargo-machete"));
+    }
+
+    #[test]
+    fn require_tooling_errors_when_audit_missing_and_not_skipped() {
+        let cli = cli_skipping(&[]);
+        let toolchain = Toolchain {
+            audit: false,
+            ..Toolchain::all_present()
+        };
+        let err = require_tooling(&cli, false, toolchain).unwrap_err();
+        assert!(matches!(err, LockpickError::MissingTool { tool, .. } if tool == "cargo-audit"));
+    }
+
+    #[test]
+    fn is_coverage_active_is_false_when_user_skips_coverage() {
+        let cli = cli_skipping(&[SkipOption::Coverage]);
+        assert!(!is_coverage_active(&cli));
+    }
+
+    #[test]
+    fn is_coverage_active_is_false_when_user_skips_test() {
+        let cli = cli_skipping(&[SkipOption::Test]);
+        assert!(!is_coverage_active(&cli));
+    }
+
+    #[test]
+    fn is_coverage_active_is_true_by_default() {
+        let cli = cli_skipping(&[]);
+        assert!(is_coverage_active(&cli));
+    }
+
+    #[test]
+    fn should_run_coverage_phase_requires_compile_passed() {
+        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck)];
+        let outcomes = vec![pass("clippy")];
+        assert!(!should_run_coverage_phase(false, &parallel, &outcomes));
+    }
+
+    #[test]
+    fn should_run_coverage_phase_requires_test_outcome_passed() {
+        let parallel: Vec<Box<dyn Check>> = vec![Box::new(crate::checks::test::TestCheck {
+            instrumented: false,
+            nextest: false,
+        })];
+        let outcomes_pass = vec![pass("test")];
+        let outcomes_fail = vec![fail("test")];
+        assert!(should_run_coverage_phase(true, &parallel, &outcomes_pass));
+        assert!(!should_run_coverage_phase(true, &parallel, &outcomes_fail));
+    }
+
+    #[test]
+    fn should_run_coverage_phase_is_false_without_a_test_check() {
+        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck)];
+        let outcomes = vec![pass("clippy")];
+        assert!(!should_run_coverage_phase(true, &parallel, &outcomes));
     }
 
     #[test]

@@ -2,10 +2,11 @@
 // lockpick - Rust CLI to enforce merge checks and code quality
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
-use std::process::{Command, Output, Stdio};
+use std::process::{Output, Stdio};
 
 use super::{Check, fmt_cargo_cmd, run_cargo_outcome};
 use crate::reporter::CheckOutcome;
+use crate::tooling::cargo_command;
 
 const DOCTEST_ARGS: &[&str] = &["--doc", "--workspace", "--all-features"];
 
@@ -30,7 +31,7 @@ impl Check for DocTestCheck {
 /// error from cargo.
 #[must_use]
 pub fn workspace_has_lib_target() -> bool {
-    Command::new("cargo")
+    cargo_command()
         .args(["metadata", "--no-deps", "--format-version", "1"])
         .stderr(Stdio::null())
         .output()
