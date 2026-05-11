@@ -2,10 +2,14 @@
 // lockpick - Rust CLI to enforce merge checks and code quality
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
+mod checks;
 mod cli;
+mod config;
 mod error;
 mod logger;
+mod reporter;
 mod runner;
+mod tooling;
 
 use std::process::ExitCode;
 
