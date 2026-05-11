@@ -11,7 +11,7 @@ use crate::cli::{Cli, SkipOption};
 use crate::config::Config;
 use crate::error::LockpickError;
 use crate::reporter::{CheckOutcome, Reporter, TaskStatus};
-use crate::tooling::{self, INSTALL_LLVM_COV};
+use crate::tooling::{self, INSTALL_AUDIT, INSTALL_LLVM_COV, INSTALL_MACHETE};
 
 pub fn run(cli: &Cli) -> Result<(), LockpickError> {
     let reporter = Reporter::new()?;
@@ -26,18 +26,13 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
     let coverage_skipped_by_test = cli.skips(&SkipOption::Test);
     let coverage_active = !coverage_skipped_by_user && !coverage_skipped_by_test;
 
-    if coverage_active && !tooling::has_llvm_cov() {
-        return Err(LockpickError::MissingTool {
-            tool: "cargo-llvm-cov",
-            install: INSTALL_LLVM_COV,
-        });
-    }
+    require_tooling(cli, coverage_active)?;
     if coverage_skipped_by_test && !coverage_skipped_by_user {
         log::info!("--skip test implies coverage will be skipped");
     }
 
     let run_compile = !cli.skips(&SkipOption::Check);
-    let parallel = checks::build_parallel(cli, coverage_active);
+    let parallel = checks::build_parallel(cli, coverage_active, &config);
 
     if !run_compile && parallel.is_empty() && !coverage_active {
         log::info!("All checks disabled, nothing to run");
@@ -102,6 +97,31 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
         return Err(LockpickError::ChecksFailed(failure_count));
     }
 
+    Ok(())
+}
+
+/// Fail fast if any enabled check requires an external cargo subcommand
+/// that is not installed. Coverage, machete and audit are the only
+/// tool-dependent checks in v1.
+fn require_tooling(cli: &Cli, coverage_active: bool) -> Result<(), LockpickError> {
+    if coverage_active && !tooling::has_llvm_cov() {
+        return Err(LockpickError::MissingTool {
+            tool: "cargo-llvm-cov",
+            install: INSTALL_LLVM_COV,
+        });
+    }
+    if !cli.skips(&SkipOption::Machete) && !tooling::has_machete() {
+        return Err(LockpickError::MissingTool {
+            tool: "cargo-machete",
+            install: INSTALL_MACHETE,
+        });
+    }
+    if !cli.skips(&SkipOption::Audit) && !tooling::has_audit() {
+        return Err(LockpickError::MissingTool {
+            tool: "cargo-audit",
+            install: INSTALL_AUDIT,
+        });
+    }
     Ok(())
 }
 

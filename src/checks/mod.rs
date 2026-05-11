@@ -9,14 +9,19 @@
 use std::process::{Command, ExitStatus, Stdio};
 
 use crate::cli::{Cli, SkipOption};
+use crate::config::Config;
 use crate::error::LockpickError;
 use crate::reporter::{CheckOutcome, TaskStatus};
 
+pub mod audit;
 pub mod clippy;
 pub mod compile;
 pub mod coverage;
+pub mod doc;
 pub mod doctest;
 pub mod fmt;
+pub mod license_header;
+pub mod machete;
 pub mod test;
 
 pub const COMMON_ARGS: &[&str] = &["--workspace", "--all-targets", "--all-features"];
@@ -47,7 +52,7 @@ pub trait Check: Send + Sync {
 /// `coverage_active` enables instrumentation in the `test` check so its
 /// `.profraw` files can be consumed by the coverage gate in phase 3.
 #[must_use]
-pub fn build_parallel(cli: &Cli, coverage_active: bool) -> Vec<Box<dyn Check>> {
+pub fn build_parallel(cli: &Cli, coverage_active: bool, config: &Config) -> Vec<Box<dyn Check>> {
     let mut checks: Vec<Box<dyn Check>> = Vec::new();
 
     if !cli.skips(&SkipOption::Clippy) {
@@ -64,20 +69,48 @@ pub fn build_parallel(cli: &Cli, coverage_active: bool) -> Vec<Box<dyn Check>> {
     if !cli.skips(&SkipOption::DocTest) && doctest::workspace_has_lib_target() {
         checks.push(Box::new(doctest::DocTestCheck));
     }
+    if !cli.skips(&SkipOption::Doc) {
+        checks.push(Box::new(doc::DocCheck));
+    }
+    if !cli.skips(&SkipOption::Machete) {
+        checks.push(Box::new(machete::MacheteCheck));
+    }
+    if !cli.skips(&SkipOption::Audit) {
+        checks.push(Box::new(audit::AuditCheck));
+    }
+    if !cli.skips(&SkipOption::License)
+        && let Some(header_path) = config.license_header.clone()
+    {
+        let globs = config
+            .license_header_globs
+            .clone()
+            .unwrap_or_else(license_header::default_globs);
+        checks.push(Box::new(license_header::LicenseHeaderCheck {
+            header_path,
+            globs,
+        }));
+    }
 
     checks
 }
 
-/// Shared executor. Runs `cargo <subcommand> <args…>`, captures both
-/// stdout and stderr combined, and returns the raw [`ExitStatus`] together
-/// with the captured output. Redirects to `target/lockpick` when invoked
-/// from inside the project's own `target/` directory to avoid self-locking
-/// on Windows.
-pub fn run_cargo(subcommand: &str, args: &[&str]) -> Result<(ExitStatus, String), LockpickError> {
+/// Shared executor. Runs `cargo <subcommand> <args…>` with optional
+/// extra environment variables, captures stdout and stderr combined,
+/// and returns the raw [`ExitStatus`] together with the captured output.
+/// Redirects to `target/lockpick` when invoked from inside the project's
+/// own `target/` directory to avoid self-locking on Windows.
+pub fn run_cargo_with_env(
+    subcommand: &str,
+    args: &[&str],
+    extra_envs: &[(&str, &str)],
+) -> Result<(ExitStatus, String), LockpickError> {
     log::info!("cargo {subcommand} {}", args.join(" "));
 
     let mut cmd = Command::new("cargo");
     cmd.arg(subcommand).args(args);
+    for (k, v) in extra_envs {
+        cmd.env(k, v);
+    }
 
     if exe_in_target_dir() && std::env::var_os("CARGO_TARGET_DIR").is_none() {
         cmd.env("CARGO_TARGET_DIR", "target/lockpick");
@@ -100,7 +133,16 @@ pub fn run_cargo(subcommand: &str, args: &[&str]) -> Result<(ExitStatus, String)
 /// Convenience wrapper that lowers an executor failure to a Fail outcome
 /// with empty output, matching the original runner behavior.
 pub fn run_cargo_outcome(subcommand: &str, args: &[&str]) -> CheckOutcome {
-    match run_cargo(subcommand, args) {
+    run_cargo_outcome_with_env(subcommand, args, &[])
+}
+
+/// Variant of [`run_cargo_outcome`] that injects extra environment variables.
+pub fn run_cargo_outcome_with_env(
+    subcommand: &str,
+    args: &[&str],
+    extra_envs: &[(&str, &str)],
+) -> CheckOutcome {
+    match run_cargo_with_env(subcommand, args, extra_envs) {
         Ok((status, output)) => CheckOutcome {
             status: if status.success() {
                 TaskStatus::Pass

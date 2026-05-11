@@ -15,6 +15,10 @@ pub enum SkipOption {
     Test,
     DocTest,
     Fmt,
+    Doc,
+    Machete,
+    Audit,
+    License,
     Coverage,
 }
 

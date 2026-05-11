@@ -50,16 +50,17 @@ fn dummy_cargo_project() -> TempDir {
     dir
 }
 
-/// Returns a [`Command`] for the `lockpick` binary with `--skip coverage`
-/// preset. Most tests exercise the orchestration layer and do not care
-/// about coverage instrumentation, which would also require
-/// `cargo-llvm-cov` to be installed in the test environment.
+/// Returns a [`Command`] for the `lockpick` binary with the external-tool
+/// checks pre-skipped. Most tests exercise the orchestration layer and
+/// do not care about coverage / machete / audit, which would also require
+/// the respective cargo subcommands to be installed in the test
+/// environment.
 ///
 /// When stderr is piped (not a TTY), lockpick falls back to a plain writer
 /// so that summaries and sections are still captured in `Output::stderr`.
 fn lockpick() -> Command {
     let mut cmd = Command::cargo_bin("lockpick").unwrap();
-    cmd.args(["--skip", "coverage"]);
+    cmd.args(["--skip", "coverage", "--skip", "machete", "--skip", "audit"]);
     cmd
 }
 
@@ -142,7 +143,13 @@ fn verbose_shows_pass_sections() {
 
     let stderr = stderr_text(&output);
     output.assert().success();
-    for section in ["CHECK OUTPUT", "CLIPPY OUTPUT", "FMT OUTPUT", "TEST OUTPUT"] {
+    for section in [
+        "CHECK OUTPUT",
+        "CLIPPY OUTPUT",
+        "FMT OUTPUT",
+        "TEST OUTPUT",
+        "DOC OUTPUT",
+    ] {
         assert!(
             stderr.contains(section),
             "expected '{section}' in verbose output, got:\n{stderr}"
@@ -206,7 +213,7 @@ fn skip_test_implies_skip_coverage() {
 
     let output = lockpick_raw()
         .current_dir(project.path())
-        .args(["--skip", "test"])
+        .args(["--skip", "test", "--skip", "machete", "--skip", "audit"])
         .output()
         .expect("failed to execute lockpick");
 
@@ -253,7 +260,8 @@ fn skipping_all_checks_succeeds_with_info() {
     let output = lockpick_raw()
         .args([
             "--skip", "check", "--skip", "clippy", "--skip", "fmt", "--skip", "test", "--skip",
-            "coverage", "-vv",
+            "doc-test", "--skip", "doc", "--skip", "machete", "--skip", "audit", "--skip",
+            "license", "--skip", "coverage", "-vv",
         ])
         .output()
         .expect("failed to execute lockpick");
