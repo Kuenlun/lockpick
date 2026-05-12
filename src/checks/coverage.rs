@@ -397,4 +397,28 @@ mod tests {
         assert_eq!(calls[0].sub, "llvm-cov");
         assert!(calls[0].args.contains(&"report".to_string()));
     }
+
+    /// Exercises the `Err` arm of `run_with` for the *production*
+    /// monomorphization (the closure `|| collect_report(runner)` injected
+    /// by `Check::run`). `run_with_propagates_collector_failure` already
+    /// covers `Err`, but for a different closure type — and `run_with` is
+    /// generic, so each closure type produces its own instantiation with
+    /// its own coverage map. Without this test the production
+    /// monomorphization's `Err` arm is only reached by the unix-only
+    /// `coverage_fails_when_shim_returns_malformed_json` integration
+    /// test, leaving Windows missing 1 line / 2 regions in this file.
+    #[test]
+    fn run_returns_fail_when_collect_report_errors() {
+        let fake = FakeRunner::with_responses(vec![Ok(SpawnResult {
+            success: true,
+            stdout: b"definitely not json".to_vec(),
+            stderr: Vec::new(),
+        })]);
+        let check = CoverageCheck {
+            thresholds: CoverageConfig::default(),
+        };
+        let outcome = check.run(&fake);
+        assert!(outcome.failed());
+        assert!(outcome.output.contains("malformed llvm-cov JSON"));
+    }
 }
