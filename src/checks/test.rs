@@ -6,7 +6,17 @@ use super::{Check, Runner, cargo_outcome, fmt_cargo_cmd};
 use crate::reporter::CheckOutcome;
 
 const TEST_PLAIN_ARGS: &[&str] = &["--workspace", "--all-targets", "--all-features"];
-const NEXTEST_PLAIN_ARGS: &[&str] = &["run", "--workspace", "--all-targets", "--all-features"];
+// `--no-tests=pass` matches `cargo test`'s behaviour when a target has zero
+// test functions. Without it, nextest >= 0.9.85 exits non-zero by default,
+// which makes lockpick's test gate flap based purely on whether nextest is
+// installed on the host.
+const NEXTEST_PLAIN_ARGS: &[&str] = &[
+    "run",
+    "--workspace",
+    "--all-targets",
+    "--all-features",
+    "--no-tests=pass",
+];
 const LLVM_COV_ARGS: &[&str] = &[
     "--branch",
     "--no-report",
@@ -23,6 +33,7 @@ const LLVM_COV_NEXTEST_ARGS: &[&str] = &[
     "--all-targets",
     "--all-features",
     "--no-fail-fast",
+    "--no-tests=pass",
 ];
 
 pub struct TestCheck {
@@ -120,6 +131,24 @@ mod tests {
         assert_eq!(sub, "llvm-cov");
         assert_eq!(args[0], "nextest");
         assert!(c.cmd().contains("llvm-cov nextest"));
+    }
+
+    /// Regression: nextest >= 0.9.85 defaults to exiting non-zero when the
+    /// run discovers zero tests. Every nextest path must opt in to `pass`
+    /// so lockpick's test gate stays consistent with `cargo test`.
+    #[test]
+    fn every_nextest_path_opts_out_of_no_tests_failure() {
+        for (instrumented, nextest) in [(false, true), (true, true)] {
+            let c = TestCheck {
+                instrumented,
+                nextest,
+            };
+            let (_, args) = c.dispatch();
+            assert!(
+                args.contains(&"--no-tests=pass"),
+                "missing --no-tests=pass for instrumented={instrumented} nextest={nextest}"
+            );
+        }
     }
 
     #[test]
