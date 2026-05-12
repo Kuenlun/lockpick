@@ -2,6 +2,7 @@
 // lockpick - Rust CLI to enforce merge checks and code quality
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
+use std::io::IsTerminal;
 use std::time::Duration;
 
 use colored::Colorize;
@@ -47,10 +48,23 @@ pub struct Reporter {
     pub is_verbose: bool,
 }
 
-#[allow(clippy::literal_string_with_formatting_args)]
-const SPIN_TEMPLATE: &str = "  {msg:<8} {spinner:.cyan}";
+/// Column width used to align the check label across spinners, in-place
+/// finishers and non-TTY status lines. Picked to fit every label lockpick
+/// currently emits ("doc test", "coverage", … all ≤ 8 chars) plus a small
+/// headroom for future checks. A unit test in `runner` (driven by every
+/// concrete `Check` impl) pins this number against the longest known
+/// label, so growing a label past the width fails CI loudly instead of
+/// silently breaking alignment.
+pub const LABEL_WIDTH: usize = 10;
+
 const DONE_TEMPLATE: &str = "  {msg}";
 const TICK_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+
+/// Build the indicatif spinner template at runtime so the `{msg:<…}`
+/// width tracks [`LABEL_WIDTH`] rather than being a magic number copy.
+fn spin_template() -> String {
+    format!("  {{msg:<{LABEL_WIDTH}}} {{spinner:.cyan}}")
+}
 
 /// Build an indicatif `ProgressStyle`. The default templates we ship with
 /// always parse, but `expect_used = "deny"` rules out a hard `.expect()`;
@@ -60,13 +74,25 @@ fn parse_template(template: &str) -> ProgressStyle {
 }
 
 impl Reporter {
+    /// Production constructor: probe stderr for tty-ness and delegate to
+    /// [`Self::new`]. Kept as a separate entry point so the orchestrator
+    /// does not need to know about `IsTerminal` or `std::io::stderr` —
+    /// production calls `Reporter::auto(verbose)`, tests call
+    /// `Reporter::new(verbose, is_tty)` to drive both code paths
+    /// deterministically.
+    #[cfg_attr(test, allow(dead_code))]
+    #[must_use]
+    pub fn auto(is_verbose: bool) -> Self {
+        Self::new(is_verbose, std::io::stderr().is_terminal())
+    }
+
     /// Construct a Reporter using the default templates. `is_tty` selects
     /// between progress-bar rendering (true) and plain stderr (false);
-    /// production reads `std::io::stderr().is_terminal()`, tests pass an
-    /// explicit boolean so both branches stay deterministic.
+    /// production calls [`Self::auto`] which probes `stderr`, tests pass
+    /// an explicit boolean so both branches stay deterministic.
     #[must_use]
     pub fn new(is_verbose: bool, is_tty: bool) -> Self {
-        let spin_style = parse_template(SPIN_TEMPLATE).tick_chars(TICK_CHARS);
+        let spin_style = parse_template(&spin_template()).tick_chars(TICK_CHARS);
         let done_style = parse_template(DONE_TEMPLATE);
 
         let mp = if is_tty {
@@ -102,10 +128,10 @@ impl Reporter {
         };
         if self.is_tty {
             pb.set_style(self.done_style.clone());
-            pb.finish_with_message(format!("{label:<8} {tag}"));
+            pb.finish_with_message(format!("{label:<LABEL_WIDTH$} {tag}"));
         } else {
             pb.finish_and_clear();
-            eprintln!("  {label:<8} {tag}");
+            eprintln!("  {label:<LABEL_WIDTH$} {tag}");
         }
     }
 
@@ -187,6 +213,24 @@ impl Reporter {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+
+    /// Exercises the production tty probe. The tty value reported is
+    /// environmental (depends on whether the test harness pipes stderr),
+    /// so we don't assert on it — only that the helper returns a usable
+    /// `Reporter`, that the verbose flag is faithfully propagated, and
+    /// that the spinner pipeline still works against the constructed
+    /// reporter. This is the only call site that drives the `auto`
+    /// branch in unit-test builds.
+    #[test]
+    fn auto_delegates_to_new_and_propagates_verbose_flag() {
+        for verbose in [false, true] {
+            let r = Reporter::auto(verbose);
+            assert_eq!(r.is_verbose, verbose);
+            let pb = r.add_spinner("probe");
+            r.finish_spinner(&pb, "probe", TaskStatus::Pass);
+            assert!(pb.is_finished());
+        }
+    }
 
     #[test]
     fn parse_template_falls_back_to_default_for_an_invalid_template() {

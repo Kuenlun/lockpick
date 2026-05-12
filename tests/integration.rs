@@ -4,6 +4,12 @@
 
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![cfg_attr(coverage_nightly, coverage(off))]
+// Test scaffolding: `.unwrap()` is idiomatic in tests and accepted by the
+// project (`allow-unwrap-in-tests = true` in `clippy.toml`). That config
+// only scopes to `#[test]`-annotated functions, so this file-level
+// `#![allow]` keeps the helper functions (`dummy_cargo_project`,
+// `lockpick`, …) lint-clean. It applies exclusively to test code; nothing
+// in `src/` carries a clippy `#[allow]`.
 #![allow(clippy::unwrap_used)]
 
 use assert_cmd::prelude::*;
@@ -258,9 +264,12 @@ fn check_failure_skips_remaining_checks() {
         stderr.contains("FAIL"),
         "expected check to FAIL, got:\n{stderr}"
     );
+    // `10` matches `reporter::LABEL_WIDTH`; the in-process pin test
+    // `every_check_label_fits_inside_label_width` guarantees that any
+    // future change in that constant would also notice this one.
     for label in ["clippy", "fmt", "test"] {
         assert!(
-            stderr.contains(&format!("{label:<8} SKIP")),
+            stderr.contains(&format!("{label:<10} SKIP")),
             "expected '{label}' to be SKIP, got:\n{stderr}"
         );
     }

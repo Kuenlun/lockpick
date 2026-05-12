@@ -96,7 +96,8 @@ impl LockpickMetadata {
             .iter()
             .flat_map(|p| &p.targets)
             .any(|t| t.kind.iter().any(|k| k == "lib"));
-        let config = extract_lockpick(&metadata).map_or_else(Config::default, deserialize_or_warn);
+        let config = extract_lockpick(&metadata, &mut |msg| eprintln!("warning: {msg}"))
+            .map_or_else(Config::default, deserialize_or_warn);
         Self {
             config,
             has_lib_target,
@@ -132,16 +133,40 @@ fn parse_cargo_metadata(result: std::io::Result<Output>) -> Option<CargoMetadata
     serde_json::from_slice(&output.stdout).ok()
 }
 
-fn extract_lockpick(metadata: &CargoMetadata) -> Option<Value> {
+/// Locate the effective `[*.metadata.lockpick]` section, in priority order:
+///
+/// 1. `[workspace.metadata.lockpick]` (always wins when set).
+/// 2. `[package.metadata.lockpick]` from the lone member of a single-package
+///    workspace.
+///
+/// Multi-package workspaces that put `[package.metadata.lockpick]` on one or
+/// more members without setting the workspace-scoped section are a footgun:
+/// the configuration is silently dropped (we can't pick a winner for the
+/// whole workspace). We surface a warning through `warn` instead of staying
+/// quiet, matching the project's "FAIL clearly, never skip silently"
+/// preference. `warn` is injected so unit tests can capture the exact
+/// message without resorting to stderr scraping.
+fn extract_lockpick(metadata: &CargoMetadata, warn: &mut dyn FnMut(&str)) -> Option<Value> {
     fn lockpick_in(value: &Value) -> Option<Value> {
         value.as_object().and_then(|m| m.get("lockpick")).cloned()
     }
-    lockpick_in(&metadata.workspace_metadata).or_else(|| {
-        let [package] = metadata.packages.as_slice() else {
-            return None;
-        };
-        lockpick_in(&package.metadata)
-    })
+    if let Some(ws) = lockpick_in(&metadata.workspace_metadata) {
+        return Some(ws);
+    }
+    if let [package] = metadata.packages.as_slice() {
+        return lockpick_in(&package.metadata);
+    }
+    let stray = metadata
+        .packages
+        .iter()
+        .filter(|p| lockpick_in(&p.metadata).is_some())
+        .count();
+    if stray > 0 {
+        warn(&format!(
+            "found `[package.metadata.lockpick]` in {stray} package(s) of a multi-crate workspace — use `[workspace.metadata.lockpick]` to apply it workspace-wide"
+        ));
+    }
+    None
 }
 
 #[cfg(test)]
@@ -195,14 +220,24 @@ mod tests {
         assert_eq!(c.coverage.functions, 100);
     }
 
+    /// Collect warnings emitted by `extract_lockpick` so tests can assert
+    /// on the exact text without resorting to stderr capture.
+    fn extract_with_warnings(meta: &CargoMetadata) -> (Option<Value>, Vec<String>) {
+        let mut warnings: Vec<String> = Vec::new();
+        let result = extract_lockpick(meta, &mut |w| warnings.push(w.to_string()));
+        (result, warnings)
+    }
+
     #[test]
     fn extract_lockpick_prefers_workspace_metadata() {
         let meta = meta_with(
             json!({ "lockpick": { "license-header": "ws.txt" } }),
             vec![json!({ "lockpick": { "license-header": "pkg.txt" } })],
         );
-        let v = extract_lockpick(&meta).expect("found");
+        let (result, warnings) = extract_with_warnings(&meta);
+        let v = result.expect("found");
         assert_eq!(v["license-header"], "ws.txt");
+        assert!(warnings.is_empty());
     }
 
     #[test]
@@ -211,12 +246,14 @@ mod tests {
             Value::Null,
             vec![json!({ "lockpick": { "license-header": "pkg.txt" } })],
         );
-        let v = extract_lockpick(&meta).expect("found");
+        let (result, warnings) = extract_with_warnings(&meta);
+        let v = result.expect("found");
         assert_eq!(v["license-header"], "pkg.txt");
+        assert!(warnings.is_empty());
     }
 
     #[test]
-    fn extract_lockpick_skips_package_metadata_when_multi_crate_workspace() {
+    fn extract_lockpick_warns_and_returns_none_for_stray_metadata_in_multi_crate_workspace() {
         let meta = meta_with(
             Value::Null,
             vec![
@@ -224,25 +261,61 @@ mod tests {
                 json!({ "lockpick": { "license-header": "b.txt" } }),
             ],
         );
-        assert!(extract_lockpick(&meta).is_none());
+        let (result, warnings) = extract_with_warnings(&meta);
+        assert!(result.is_none());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("2 package(s)"));
+        assert!(warnings[0].contains("[workspace.metadata.lockpick]"));
+    }
+
+    #[test]
+    fn extract_lockpick_warns_when_a_single_member_of_a_multi_crate_workspace_has_metadata() {
+        let meta = meta_with(
+            Value::Null,
+            vec![
+                json!({ "lockpick": { "license-header": "a.txt" } }),
+                json!({ "other": {} }),
+            ],
+        );
+        let (result, warnings) = extract_with_warnings(&meta);
+        assert!(result.is_none());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("1 package(s)"));
+    }
+
+    #[test]
+    fn extract_lockpick_is_silent_when_multi_crate_workspace_has_no_lockpick_metadata() {
+        let meta = meta_with(
+            Value::Null,
+            vec![json!({ "other": {} }), json!({ "other": {} })],
+        );
+        let (result, warnings) = extract_with_warnings(&meta);
+        assert!(result.is_none());
+        assert!(warnings.is_empty());
     }
 
     #[test]
     fn extract_lockpick_returns_none_when_section_is_absent() {
         let meta = meta_with(json!({ "other": {} }), vec![json!({ "other": {} })]);
-        assert!(extract_lockpick(&meta).is_none());
+        let (result, warnings) = extract_with_warnings(&meta);
+        assert!(result.is_none());
+        assert!(warnings.is_empty());
     }
 
     #[test]
     fn extract_lockpick_returns_none_when_workspace_metadata_lacks_lockpick_key() {
         let meta = meta_with(json!({ "other": "x" }), vec![]);
-        assert!(extract_lockpick(&meta).is_none());
+        let (result, warnings) = extract_with_warnings(&meta);
+        assert!(result.is_none());
+        assert!(warnings.is_empty());
     }
 
     #[test]
     fn extract_lockpick_returns_none_when_single_package_metadata_is_not_object() {
         let meta = meta_with(Value::Null, vec![json!("a string, not an object")]);
-        assert!(extract_lockpick(&meta).is_none());
+        let (result, warnings) = extract_with_warnings(&meta);
+        assert!(result.is_none());
+        assert!(warnings.is_empty());
     }
 
     #[test]
@@ -290,6 +363,22 @@ mod tests {
             m.config.license_header.as_deref(),
             Some(std::path::Path::new("hdr.txt"))
         );
+    }
+
+    /// Drives the production stderr-writer closure in `load_from` so its
+    /// `eprintln!` line is reached at runtime. The user-visible warning
+    /// text is asserted on by the dedicated `extract_lockpick_warns_…`
+    /// tests; here we only confirm the config falls back to defaults.
+    #[test]
+    fn load_from_multi_crate_workspace_with_stray_per_package_metadata_falls_back_to_defaults() {
+        let m = LockpickMetadata::load_from(Some(meta_with(
+            Value::Null,
+            vec![
+                json!({ "lockpick": { "license-header": "a.txt" } }),
+                json!({ "lockpick": { "license-header": "b.txt" } }),
+            ],
+        )));
+        assert!(m.config.license_header.is_none());
     }
 
     #[test]

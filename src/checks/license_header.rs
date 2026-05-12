@@ -10,7 +10,7 @@
 //! is set in `Cargo.toml`.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::{Check, Runner};
 use crate::reporter::{CheckOutcome, TaskStatus};
@@ -96,10 +96,18 @@ impl Check for LicenseHeaderCheck {
             }
         };
 
+        // Canonicalize the header path once so cosmetic differences
+        // (`./header.txt` vs `header.txt`, relative vs absolute) cannot
+        // cause the file to be flagged as a self-offender. If
+        // canonicalization fails for either side, the raw path is used as
+        // a safe fallback — at worst that reverts to the pre-fix behaviour
+        // for the unlucky path, never produces a wrong classification.
+        let header_key = normalize(&self.header_path);
+
         let mut offenders: Vec<PathBuf> = Vec::new();
         let mut scanned = 0_usize;
         for file in files {
-            if file == self.header_path {
+            if normalize(&file) == header_key {
                 continue;
             }
             match classify(fs::read(&file), &header) {
@@ -136,6 +144,14 @@ impl Check for LicenseHeaderCheck {
             output: lines.join("\n"),
         }
     }
+}
+
+/// Normalise a path for equality comparison. Uses [`fs::canonicalize`]
+/// to resolve `.`, `..`, and symlinks; falls back to the raw path when
+/// canonicalization fails (e.g., the file vanished between the glob walk
+/// and this call) so the check never blows up on transient I/O errors.
+fn normalize(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn collect_files(patterns: &[String]) -> Result<Vec<PathBuf>, glob::PatternError> {
@@ -340,6 +356,49 @@ mod tests {
         assert!(outcome.passed(), "got: {}", outcome.output);
         assert!(outcome.output.contains("1 file(s) checked"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Regression: a header path written as `./header.txt` in `Cargo.toml`
+    /// (or expanded to an absolute path by canonicalization elsewhere)
+    /// must still match the same on-disk file returned by the glob walk.
+    /// Before the path normalisation fix, raw `PathBuf` equality would
+    /// flag the header file itself as a self-offender on this layout.
+    #[test]
+    fn run_skips_the_header_when_configured_path_uses_dot_prefix() {
+        let dir = tempdir("dotprefix");
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let abs_header = dir.join("src").join("header.txt");
+        std::fs::write(&abs_header, b"// HEADER\n").unwrap();
+        std::fs::write(dir.join("src").join("a.rs"), b"// HEADER\nfn a() {}\n").unwrap();
+        // Same on-disk file, but expressed with a redundant `./` segment
+        // that breaks plain `==` equality with the path produced by glob.
+        let header_with_dot = abs_header.parent().unwrap().join("./header.txt");
+        let check = LicenseHeaderCheck {
+            header_path: header_with_dot,
+            globs: vec![format!("{}/src/*", dir.display())],
+        };
+        let outcome = check.run(&FakeRunner::passing());
+        assert!(outcome.passed(), "got: {}", outcome.output);
+        assert!(outcome.output.contains("1 file(s) checked"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn normalize_resolves_dot_segments_for_existing_paths() {
+        let dir = tempdir("normalize_ok");
+        let file = dir.join("h.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let with_dot = dir.join("./h.txt");
+        assert_eq!(normalize(&file), normalize(&with_dot));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn normalize_returns_the_raw_path_when_canonicalize_fails() {
+        let missing = Path::new("/definitely/does/not/exist/lockpick-normalize");
+        // `fs::canonicalize` returns Err for a non-existent path, so the
+        // fallback branch hands back the raw path unchanged.
+        assert_eq!(normalize(missing), missing.to_path_buf());
     }
 
     #[test]

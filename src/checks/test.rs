@@ -45,6 +45,13 @@ pub struct TestCheck {
 }
 
 impl TestCheck {
+    /// Single source of truth for the test check's label. The coverage
+    /// orchestrator references this constant when deciding whether the
+    /// `test` outcome passed — keeping the binding here means a rename of
+    /// the label is caught at compile time instead of silently disabling
+    /// the coverage phase.
+    pub const LABEL: &'static str = "test";
+
     const fn dispatch(&self) -> (&'static str, &'static [&'static str]) {
         match (self.instrumented, self.nextest) {
             (true, true) => ("llvm-cov", LLVM_COV_NEXTEST_ARGS),
@@ -57,7 +64,7 @@ impl TestCheck {
 
 impl Check for TestCheck {
     fn label(&self) -> &'static str {
-        "test"
+        Self::LABEL
     }
 
     fn cmd(&self) -> String {
@@ -75,6 +82,20 @@ impl Check for TestCheck {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+
+    /// The coverage orchestrator references `TestCheck::LABEL` directly to
+    /// pick the test outcome out of the parallel set. Pinning the value
+    /// here guards against a silent rename that would disable the
+    /// coverage phase without anyone noticing at compile time.
+    #[test]
+    fn label_constant_matches_the_value_the_orchestrator_relies_on() {
+        assert_eq!(TestCheck::LABEL, "test");
+        let c = TestCheck {
+            instrumented: false,
+            nextest: false,
+        };
+        assert_eq!(c.label(), TestCheck::LABEL);
+    }
 
     #[test]
     fn dispatch_plain_uses_cargo_test() {

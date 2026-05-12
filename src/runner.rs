@@ -2,17 +2,16 @@
 // lockpick - Rust CLI to enforce merge checks and code quality
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
-use std::io::IsTerminal;
 use std::thread;
 
 use indicatif::ProgressBar;
 
-use crate::checks::{self, CargoCli, Check, Runner, coverage::CoverageCheck};
+use crate::checks::{self, CargoCli, Check, Runner, coverage::CoverageCheck, test::TestCheck};
 use crate::cli::{Cli, SkipOption};
 use crate::config::{Config, LockpickMetadata};
 use crate::error::LockpickError;
 use crate::reporter::{CheckOutcome, Reporter, TaskStatus};
-use crate::tooling::{INSTALL_AUDIT, INSTALL_LLVM_COV, INSTALL_MACHETE, Toolchain};
+use crate::tooling::{INSTALL_AUDIT, INSTALL_LLVM_COV, INSTALL_MACHETE, Tool, Toolchain};
 
 /// Production entry point: builds the dependencies and delegates to the
 /// pure orchestrator in [`run_with`]. Only `main` calls this directly; the
@@ -20,14 +19,14 @@ use crate::tooling::{INSTALL_AUDIT, INSTALL_LLVM_COV, INSTALL_MACHETE, Toolchain
 /// wrapper is integration-tested through the spawned binary.
 #[cfg_attr(test, allow(dead_code))]
 pub fn run(cli: &Cli) -> Result<(), LockpickError> {
-    let reporter = Reporter::new(cli.verbose, std::io::stderr().is_terminal());
+    let reporter = Reporter::auto(cli.verbose);
     let toolchain = Toolchain::detect();
     let metadata = LockpickMetadata::load();
     let runner = CargoCli::detect();
     run_with(
         cli,
         &reporter,
-        toolchain,
+        &toolchain,
         &metadata.config,
         metadata.has_lib_target,
         &runner,
@@ -39,7 +38,7 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
 pub fn run_with(
     cli: &Cli,
     reporter: &Reporter,
-    toolchain: Toolchain,
+    toolchain: &Toolchain,
     config: &Config,
     has_lib: bool,
     runner: &dyn Runner,
@@ -59,8 +58,15 @@ pub fn run_with(
 
     // `parallel.is_empty()` already implies `coverage_check.is_none()`
     // because coverage is only active when the `test` check is enabled
-    // (which always lives in `parallel`).
+    // (which always lives in `parallel`). The `debug_assert!` makes that
+    // load-bearing invariant explicit so a future refactor that moves
+    // `test` out of `parallel` fails loudly in tests instead of silently
+    // skipping the coverage phase in production.
     if !run_compile && parallel.is_empty() {
+        debug_assert!(
+            coverage_check.is_none(),
+            "invariant: empty `parallel` must imply no coverage check"
+        );
         reporter.note("All checks disabled, nothing to run");
         return Ok(());
     }
@@ -142,21 +148,21 @@ fn is_coverage_active(cli: &Cli) -> bool {
 fn require_tooling(
     cli: &Cli,
     coverage_active: bool,
-    toolchain: Toolchain,
+    toolchain: &Toolchain,
 ) -> Result<(), LockpickError> {
-    if coverage_active && !toolchain.llvm_cov {
+    if coverage_active && !toolchain.has(Tool::LlvmCov) {
         return Err(LockpickError::MissingTool {
             tool: "cargo-llvm-cov",
             install: INSTALL_LLVM_COV,
         });
     }
-    if !cli.skips(&SkipOption::Machete) && !toolchain.machete {
+    if !cli.skips(&SkipOption::Machete) && !toolchain.has(Tool::Machete) {
         return Err(LockpickError::MissingTool {
             tool: "cargo-machete",
             install: INSTALL_MACHETE,
         });
     }
-    if !cli.skips(&SkipOption::Audit) && !toolchain.audit {
+    if !cli.skips(&SkipOption::Audit) && !toolchain.has(Tool::Audit) {
         return Err(LockpickError::MissingTool {
             tool: "cargo-audit",
             install: INSTALL_AUDIT,
@@ -177,7 +183,7 @@ fn should_run_coverage_phase(
         && parallel
             .iter()
             .zip(outcomes)
-            .find(|(c, _)| c.label() == "test")
+            .find(|(c, _)| c.label() == TestCheck::LABEL)
             .is_some_and(|(_, o)| o.passed())
 }
 
@@ -272,10 +278,17 @@ fn report_results(reporter: &Reporter, items: &[(&str, &CheckOutcome)]) -> usize
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use crate::checks::audit::AuditCheck;
     use crate::checks::clippy::ClippyCheck;
+    use crate::checks::compile::CompileCheck;
+    use crate::checks::doc::DocCheck;
+    use crate::checks::doctest::DocTestCheck;
     use crate::checks::fmt::FmtCheck;
+    use crate::checks::license_header::LicenseHeaderCheck;
+    use crate::checks::machete::MacheteCheck;
     use crate::checks::{FakeRunner, SpawnResult};
     use crate::cli::SkipOption;
+    use crate::reporter::LABEL_WIDTH;
 
     fn pass(label: &str) -> CheckOutcome {
         CheckOutcome {
@@ -295,6 +308,44 @@ mod tests {
         Cli {
             skip: skips.to_vec(),
             verbose: false,
+        }
+    }
+
+    /// Guards `LABEL_WIDTH` against a future check whose label is wider
+    /// than the spinner column. Adding such a label would silently break
+    /// alignment in real output; this assertion forces it to be caught
+    /// in CI/pre-commit instead.
+    #[test]
+    fn every_check_label_fits_inside_label_width() {
+        let labels: Vec<&'static str> = vec![
+            CompileCheck.label(),
+            ClippyCheck.label(),
+            FmtCheck.label(),
+            crate::checks::test::TestCheck {
+                instrumented: false,
+                nextest: false,
+            }
+            .label(),
+            DocTestCheck.label(),
+            DocCheck.label(),
+            MacheteCheck.label(),
+            AuditCheck.label(),
+            LicenseHeaderCheck {
+                header_path: std::path::PathBuf::new(),
+                globs: Vec::new(),
+            }
+            .label(),
+            CoverageCheck {
+                thresholds: crate::config::CoverageConfig::default(),
+            }
+            .label(),
+        ];
+        for l in &labels {
+            assert!(
+                l.len() <= LABEL_WIDTH,
+                "label `{l}` ({len} chars) exceeds LABEL_WIDTH = {LABEL_WIDTH}",
+                len = l.len(),
+            );
         }
     }
 
@@ -367,46 +418,37 @@ mod tests {
     fn require_tooling_passes_when_every_tool_dependent_check_is_skipped() {
         let cli = cli_skipping(&[SkipOption::Machete, SkipOption::Audit, SkipOption::Coverage]);
         let toolchain = Toolchain::default();
-        assert!(require_tooling(&cli, false, toolchain).is_ok());
+        assert!(require_tooling(&cli, false, &toolchain).is_ok());
     }
 
     #[test]
     fn require_tooling_passes_when_every_tool_is_present() {
         let cli = cli_skipping(&[]);
         let toolchain = Toolchain::all_present();
-        assert!(require_tooling(&cli, true, toolchain).is_ok());
+        assert!(require_tooling(&cli, true, &toolchain).is_ok());
     }
 
     #[test]
     fn require_tooling_errors_when_llvm_cov_missing_and_coverage_active() {
         let cli = cli_skipping(&[]);
-        let toolchain = Toolchain {
-            llvm_cov: false,
-            ..Toolchain::all_present()
-        };
-        let err = require_tooling(&cli, true, toolchain).unwrap_err();
+        let toolchain = Toolchain::all_present().without(Tool::LlvmCov);
+        let err = require_tooling(&cli, true, &toolchain).unwrap_err();
         assert!(err.to_string().contains("cargo-llvm-cov"));
     }
 
     #[test]
     fn require_tooling_errors_when_machete_missing_and_not_skipped() {
         let cli = cli_skipping(&[]);
-        let toolchain = Toolchain {
-            machete: false,
-            ..Toolchain::all_present()
-        };
-        let err = require_tooling(&cli, false, toolchain).unwrap_err();
+        let toolchain = Toolchain::all_present().without(Tool::Machete);
+        let err = require_tooling(&cli, false, &toolchain).unwrap_err();
         assert!(err.to_string().contains("cargo-machete"));
     }
 
     #[test]
     fn require_tooling_errors_when_audit_missing_and_not_skipped() {
         let cli = cli_skipping(&[]);
-        let toolchain = Toolchain {
-            audit: false,
-            ..Toolchain::all_present()
-        };
-        let err = require_tooling(&cli, false, toolchain).unwrap_err();
+        let toolchain = Toolchain::all_present().without(Tool::Audit);
+        let err = require_tooling(&cli, false, &toolchain).unwrap_err();
         assert!(err.to_string().contains("cargo-audit"));
     }
 
@@ -561,7 +603,7 @@ mod tests {
             run_with(
                 &cli,
                 &reporter,
-                Toolchain::all_present(),
+                &Toolchain::all_present(),
                 &Config::default(),
                 true,
                 &runner,
@@ -594,7 +636,7 @@ mod tests {
         let err = run_with(
             &cli,
             &reporter,
-            Toolchain::all_present(),
+            &Toolchain::all_present(),
             &Config::default(),
             false,
             &runner,
@@ -615,7 +657,7 @@ mod tests {
         let err = run_with(
             &cli,
             &reporter,
-            Toolchain::default(),
+            &Toolchain::default(),
             &Config::default(),
             false,
             &runner,
@@ -642,7 +684,7 @@ mod tests {
             run_with(
                 &cli,
                 &reporter,
-                Toolchain::all_present(),
+                &Toolchain::all_present(),
                 &Config::default(),
                 false,
                 &runner,
@@ -672,7 +714,7 @@ mod tests {
             run_with(
                 &cli,
                 &reporter,
-                Toolchain::all_present(),
+                &Toolchain::all_present(),
                 &Config::default(),
                 false,
                 &runner,
@@ -704,7 +746,7 @@ mod tests {
             run_with(
                 &cli,
                 &reporter,
-                Toolchain::all_present(),
+                &Toolchain::all_present(),
                 &Config::default(),
                 false,
                 &runner,
@@ -746,7 +788,7 @@ mod tests {
         let err = run_with(
             &cli,
             &reporter,
-            Toolchain::all_present(),
+            &Toolchain::all_present(),
             &Config::default(),
             false,
             &runner,
@@ -779,7 +821,7 @@ mod tests {
         let err = run_with(
             &cli,
             &reporter,
-            Toolchain::all_present(),
+            &Toolchain::all_present(),
             &Config::default(),
             false,
             &runner,

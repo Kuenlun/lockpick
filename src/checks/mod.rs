@@ -12,7 +12,7 @@ use std::process::{Command, Stdio};
 use crate::cli::{Cli, SkipOption};
 use crate::config::Config;
 use crate::reporter::{CheckOutcome, TaskStatus};
-use crate::tooling::{Toolchain, cargo_command};
+use crate::tooling::{Tool, Toolchain, cargo_command};
 
 pub mod audit;
 pub mod clippy;
@@ -133,7 +133,7 @@ pub trait Check: Send + Sync {
 pub fn build_parallel(
     cli: &Cli,
     coverage_active: bool,
-    toolchain: Toolchain,
+    toolchain: &Toolchain,
     config: &Config,
     has_lib: bool,
 ) -> Vec<Box<dyn Check>> {
@@ -148,7 +148,7 @@ pub fn build_parallel(
     if !cli.skips(&SkipOption::Test) {
         checks.push(Box::new(test::TestCheck {
             instrumented: coverage_active,
-            nextest: toolchain.nextest,
+            nextest: toolchain.has(Tool::Nextest),
         }));
     }
     if !cli.skips(&SkipOption::DocTest) && has_lib {
@@ -343,7 +343,7 @@ mod tests {
         let checks = build_parallel(
             &cli,
             false,
-            Toolchain::all_present(),
+            &Toolchain::all_present(),
             &Config::default(),
             true,
         );
@@ -359,7 +359,7 @@ mod tests {
         let checks = build_parallel(
             &cli,
             true,
-            Toolchain::all_present(),
+            &Toolchain::all_present(),
             &Config::default(),
             true,
         );
@@ -383,7 +383,7 @@ mod tests {
         let checks = build_parallel(
             &cli,
             false,
-            Toolchain::all_present(),
+            &Toolchain::all_present(),
             &Config::default(),
             false,
         );
@@ -400,7 +400,7 @@ mod tests {
             license_header: Some(PathBuf::from("hdr.txt")),
             ..Config::default()
         };
-        let checks = build_parallel(&cli, false, Toolchain::all_present(), &config, false);
+        let checks = build_parallel(&cli, false, &Toolchain::all_present(), &config, false);
         assert!(checks.iter().any(|c| c.label() == "license"));
     }
 
@@ -415,7 +415,7 @@ mod tests {
             license_header_globs: Some(vec!["lib/**/*.rs".to_string()]),
             ..Config::default()
         };
-        let checks = build_parallel(&cli, false, Toolchain::all_present(), &config, false);
+        let checks = build_parallel(&cli, false, &Toolchain::all_present(), &config, false);
         assert!(checks.iter().any(|c| c.label() == "license"));
     }
 

@@ -2,6 +2,7 @@
 // lockpick - Rust CLI to enforce merge checks and code quality
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Command;
@@ -68,18 +69,43 @@ pub fn cargo_command() -> Command {
     cmd
 }
 
+/// Optional cargo subcommand lockpick can drive. Each variant maps to a
+/// `cargo-<binary>` lookup on the host's `PATH`. Modelling these as enum
+/// variants (rather than four `bool` fields on [`Toolchain`]) avoids the
+/// `struct_excessive_bools` lint without configuration tweaks and reads
+/// more naturally at the call sites (`toolchain.has(Tool::LlvmCov)`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Tool {
+    LlvmCov,
+    Nextest,
+    Machete,
+    Audit,
+}
+
+impl Tool {
+    /// Suffix used in the cargo plugin binary name — e.g.
+    /// `Tool::LlvmCov.subcommand() == "llvm-cov"` resolves to
+    /// `cargo-llvm-cov` on `PATH`.
+    const fn subcommand(self) -> &'static str {
+        match self {
+            Self::LlvmCov => "llvm-cov",
+            Self::Nextest => "nextest",
+            Self::Machete => "machete",
+            Self::Audit => "audit",
+        }
+    }
+}
+
+/// Every [`Tool`] variant in iteration order. Centralised so `detect` and
+/// `all_present` stay in sync — adding a tool means adding it here once.
+const ALL_TOOLS: &[Tool] = &[Tool::LlvmCov, Tool::Nextest, Tool::Machete, Tool::Audit];
+
 /// Snapshot of which optional cargo subcommands are installed on the host.
 /// Constructed once at the start of a run via [`Toolchain::detect`]; passed
 /// into the rest of the pipeline so unit tests can substitute fake values.
-/// The four bool fields each represent a distinct, independent capability,
-/// so collapsing them into bit flags would only hurt readability.
-#[allow(clippy::struct_excessive_bools)]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Toolchain {
-    pub llvm_cov: bool,
-    pub nextest: bool,
-    pub machete: bool,
-    pub audit: bool,
+    present: HashSet<Tool>,
 }
 
 impl Toolchain {
@@ -90,13 +116,18 @@ impl Toolchain {
     #[must_use]
     pub fn detect() -> Self {
         let path = std::env::var_os("PATH");
-        let probe = |sub| has_cargo_subcommand_in(path.as_deref(), sub);
-        Self {
-            llvm_cov: probe("llvm-cov"),
-            nextest: probe("nextest"),
-            machete: probe("machete"),
-            audit: probe("audit"),
-        }
+        let present = ALL_TOOLS
+            .iter()
+            .copied()
+            .filter(|t| has_cargo_subcommand_in(path.as_deref(), t.subcommand()))
+            .collect();
+        Self { present }
+    }
+
+    /// Whether `tool` is installed.
+    #[must_use]
+    pub fn has(&self, tool: Tool) -> bool {
+        self.present.contains(&tool)
     }
 
     /// Construct a snapshot with every tool reported as present. Useful
@@ -104,13 +135,21 @@ impl Toolchain {
     #[cfg(test)]
     #[cfg_attr(coverage_nightly, coverage(off))]
     #[must_use]
-    pub const fn all_present() -> Self {
+    pub fn all_present() -> Self {
         Self {
-            llvm_cov: true,
-            nextest: true,
-            machete: true,
-            audit: true,
+            present: ALL_TOOLS.iter().copied().collect(),
         }
+    }
+
+    /// Return a copy of `self` with `tool` dropped. Replaces the
+    /// struct-update idiom (`Toolchain { llvm_cov: false, ..all_present() }`)
+    /// used by tests that probe a single missing tool.
+    #[cfg(test)]
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    #[must_use]
+    pub fn without(mut self, tool: Tool) -> Self {
+        self.present.remove(&tool);
+        self
     }
 }
 
@@ -164,6 +203,27 @@ mod tests {
     fn contains_executable_returns_false_when_path_does_not_exist() {
         let nonexistent = Path::new("/definitely/does/not/exist");
         assert!(!contains_executable(nonexistent, "cargo-x"));
+    }
+
+    /// On Windows, `contains_executable` must also probe `<name>.exe`,
+    /// `<name>.cmd`, and `<name>.bat`. This test creates only the `.exe`
+    /// variant (no bare `<name>` file) so the first branch misses and the
+    /// for-loop's `return true` is exercised on Windows CI.
+    #[cfg(windows)]
+    #[test]
+    fn contains_executable_finds_exe_extension_on_windows() {
+        let dir = std::env::temp_dir().join(format!(
+            "lockpick_tooling_exe_{pid}_{nanos}",
+            pid = std::process::id(),
+            nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos()),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake = dir.join("cargo-lockpicktestext.exe");
+        std::fs::write(&fake, b"").unwrap();
+        assert!(contains_executable(&dir, "cargo-lockpicktestext"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

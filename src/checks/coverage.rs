@@ -48,10 +48,6 @@ fn collect_report(runner: &dyn Runner) -> Result<Report, String> {
     }
 }
 
-// Coverage counts are not large enough in practice for the u64→f64 cast
-// to drop meaningful precision; the percentage only needs ~6 significant
-// digits anyway.
-#[allow(clippy::cast_precision_loss)]
 fn evaluate(report: &Report, t: CoverageConfig) -> CheckOutcome {
     let mut lines: Vec<String> = Vec::new();
     let mut passed = true;
@@ -76,21 +72,26 @@ fn evaluate(report: &Report, t: CoverageConfig) -> CheckOutcome {
                 continue;
             }
             any_real = true;
-            let pct = (metric.covered as f64) * 100.0 / (metric.count as f64);
-            let target = f64::from(threshold);
-            if pct + f64::EPSILON < target {
+            // Integer comparison instead of `(covered/count)*100 >= threshold`
+            // in f64: keeps the gate deterministic at the ULP boundaries and
+            // avoids the precision-loss waiver. `covered <= count <= u64::MAX`
+            // and `threshold <= 100`, so `count * 100` cannot overflow within
+            // the range coverage reports can legally produce.
+            if metric.covered * 100 < metric.count * u64::from(threshold) {
                 let missing = metric.count - metric.covered;
                 lines.push(format!(
-                    "FAIL {name}: {covered}/{total} ({pct:.2}%) — threshold {threshold}%, missing {missing}",
+                    "FAIL {name}: {covered}/{total} ({pct}) — threshold {threshold}%, missing {missing}",
                     covered = metric.covered,
                     total = metric.count,
+                    pct = format_pct(metric.covered, metric.count),
                 ));
                 passed = false;
             } else {
                 lines.push(format!(
-                    "ok   {name}: {covered}/{total} ({pct:.2}%)",
+                    "ok   {name}: {covered}/{total} ({pct})",
                     covered = metric.covered,
                     total = metric.count,
+                    pct = format_pct(metric.covered, metric.count),
                 ));
             }
         }
@@ -124,6 +125,20 @@ const fn metric_rows(entry: &DataEntry, t: CoverageConfig) -> [(&'static str, Me
         ("regions  ", entry.totals.regions, t.regions),
         ("branches ", entry.totals.branches, t.branches),
     ]
+}
+
+/// Render `covered/count` as a two-decimal percentage string, e.g.
+/// `"99.50%"`. Pure integer arithmetic so the gate decision in `evaluate`
+/// and the displayed value can never disagree at ULP boundaries. The
+/// caller has already excluded `count == 0`.
+fn format_pct(covered: u64, count: u64) -> String {
+    // 10_000× scaling so the two decimal places fall out as integers.
+    // u128 keeps us overflow-safe even on absurdly large coverage counts
+    // — the cost on a non-hot display path is irrelevant.
+    let scaled = u128::from(covered) * 10_000 / u128::from(count);
+    let whole = scaled / 100;
+    let frac = scaled % 100;
+    format!("{whole}.{frac:02}%")
 }
 
 #[derive(Deserialize, Debug)]
@@ -238,6 +253,66 @@ mod tests {
         };
         let outcome = evaluate(&report, thresholds);
         assert!(outcome.passed(), "got: {}", outcome.output);
+    }
+
+    /// Boundary: a metric sitting *exactly* on its threshold must pass.
+    /// The previous f64 + `EPSILON` gate was an attempt to absorb rounding
+    /// at this seam; the integer comparison makes the boundary exact.
+    #[test]
+    fn evaluate_passes_when_metric_sits_exactly_on_threshold() {
+        let report = report_from(
+            r#"{ "data": [{ "files": [{}], "totals": {
+                "functions": { "count": 10, "covered": 10 },
+                "lines": { "count": 100, "covered": 100 },
+                "regions": { "count": 50, "covered": 50 },
+                "branches": { "count": 100, "covered": 50 }
+            } }] }"#,
+        );
+        let thresholds = CoverageConfig {
+            functions: 100,
+            lines: 100,
+            regions: 100,
+            branches: 50,
+        };
+        let outcome = evaluate(&report, thresholds);
+        assert!(outcome.passed(), "got: {}", outcome.output);
+    }
+
+    /// One covered point short of the threshold must fail. This pins the
+    /// strict inequality that drives the gate.
+    #[test]
+    fn evaluate_fails_one_point_below_threshold() {
+        let report = report_from(
+            r#"{ "data": [{ "files": [{}], "totals": {
+                "functions": { "count": 10, "covered": 10 },
+                "lines": { "count": 100, "covered": 100 },
+                "regions": { "count": 50, "covered": 50 },
+                "branches": { "count": 100, "covered": 49 }
+            } }] }"#,
+        );
+        let thresholds = CoverageConfig {
+            functions: 100,
+            lines: 100,
+            regions: 100,
+            branches: 50,
+        };
+        let outcome = evaluate(&report, thresholds);
+        assert!(outcome.failed());
+        assert!(outcome.output.contains("FAIL branches"));
+    }
+
+    #[test]
+    fn format_pct_renders_two_decimals_for_non_round_ratios() {
+        // 1/3 = 33.33…% → truncated to two decimals.
+        assert_eq!(format_pct(1, 3), "33.33%");
+        // 2/3 = 66.66…% → truncation (NOT printf round-to-even).
+        assert_eq!(format_pct(2, 3), "66.66%");
+        // 1/8 = 12.5 exactly → trailing-zero formatting.
+        assert_eq!(format_pct(1, 8), "12.50%");
+        // 0/100 must format with a leading zero in the fractional part.
+        assert_eq!(format_pct(0, 100), "0.00%");
+        // 100% boundary.
+        assert_eq!(format_pct(50, 50), "100.00%");
     }
 
     #[test]
