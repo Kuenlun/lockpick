@@ -55,7 +55,7 @@ pub struct LockpickMetadata {
 }
 
 #[derive(Deserialize, Default)]
-pub struct CargoMetadata {
+struct CargoMetadata {
     #[serde(default)]
     workspace_metadata: Value,
     #[serde(default)]
@@ -87,7 +87,7 @@ impl LockpickMetadata {
 
     /// Pure variant of [`Self::load`] that takes the already-fetched
     /// metadata so unit tests can drive every branch deterministically.
-    pub fn load_from(metadata: Option<CargoMetadata>) -> Self {
+    fn load_from(metadata: Option<CargoMetadata>) -> Self {
         let Some(metadata) = metadata else {
             return Self::default();
         };
@@ -145,6 +145,7 @@ fn extract_lockpick(metadata: &CargoMetadata) -> Option<Value> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -330,16 +331,12 @@ mod tests {
     #[test]
     fn load_smoke_test_against_real_cargo_metadata() {
         // Real cargo metadata works in lockpick's own repo; this exercises
-        // the production `LockpickMetadata::load` wrapper end-to-end.
+        // the production `LockpickMetadata::load` wrapper end-to-end (which
+        // in turn drives `run_cargo_metadata` and the `Ok` arm of
+        // `parse_cargo_metadata`). Lockpick is a bin-only crate, so we
+        // expect has_lib_target=false.
         let m = LockpickMetadata::load();
-        // Lockpick is a bin-only crate, so we expect has_lib_target=false.
         assert!(!m.has_lib_target);
-    }
-
-    #[test]
-    fn run_cargo_metadata_returns_some_when_invoked_inside_cargo_project() {
-        let meta = run_cargo_metadata();
-        assert!(meta.is_some(), "expected cargo metadata to succeed");
     }
 
     #[test]
@@ -366,14 +363,5 @@ mod tests {
             .expect("cargo runs");
         assert!(out.status.success());
         assert!(parse_cargo_metadata(Ok(out)).is_none());
-    }
-
-    #[test]
-    fn parse_cargo_metadata_returns_some_for_real_cargo_metadata_output() {
-        let out = std::process::Command::new("cargo")
-            .args(["metadata", "--format-version", "1", "--no-deps"])
-            .output()
-            .expect("cargo runs");
-        assert!(parse_cargo_metadata(Ok(out)).is_some());
     }
 }

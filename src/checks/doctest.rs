@@ -27,14 +27,9 @@ impl Check for DocTestCheck {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::checks::FakeRunner;
-
-    #[test]
-    fn label_is_doc_test() {
-        assert_eq!(DocTestCheck.label(), "doc test");
-    }
 
     #[test]
     fn cmd_runs_cargo_test_doc() {
@@ -43,14 +38,5 @@ mod tests {
         assert!(cmd.contains("--doc"));
         assert!(cmd.contains("--workspace"));
         assert!(cmd.contains("--all-features"));
-    }
-
-    #[test]
-    fn run_invokes_cargo_test_with_doc_args() {
-        let fake = FakeRunner::passing();
-        assert!(DocTestCheck.run(&fake).passed());
-        let calls = fake.calls.lock().unwrap().clone();
-        assert_eq!(calls[0].sub, "test");
-        assert!(calls[0].args.contains(&"--doc".to_string()));
     }
 }

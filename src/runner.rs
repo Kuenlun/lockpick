@@ -2,6 +2,7 @@
 // lockpick - Rust CLI to enforce merge checks and code quality
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
+use std::io::IsTerminal;
 use std::thread;
 
 use indicatif::ProgressBar;
@@ -14,9 +15,12 @@ use crate::reporter::{CheckOutcome, Reporter, TaskStatus};
 use crate::tooling::{INSTALL_AUDIT, INSTALL_LLVM_COV, INSTALL_MACHETE, Toolchain};
 
 /// Production entry point: builds the dependencies and delegates to the
-/// pure orchestrator in [`run_with`].
+/// pure orchestrator in [`run_with`]. Only `main` calls this directly; the
+/// orchestrator is unit-tested through [`run_with`] with fakes, and this
+/// wrapper is integration-tested through the spawned binary.
+#[cfg_attr(test, allow(dead_code))]
 pub fn run(cli: &Cli) -> Result<(), LockpickError> {
-    let reporter = Reporter::auto(cli.verbose);
+    let reporter = Reporter::new(cli.verbose, std::io::stderr().is_terminal());
     let toolchain = Toolchain::detect();
     let metadata = LockpickMetadata::load();
     let runner = CargoCli::detect();
@@ -70,7 +74,8 @@ pub fn run_with(
         );
     }
 
-    let compile_pb = run_compile.then(|| reporter.add_spinner("check"));
+    let compile = checks::compile::CompileCheck;
+    let compile_pb = run_compile.then(|| reporter.add_spinner(compile.label()));
     let parallel_pbs: Vec<ProgressBar> = parallel
         .iter()
         .map(|c| reporter.add_spinner(c.label()))
@@ -81,8 +86,8 @@ pub fn run_with(
 
     // Phase 1: compile gate.
     let compile_outcome = compile_pb.map(|pb| {
-        let outcome = checks::compile::CompileCheck.run(runner);
-        reporter.finish_spinner(&pb, "check", outcome.status);
+        let outcome = compile.run(runner);
+        reporter.finish_spinner(&pb, compile.label(), outcome.status);
         outcome
     });
     let compile_passed = compile_outcome.as_ref().is_none_or(CheckOutcome::passed);
@@ -198,9 +203,9 @@ fn print_planned_commands(
 }
 
 /// Spawn each check on its own scoped thread and collect the outcomes.
-/// `thread::scope` captures any panic in `handle.join()` so a misbehaving
-/// check is reported as `Fail` without taking the rest of the pipeline
-/// down with it.
+/// A check that panics is treated as a bug: re-raise the panic so it
+/// surfaces with its original payload rather than masking it behind a
+/// `Fail` outcome that would also drop the user's diagnostics.
 fn run_parallel(checks: &[Box<dyn Check>], runner: &dyn Runner) -> Vec<CheckOutcome> {
     thread::scope(|s| {
         checks
@@ -208,11 +213,9 @@ fn run_parallel(checks: &[Box<dyn Check>], runner: &dyn Runner) -> Vec<CheckOutc
             .map(|c| s.spawn(move || c.run(runner)))
             .collect::<Vec<_>>()
             .into_iter()
-            .map(|handle| {
-                handle.join().unwrap_or_else(|_| CheckOutcome {
-                    status: TaskStatus::Fail,
-                    output: String::new(),
-                })
+            .map(|handle| match handle.join() {
+                Ok(outcome) => outcome,
+                Err(payload) => std::panic::resume_unwind(payload),
             })
             .collect()
     })
@@ -266,6 +269,7 @@ fn report_results(reporter: &Reporter, items: &[(&str, &CheckOutcome)]) -> usize
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::checks::clippy::ClippyCheck;
@@ -467,6 +471,41 @@ mod tests {
         print_planned_commands(&reporter, false, &parallel, None);
     }
 
+    /// Real contract: a check that panics must propagate the panic instead
+    /// of being silently turned into a `Fail` outcome (which would also
+    /// hide the panic message from the user). `thread::scope` joins handles
+    /// with `Err(payload)`, and `run_parallel` calls `resume_unwind` so the
+    /// panic bubbles out of the orchestrator like any other Rust panic.
+    #[test]
+    #[should_panic = "simulated check panic"]
+    fn run_parallel_re_raises_a_panicking_check_thread() {
+        struct PanickingRunner;
+        impl Runner for PanickingRunner {
+            fn spawn(
+                &self,
+                _sub: &str,
+                _args: &[&str],
+                _envs: &[(&str, &str)],
+            ) -> std::io::Result<SpawnResult> {
+                panic!("simulated check panic");
+            }
+        }
+        // Suppress libtest's panic backtrace for the expected panic so the
+        // test output stays clean even on success.
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck)];
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_parallel(&parallel, &PanickingRunner)
+        }));
+        std::panic::set_hook(prev);
+        // Re-raise the captured payload so `#[should_panic]` observes it.
+        match result {
+            Ok(_) => panic!("expected panic, run_parallel returned Ok"),
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
     #[test]
     fn run_parallel_executes_each_check_and_collects_outcomes() {
         let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck), Box::new(FmtCheck)];
@@ -486,34 +525,6 @@ mod tests {
         assert_eq!(outcomes.len(), 2);
         assert!(outcomes.iter().any(CheckOutcome::passed));
         assert!(outcomes.iter().any(CheckOutcome::failed));
-    }
-
-    /// Runner that always panics when spawned. Used to exercise the
-    /// `run_parallel` panic-recovery branch.
-    struct PanickingRunner;
-    impl Runner for PanickingRunner {
-        fn spawn(
-            &self,
-            _sub: &str,
-            _args: &[&str],
-            _envs: &[(&str, &str)],
-        ) -> std::io::Result<SpawnResult> {
-            panic!("simulated runner panic");
-        }
-    }
-
-    #[test]
-    fn run_parallel_replaces_panicking_threads_with_fail_outcomes() {
-        // Suppress libtest's panic backtrace for the expected panic so
-        // the test output stays clean.
-        let prev = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
-        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck)];
-        let outcomes = run_parallel(&parallel, &PanickingRunner);
-        std::panic::set_hook(prev);
-        assert_eq!(outcomes.len(), 1);
-        assert!(outcomes[0].failed());
-        assert!(outcomes[0].output.is_empty());
     }
 
     fn passing_runner() -> FakeRunner {
@@ -540,17 +551,19 @@ mod tests {
     fn run_with_succeeds_when_every_check_passes() {
         let reporter = Reporter::new(true, false);
         let cli = Cli {
-            skip: vec![SkipOption::Doc, SkipOption::DocTest, SkipOption::License],
+            skip: vec![SkipOption::Doc, SkipOption::License],
             verbose: true,
         };
         let runner = passing_runner();
+        // `has_lib = true` so the doc-test check joins the parallel set; that
+        // exercises every per-check `run`/`label` body via the orchestrator.
         assert!(
             run_with(
                 &cli,
                 &reporter,
                 Toolchain::all_present(),
                 &Config::default(),
-                false,
+                true,
                 &runner,
             )
             .is_ok()

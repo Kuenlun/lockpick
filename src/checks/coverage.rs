@@ -160,6 +160,7 @@ struct Metric {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::checks::{FakeRunner, SpawnResult};
@@ -182,14 +183,6 @@ mod tests {
             stdout: stdout.to_vec(),
             stderr: Vec::new(),
         })])
-    }
-
-    #[test]
-    fn label_is_coverage() {
-        let c = CoverageCheck {
-            thresholds: CoverageConfig::default(),
-        };
-        assert_eq!(c.label(), "coverage");
     }
 
     #[test]

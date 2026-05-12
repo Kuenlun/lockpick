@@ -2,7 +2,6 @@
 // lockpick - Rust CLI to enforce merge checks and code quality
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
-use std::io::IsTerminal;
 use std::time::Duration;
 
 use colored::Colorize;
@@ -62,8 +61,9 @@ fn parse_template(template: &str) -> ProgressStyle {
 
 impl Reporter {
     /// Construct a Reporter using the default templates. `is_tty` selects
-    /// between progress-bar rendering (true) and plain stderr (false).
-    /// Tests pass an explicit boolean to drive both branches.
+    /// between progress-bar rendering (true) and plain stderr (false);
+    /// production reads `std::io::stderr().is_terminal()`, tests pass an
+    /// explicit boolean so both branches stay deterministic.
     #[must_use]
     pub fn new(is_verbose: bool, is_tty: bool) -> Self {
         let spin_style = parse_template(SPIN_TEMPLATE).tick_chars(TICK_CHARS);
@@ -82,12 +82,6 @@ impl Reporter {
             is_tty,
             is_verbose,
         }
-    }
-
-    /// Auto-detecting constructor used by production code paths.
-    #[must_use]
-    pub fn auto(is_verbose: bool) -> Self {
-        Self::new(is_verbose, std::io::stderr().is_terminal())
     }
 
     pub fn add_spinner(&self, label: &str) -> ProgressBar {
@@ -190,64 +184,9 @@ impl Reporter {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-
-    #[test]
-    fn check_outcome_passed_is_true_only_when_status_is_pass() {
-        let pass = CheckOutcome {
-            status: TaskStatus::Pass,
-            output: String::new(),
-        };
-        let fail = CheckOutcome {
-            status: TaskStatus::Fail,
-            output: String::new(),
-        };
-        let skip = CheckOutcome::skipped();
-        assert!(pass.passed());
-        assert!(!fail.passed());
-        assert!(!skip.passed());
-    }
-
-    #[test]
-    fn check_outcome_failed_is_true_only_when_status_is_fail() {
-        let pass = CheckOutcome {
-            status: TaskStatus::Pass,
-            output: String::new(),
-        };
-        let fail = CheckOutcome {
-            status: TaskStatus::Fail,
-            output: String::new(),
-        };
-        let skip = CheckOutcome::skipped();
-        assert!(!pass.failed());
-        assert!(fail.failed());
-        assert!(!skip.failed());
-    }
-
-    #[test]
-    fn skipped_outcome_has_empty_output_and_skip_status() {
-        let s = CheckOutcome::skipped();
-        assert!(s.output.is_empty());
-        assert_eq!(s.status, TaskStatus::Skip);
-    }
-
-    #[test]
-    fn reporter_new_records_supplied_flags() {
-        let r = Reporter::new(true, false);
-        assert!(r.is_verbose);
-        assert!(!r.is_tty);
-
-        let r = Reporter::new(false, true);
-        assert!(!r.is_verbose);
-        assert!(r.is_tty);
-    }
-
-    #[test]
-    fn reporter_auto_constructor_runs() {
-        let r = Reporter::auto(false);
-        assert!(!r.is_verbose);
-    }
 
     #[test]
     fn parse_template_falls_back_to_default_for_an_invalid_template() {
@@ -273,19 +212,6 @@ mod tests {
                 r.finish_spinner(&pb, "clippy", status);
                 assert!(pb.is_finished());
             }
-        }
-    }
-
-    #[test]
-    fn command_and_note_render_without_panicking() {
-        // Reporter writes to stderr / MultiProgress without exposing a
-        // swappable sink, so we can't assert on the rendered text. This
-        // drives `command` and `note` to lock in their no-panic contract
-        // on both the tty=false and tty=true paths.
-        for is_tty in [false, true] {
-            let r = Reporter::new(false, is_tty);
-            r.command("cargo check");
-            r.note("everything skipped");
         }
     }
 

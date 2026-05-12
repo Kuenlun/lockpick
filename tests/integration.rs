@@ -2,6 +2,8 @@
 // lockpick - Rust CLI to enforce merge checks and code quality
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+#![cfg_attr(coverage_nightly, coverage(off))]
 #![allow(clippy::unwrap_used)]
 
 use assert_cmd::prelude::*;
@@ -577,6 +579,30 @@ fn coverage_fails_when_shim_returns_malformed_json() {
     assert!(
         stderr.contains("malformed llvm-cov JSON") || stderr.contains("FAIL"),
         "expected malformed JSON failure, got:\n{stderr}"
+    );
+}
+
+/// Sanitising `PATH` so cargo-llvm-cov / cargo-machete / cargo-audit cannot be
+/// located trips the "required tool is not installed" path. lockpick must
+/// exit with code 3 and surface the install hint instead of running checks.
+/// This is the end-to-end coverage for [`crate::dispatch`]'s `MissingTool`
+/// arm — no unit test lives in `main.rs` since the production binary is
+/// what executes the match.
+#[test]
+fn missing_required_tool_exits_with_three_and_prints_install_hint() {
+    let project = dummy_cargo_project();
+
+    let output = lockpick_raw()
+        .current_dir(project.path())
+        .env("PATH", "")
+        .output()
+        .expect("failed to execute lockpick");
+
+    let stderr = stderr_text(&output);
+    output.assert().failure().code(3);
+    assert!(
+        stderr.contains("cargo install "),
+        "expected install hint in error message, got:\n{stderr}"
     );
 }
 

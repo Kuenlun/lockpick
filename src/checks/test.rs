@@ -72,18 +72,9 @@ impl Check for TestCheck {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::checks::FakeRunner;
-
-    #[test]
-    fn label_is_test() {
-        let c = TestCheck {
-            instrumented: false,
-            nextest: false,
-        };
-        assert_eq!(c.label(), "test");
-    }
 
     #[test]
     fn dispatch_plain_uses_cargo_test() {
@@ -147,28 +138,6 @@ mod tests {
             assert!(
                 args.contains(&"--no-tests=pass"),
                 "missing --no-tests=pass for instrumented={instrumented} nextest={nextest}"
-            );
-        }
-    }
-
-    #[test]
-    fn run_forwards_dispatch_choice_to_runner() {
-        for (instrumented, nextest, expected_sub) in [
-            (false, false, "test"),
-            (false, true, "nextest"),
-            (true, false, "llvm-cov"),
-            (true, true, "llvm-cov"),
-        ] {
-            let fake = FakeRunner::passing();
-            let check = TestCheck {
-                instrumented,
-                nextest,
-            };
-            assert!(check.run(&fake).passed());
-            let calls = fake.calls.lock().unwrap().clone();
-            assert_eq!(
-                calls[0].sub, expected_sub,
-                "instrumented={instrumented} nextest={nextest}"
             );
         }
     }

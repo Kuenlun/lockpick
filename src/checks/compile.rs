@@ -22,14 +22,9 @@ impl Check for CompileCheck {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::checks::FakeRunner;
-
-    #[test]
-    fn label_is_check() {
-        assert_eq!(CompileCheck.label(), "check");
-    }
 
     #[test]
     fn cmd_targets_workspace_with_all_targets_and_features() {
@@ -38,14 +33,5 @@ mod tests {
         assert!(cmd.contains("--workspace"));
         assert!(cmd.contains("--all-targets"));
         assert!(cmd.contains("--all-features"));
-    }
-
-    #[test]
-    fn run_invokes_cargo_check_with_common_args() {
-        let fake = FakeRunner::passing();
-        assert!(CompileCheck.run(&fake).passed());
-        let calls = fake.calls.lock().unwrap().clone();
-        assert_eq!(calls[0].sub, "check");
-        assert!(calls[0].args.contains(&"--all-features".to_string()));
     }
 }

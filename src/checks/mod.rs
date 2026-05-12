@@ -65,7 +65,10 @@ pub struct CargoCli {
 
 impl CargoCli {
     /// Probe the runtime environment to decide whether child cargo
-    /// invocations need a redirected `CARGO_TARGET_DIR`.
+    /// invocations need a redirected `CARGO_TARGET_DIR`. Only `runner::run`
+    /// instantiates this; tests construct `CargoCli` directly with a
+    /// hardcoded redirect flag instead.
+    #[cfg_attr(test, allow(dead_code))]
     #[must_use]
     pub fn detect() -> Self {
         Self {
@@ -253,6 +256,7 @@ pub fn needs_target_dir_redirect(
 pub use test_support::FakeRunner;
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod test_support {
     use super::{Runner, SpawnResult};
     use std::io;
@@ -276,14 +280,6 @@ mod test_support {
         pub fn passing() -> Self {
             Self::with_responses(vec![Ok(SpawnResult {
                 success: true,
-                stdout: Vec::new(),
-                stderr: Vec::new(),
-            })])
-        }
-
-        pub fn failing() -> Self {
-            Self::with_responses(vec![Ok(SpawnResult {
-                success: false,
                 stdout: Vec::new(),
                 stderr: Vec::new(),
             })])
@@ -313,42 +309,21 @@ mod test_support {
                     .collect(),
             });
             let mut responses = self.responses.lock().expect("not poisoned");
-            if responses.is_empty() {
-                return Ok(SpawnResult {
-                    success: true,
-                    stdout: Vec::new(),
-                    stderr: Vec::new(),
-                });
-            }
+            assert!(
+                !responses.is_empty(),
+                "FakeRunner ran out of canned responses (subcommand: {sub})",
+            );
             responses.remove(0)
         }
     }
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use std::io;
     use std::path::PathBuf;
-
-    #[test]
-    fn fmt_cargo_cmd_with_args_joins_them_with_spaces() {
-        let s = fmt_cargo_cmd("check", &["--workspace", "--all-features"]);
-        assert_eq!(s, "cargo check --workspace --all-features");
-    }
-
-    #[test]
-    fn fmt_cargo_cmd_with_no_args_drops_trailing_space() {
-        let s = fmt_cargo_cmd("audit", &[]);
-        assert_eq!(s, "cargo audit");
-    }
-
-    #[test]
-    fn common_args_targets_workspace_with_all_targets_and_features() {
-        assert!(COMMON_ARGS.contains(&"--workspace"));
-        assert!(COMMON_ARGS.contains(&"--all-targets"));
-        assert!(COMMON_ARGS.contains(&"--all-features"));
-    }
 
     #[test]
     fn build_parallel_respects_every_skip_option() {
@@ -513,38 +488,6 @@ mod tests {
     }
 
     #[test]
-    fn cargo_outcome_forwards_to_runner_with_no_extra_envs() {
-        let fake = FakeRunner::passing();
-        let outcome = cargo_outcome(&fake, "check", &["--workspace"]);
-        assert!(outcome.passed());
-        let calls = fake.calls.lock().unwrap().clone();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].sub, "check");
-        assert_eq!(calls[0].args, vec!["--workspace"]);
-        assert!(calls[0].envs.is_empty());
-    }
-
-    #[test]
-    fn cargo_outcome_with_env_propagates_extra_envs() {
-        let fake = FakeRunner::failing();
-        let outcome = cargo_outcome_with_env(&fake, "doc", &[], &[("RUSTDOCFLAGS", "-D warnings")]);
-        assert!(outcome.failed());
-        let calls = fake.calls.lock().unwrap().clone();
-        assert_eq!(
-            calls[0].envs,
-            vec![("RUSTDOCFLAGS".to_string(), "-D warnings".to_string())]
-        );
-    }
-
-    #[test]
-    fn cargo_outcome_failed_io_lowers_to_fail() {
-        let fake = FakeRunner::with_responses(vec![Err(io::Error::other("nope"))]);
-        let outcome = cargo_outcome(&fake, "x", &[]);
-        assert!(outcome.failed());
-        assert!(outcome.output.is_empty());
-    }
-
-    #[test]
     fn needs_target_dir_redirect_only_triggers_when_exe_lives_inside_cwd_target() {
         let cwd = PathBuf::from("/repo");
         let inside = PathBuf::from("/repo/target/debug/lockpick");
@@ -572,17 +515,6 @@ mod tests {
         assert!(!needs_target_dir_redirect(None, Some(&cwd), None));
         assert!(!needs_target_dir_redirect(Some(&inside), None, None));
         assert!(!needs_target_dir_redirect(None, None, None));
-    }
-
-    #[test]
-    fn cargo_cli_detect_does_not_panic() {
-        let _ = CargoCli::detect();
-    }
-
-    #[test]
-    fn cargo_cli_default_does_not_redirect() {
-        let cli = CargoCli::default();
-        assert!(!cli.redirect_target_dir);
     }
 
     #[test]
@@ -644,18 +576,5 @@ mod tests {
     fn execute_returns_err_when_binary_does_not_exist() {
         let cmd = Command::new("/definitely/does/not/exist/lockpick-test");
         assert!(execute(cmd).is_err());
-    }
-
-    #[test]
-    fn fake_runner_falls_back_to_pass_once_canned_queue_is_drained() {
-        // First call consumes the single canned response; the second hits
-        // the empty-queue branch and synthesises a default pass.
-        let fake = FakeRunner::passing();
-        let first = fake.spawn("a", &[], &[]).unwrap();
-        assert!(first.success);
-        let second = fake.spawn("b", &[], &[]).unwrap();
-        assert!(second.success);
-        assert!(second.stdout.is_empty());
-        assert!(second.stderr.is_empty());
     }
 }

@@ -22,14 +22,9 @@ impl Check for ClippyCheck {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::checks::FakeRunner;
-
-    #[test]
-    fn label_is_clippy() {
-        assert_eq!(ClippyCheck.label(), "clippy");
-    }
 
     #[test]
     fn cmd_runs_cargo_clippy_on_workspace() {
@@ -38,14 +33,5 @@ mod tests {
         assert!(cmd.contains("--workspace"));
         assert!(cmd.contains("--all-targets"));
         assert!(cmd.contains("--all-features"));
-    }
-
-    #[test]
-    fn run_invokes_cargo_clippy_with_common_args() {
-        let fake = FakeRunner::passing();
-        assert!(ClippyCheck.run(&fake).passed());
-        let calls = fake.calls.lock().unwrap().clone();
-        assert_eq!(calls[0].sub, "clippy");
-        assert!(calls[0].args.contains(&"--workspace".to_string()));
     }
 }

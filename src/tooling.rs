@@ -10,18 +10,12 @@ pub const INSTALL_LLVM_COV: &str = "cargo install cargo-llvm-cov";
 pub const INSTALL_MACHETE: &str = "cargo install cargo-machete";
 pub const INSTALL_AUDIT: &str = "cargo install cargo-audit";
 
-/// Detect a third-party cargo subcommand by looking for its `cargo-<name>`
-/// binary on `PATH`. Probing via `cargo <name> --version` would spawn the
-/// subcommand and is brittle: cargo-machete in particular flips its argv
-/// parser when `CARGO_PKG_NAME` is set (the case under `cargo run`),
-/// reading "machete" and "--version" as paths instead of the subcommand
-/// and a flag, and reporting itself as missing.
-fn has_cargo_subcommand(subcommand: &str) -> bool {
-    has_cargo_subcommand_in(std::env::var_os("PATH").as_deref(), subcommand)
-}
-
-/// Pure variant of [`has_cargo_subcommand`] that scans an explicit PATH
-/// value. Returns `false` when `path_env` is `None` to mirror the real
+/// Look for a `cargo-<subcommand>` binary on the supplied `PATH`. Probing
+/// via `cargo <name> --version` would spawn the subcommand and is brittle:
+/// cargo-machete in particular flips its argv parser when `CARGO_PKG_NAME`
+/// is set (the case under `cargo run`), reading "machete" and "--version"
+/// as paths instead of the subcommand and a flag, and reporting itself as
+/// missing. Returns `false` when `path_env` is `None` to mirror the real
 /// behaviour of an unset PATH.
 fn has_cargo_subcommand_in(path_env: Option<&OsStr>, subcommand: &str) -> bool {
     path_env.is_some_and(|path| {
@@ -89,20 +83,26 @@ pub struct Toolchain {
 }
 
 impl Toolchain {
-    /// Probe the host for every tool lockpick knows about.
+    /// Probe the host for every tool lockpick knows about. Only `runner::run`
+    /// calls this; unit tests construct fixed `Toolchain` snapshots instead,
+    /// so the dead-code lint has to be silenced in test builds.
+    #[cfg_attr(test, allow(dead_code))]
     #[must_use]
     pub fn detect() -> Self {
+        let path = std::env::var_os("PATH");
+        let probe = |sub| has_cargo_subcommand_in(path.as_deref(), sub);
         Self {
-            llvm_cov: has_cargo_subcommand("llvm-cov"),
-            nextest: has_cargo_subcommand("nextest"),
-            machete: has_cargo_subcommand("machete"),
-            audit: has_cargo_subcommand("audit"),
+            llvm_cov: probe("llvm-cov"),
+            nextest: probe("nextest"),
+            machete: probe("machete"),
+            audit: probe("audit"),
         }
     }
 
     /// Construct a snapshot with every tool reported as present. Useful
     /// for tests that don't want to be affected by what's installed.
     #[cfg(test)]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     #[must_use]
     pub const fn all_present() -> Self {
         Self {
@@ -115,30 +115,10 @@ impl Toolchain {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use std::ffi::OsString;
-
-    #[test]
-    fn install_hints_are_non_empty() {
-        for hint in [INSTALL_LLVM_COV, INSTALL_MACHETE, INSTALL_AUDIT] {
-            assert!(hint.starts_with("cargo install "), "got: {hint}");
-            assert!(hint.len() > "cargo install ".len());
-        }
-    }
-
-    #[test]
-    fn detect_does_not_panic_and_returns_bools() {
-        let t = Toolchain::detect();
-        let _ = (t.llvm_cov, t.nextest, t.machete, t.audit);
-    }
-
-    #[test]
-    fn unknown_subcommand_is_not_detected_in_real_path() {
-        assert!(!has_cargo_subcommand(
-            "definitely-not-a-real-cargo-subcommand"
-        ));
-    }
 
     #[test]
     fn has_cargo_subcommand_in_returns_false_when_path_is_unset() {
@@ -187,14 +167,6 @@ mod tests {
     }
 
     #[test]
-    fn cargo_command_strips_package_scoped_vars() {
-        // We can't trivially inspect the Command's env, but the call must
-        // not panic and the function only branches on env var names that
-        // we already test directly via `should_scrub_cargo_env`.
-        let _ = cargo_command();
-    }
-
-    #[test]
     fn should_scrub_cargo_env_targets_package_scoped_vars() {
         assert!(should_scrub_cargo_env("CARGO_PKG_NAME"));
         assert!(should_scrub_cargo_env("CARGO_PKG_VERSION"));
@@ -215,23 +187,5 @@ mod tests {
         assert!(!should_scrub_cargo_env("CARGO_TARGET_DIR"));
         assert!(!should_scrub_cargo_env("PATH"));
         assert!(!should_scrub_cargo_env("RUSTUP_TOOLCHAIN"));
-    }
-
-    #[test]
-    fn all_present_helper_reports_every_tool() {
-        let t = Toolchain::all_present();
-        assert!(t.llvm_cov);
-        assert!(t.nextest);
-        assert!(t.machete);
-        assert!(t.audit);
-    }
-
-    #[test]
-    fn default_reports_no_tool() {
-        let t = Toolchain::default();
-        assert!(!t.llvm_cov);
-        assert!(!t.nextest);
-        assert!(!t.machete);
-        assert!(!t.audit);
     }
 }

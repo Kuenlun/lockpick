@@ -24,26 +24,12 @@ impl Check for FmtCheck {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::checks::FakeRunner;
-
-    #[test]
-    fn label_is_fmt() {
-        assert_eq!(FmtCheck.label(), "fmt");
-    }
 
     #[test]
     fn cmd_runs_cargo_fmt_check() {
         assert_eq!(FmtCheck.cmd(), "cargo fmt --check");
-    }
-
-    #[test]
-    fn run_invokes_cargo_fmt_check() {
-        let fake = FakeRunner::passing();
-        assert!(FmtCheck.run(&fake).passed());
-        let calls = fake.calls.lock().unwrap().clone();
-        assert_eq!(calls[0].sub, "fmt");
-        assert!(calls[0].args.contains(&"--check".to_string()));
     }
 }

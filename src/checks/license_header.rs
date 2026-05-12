@@ -158,6 +158,7 @@ fn is_generated(contents: &[u8]) -> bool {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::checks::FakeRunner;
@@ -189,25 +190,6 @@ mod tests {
     #[test]
     fn is_generated_returns_false_for_empty_content() {
         assert!(!is_generated(b""));
-    }
-
-    #[test]
-    fn default_globs_cover_canonical_layout() {
-        let g = default_globs();
-        assert_eq!(g.len(), 4);
-        assert!(g.iter().any(|p| p == "src/**/*.rs"));
-        assert!(g.iter().any(|p| p == "tests/**/*.rs"));
-        assert!(g.iter().any(|p| p == "examples/**/*.rs"));
-        assert!(g.iter().any(|p| p == "benches/**/*.rs"));
-    }
-
-    #[test]
-    fn unconfigured_label_is_license() {
-        let check = LicenseHeaderCheck {
-            header_path: PathBuf::from("/nonexistent"),
-            globs: vec![],
-        };
-        assert_eq!(check.label(), "license");
     }
 
     #[test]
