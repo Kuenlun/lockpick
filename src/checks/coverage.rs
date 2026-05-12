@@ -19,24 +19,6 @@ pub struct CoverageCheck {
     pub thresholds: CoverageConfig,
 }
 
-impl CoverageCheck {
-    /// Run with an injectable report collector. The default collector
-    /// (`collect_report`) shells out to `cargo llvm-cov`; tests substitute
-    /// a closure that returns fixture JSON.
-    pub fn run_with<F>(&self, collector: F) -> CheckOutcome
-    where
-        F: FnOnce() -> Result<Report, String>,
-    {
-        match collector() {
-            Ok(report) => evaluate(&report, self.thresholds),
-            Err(output) => CheckOutcome {
-                status: TaskStatus::Fail,
-                output,
-            },
-        }
-    }
-}
-
 impl Check for CoverageCheck {
     fn label(&self) -> &'static str {
         "coverage"
@@ -47,7 +29,13 @@ impl Check for CoverageCheck {
     }
 
     fn run(&self, runner: &dyn Runner) -> CheckOutcome {
-        self.run_with(|| collect_report(runner))
+        match collect_report(runner) {
+            Ok(report) => evaluate(&report, self.thresholds),
+            Err(output) => CheckOutcome {
+                status: TaskStatus::Fail,
+                output,
+            },
+        }
     }
 }
 
@@ -188,6 +176,14 @@ mod tests {
         serde_json::from_str(json).expect("valid json")
     }
 
+    fn fake_with_stdout(stdout: &[u8], success: bool) -> FakeRunner {
+        FakeRunner::with_responses(vec![Ok(SpawnResult {
+            success,
+            stdout: stdout.to_vec(),
+            stderr: Vec::new(),
+        })])
+    }
+
     #[test]
     fn label_is_coverage() {
         let c = CoverageCheck {
@@ -287,44 +283,6 @@ mod tests {
     }
 
     #[test]
-    fn run_with_pass_path_via_fake_collector() {
-        let check = CoverageCheck {
-            thresholds: CoverageConfig::default(),
-        };
-        let outcome = check.run_with(|| Ok(report_from(COVERED_REPORT)));
-        assert!(outcome.passed());
-    }
-
-    #[test]
-    fn run_with_propagates_collector_failure() {
-        let check = CoverageCheck {
-            thresholds: CoverageConfig::default(),
-        };
-        let outcome = check.run_with(|| Err("simulated llvm-cov failure".to_string()));
-        assert!(outcome.failed());
-        assert!(outcome.output.contains("simulated llvm-cov failure"));
-    }
-
-    #[test]
-    fn run_with_fails_when_report_below_threshold() {
-        let check = CoverageCheck {
-            thresholds: CoverageConfig::default(),
-        };
-        let outcome = check.run_with(|| {
-            Ok(report_from(
-                r#"{ "data": [{ "files": [{}], "totals": {
-                    "functions": { "count": 10, "covered": 9 },
-                    "lines": { "count": 100, "covered": 100 },
-                    "regions": { "count": 50, "covered": 50 },
-                    "branches": { "count": 20, "covered": 20 }
-                } }] }"#,
-            ))
-        });
-        assert!(outcome.failed());
-        assert!(outcome.output.contains("FAIL functions"));
-    }
-
-    #[test]
     fn evaluate_rejects_all_zero_metrics_as_broken_instrumentation() {
         let report = report_from(
             r#"{ "data": [{ "files": [{}], "totals": {
@@ -341,11 +299,7 @@ mod tests {
 
     #[test]
     fn collect_report_parses_runner_stdout_on_success() {
-        let fake = FakeRunner::with_responses(vec![Ok(SpawnResult {
-            success: true,
-            stdout: COVERED_REPORT.as_bytes().to_vec(),
-            stderr: Vec::new(),
-        })]);
+        let fake = fake_with_stdout(COVERED_REPORT.as_bytes(), true);
         let report = collect_report(&fake).expect("parsed");
         let outcome = evaluate(&report, CoverageConfig::default());
         assert!(outcome.passed());
@@ -364,11 +318,7 @@ mod tests {
 
     #[test]
     fn collect_report_complains_about_malformed_json() {
-        let fake = FakeRunner::with_responses(vec![Ok(SpawnResult {
-            success: true,
-            stdout: b"definitely not json".to_vec(),
-            stderr: Vec::new(),
-        })]);
+        let fake = fake_with_stdout(b"definitely not json", true);
         let err = collect_report(&fake).unwrap_err();
         assert!(err.contains("malformed llvm-cov JSON"));
     }
@@ -382,12 +332,8 @@ mod tests {
     }
 
     #[test]
-    fn run_drives_run_with_using_runner() {
-        let fake = FakeRunner::with_responses(vec![Ok(SpawnResult {
-            success: true,
-            stdout: COVERED_REPORT.as_bytes().to_vec(),
-            stderr: Vec::new(),
-        })]);
+    fn run_passes_when_collect_report_succeeds_and_thresholds_met() {
+        let fake = fake_with_stdout(COVERED_REPORT.as_bytes(), true);
         let check = CoverageCheck {
             thresholds: CoverageConfig::default(),
         };
@@ -398,22 +344,9 @@ mod tests {
         assert!(calls[0].args.contains(&"report".to_string()));
     }
 
-    /// Exercises the `Err` arm of `run_with` for the *production*
-    /// monomorphization (the closure `|| collect_report(runner)` injected
-    /// by `Check::run`). `run_with_propagates_collector_failure` already
-    /// covers `Err`, but for a different closure type — and `run_with` is
-    /// generic, so each closure type produces its own instantiation with
-    /// its own coverage map. Without this test the production
-    /// monomorphization's `Err` arm is only reached by the unix-only
-    /// `coverage_fails_when_shim_returns_malformed_json` integration
-    /// test, leaving Windows missing 1 line / 2 regions in this file.
     #[test]
     fn run_returns_fail_when_collect_report_errors() {
-        let fake = FakeRunner::with_responses(vec![Ok(SpawnResult {
-            success: true,
-            stdout: b"definitely not json".to_vec(),
-            stderr: Vec::new(),
-        })]);
+        let fake = fake_with_stdout(b"definitely not json", true);
         let check = CoverageCheck {
             thresholds: CoverageConfig::default(),
         };

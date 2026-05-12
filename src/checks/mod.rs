@@ -124,32 +124,15 @@ pub trait Check: Send + Sync {
 ///
 /// `coverage_active` enables instrumentation in the `test` check so its
 /// `.profraw` files can be consumed by the coverage gate in phase 3.
+/// `has_lib` comes from the single [`crate::config::LockpickMetadata`]
+/// load and gates the `doc-test` check on bin-only workspaces.
 #[must_use]
 pub fn build_parallel(
     cli: &Cli,
     coverage_active: bool,
     toolchain: Toolchain,
     config: &Config,
-) -> Vec<Box<dyn Check>> {
-    build_parallel_with(
-        cli,
-        coverage_active,
-        toolchain,
-        config,
-        &doctest::workspace_has_lib_target,
-    )
-}
-
-/// Variant of [`build_parallel`] with an injectable `has_lib` predicate so
-/// the doctest opt-in is unit-testable without invoking cargo. Uses a
-/// `&dyn Fn` (not `impl Fn`) so every call site shares one monomorphisation
-/// — that keeps branch coverage stable across test invocations.
-pub fn build_parallel_with(
-    cli: &Cli,
-    coverage_active: bool,
-    toolchain: Toolchain,
-    config: &Config,
-    has_lib: &dyn Fn() -> bool,
+    has_lib: bool,
 ) -> Vec<Box<dyn Check>> {
     let mut checks: Vec<Box<dyn Check>> = Vec::new();
 
@@ -165,7 +148,7 @@ pub fn build_parallel_with(
             nextest: toolchain.nextest,
         }));
     }
-    if !cli.skips(&SkipOption::DocTest) && has_lib() {
+    if !cli.skips(&SkipOption::DocTest) && has_lib {
         checks.push(Box::new(doctest::DocTestCheck));
     }
     if !cli.skips(&SkipOption::Doc) {
@@ -369,8 +352,6 @@ mod tests {
 
     #[test]
     fn build_parallel_respects_every_skip_option() {
-        use crate::cli::{Cli, SkipOption};
-
         let cli = Cli {
             skip: vec![
                 SkipOption::Clippy,
@@ -384,23 +365,29 @@ mod tests {
             ],
             verbose: false,
         };
-        let toolchain = Toolchain::all_present();
-        let config = Config::default();
-        let checks = build_parallel_with(&cli, false, toolchain, &config, &|| true);
+        let checks = build_parallel(
+            &cli,
+            false,
+            Toolchain::all_present(),
+            &Config::default(),
+            true,
+        );
         assert!(checks.is_empty());
     }
 
     #[test]
     fn build_parallel_with_no_skips_returns_every_runnable_check_in_lib_workspace() {
-        use crate::cli::Cli;
-
         let cli = Cli {
             skip: vec![],
             verbose: false,
         };
-        let toolchain = Toolchain::all_present();
-        let config = Config::default();
-        let checks = build_parallel_with(&cli, true, toolchain, &config, &|| true);
+        let checks = build_parallel(
+            &cli,
+            true,
+            Toolchain::all_present(),
+            &Config::default(),
+            true,
+        );
         let has = |needle: &str| checks.iter().any(|c| c.label() == needle);
         assert!(has("clippy"));
         assert!(has("fmt"));
@@ -414,66 +401,47 @@ mod tests {
 
     #[test]
     fn build_parallel_omits_doctest_when_workspace_has_no_lib() {
-        use crate::cli::Cli;
-
         let cli = Cli {
             skip: vec![],
             verbose: false,
         };
-        let toolchain = Toolchain::all_present();
-        let config = Config::default();
-        let checks = build_parallel_with(&cli, false, toolchain, &config, &|| false);
+        let checks = build_parallel(
+            &cli,
+            false,
+            Toolchain::all_present(),
+            &Config::default(),
+            false,
+        );
         assert!(checks.iter().all(|c| c.label() != "doc test"));
     }
 
     #[test]
     fn build_parallel_enables_license_check_when_configured() {
-        use crate::cli::Cli;
-
         let cli = Cli {
             skip: vec![],
             verbose: false,
         };
-        let toolchain = Toolchain::all_present();
         let config = Config {
             license_header: Some(PathBuf::from("hdr.txt")),
             ..Config::default()
         };
-        let checks = build_parallel_with(&cli, false, toolchain, &config, &|| false);
+        let checks = build_parallel(&cli, false, Toolchain::all_present(), &config, false);
         assert!(checks.iter().any(|c| c.label() == "license"));
     }
 
     #[test]
     fn build_parallel_uses_explicit_globs_when_provided() {
-        use crate::cli::Cli;
-
         let cli = Cli {
             skip: vec![],
             verbose: false,
         };
-        let toolchain = Toolchain::all_present();
         let config = Config {
             license_header: Some(PathBuf::from("hdr.txt")),
             license_header_globs: Some(vec!["lib/**/*.rs".to_string()]),
             ..Config::default()
         };
-        let checks = build_parallel_with(&cli, false, toolchain, &config, &|| false);
+        let checks = build_parallel(&cli, false, Toolchain::all_present(), &config, false);
         assert!(checks.iter().any(|c| c.label() == "license"));
-    }
-
-    #[test]
-    fn build_parallel_delegates_to_real_predicate() {
-        use crate::cli::Cli;
-
-        // Smoke test that the default predicate path is exercised. Lockpick
-        // itself is a bin-only crate so `workspace_has_lib_target()` should
-        // be false here, but we don't assert on the boolean — we only care
-        // that the public `build_parallel` wrapper runs.
-        let cli = Cli {
-            skip: vec![SkipOption::Test],
-            verbose: false,
-        };
-        let _ = build_parallel(&cli, false, Toolchain::all_present(), &Config::default());
     }
 
     #[test]

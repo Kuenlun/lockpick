@@ -174,8 +174,11 @@ fn verbose_pass_sections_appear_before_fail() {
 
     let stderr = stderr_text(&output);
     output.assert().failure();
-    let last_pass = stderr.rfind("OUTPUT").expect("no PASS section found");
-    let first_fail = stderr.find("ERRORS").expect("no FAIL section found");
+    // The unicode markers are exclusive to the section banners; this
+    // avoids matching the words "OUTPUT"/"ERRORS" if they ever appear
+    // inside a captured cargo message.
+    let last_pass = stderr.rfind(" ✔ ").expect("no PASS section found");
+    let first_fail = stderr.find(" ✖ ").expect("no FAIL section found");
     assert!(
         last_pass < first_fail,
         "expected all PASS sections before FAIL sections:\n{stderr}"
@@ -206,7 +209,8 @@ fn removed_coverage_flag_is_rejected() {
 }
 
 /// `--skip test` implicitly skips coverage too, so no `cargo-llvm-cov`
-/// is required and no `coverage` line appears in the output.
+/// is required, no coverage status line appears in the output, and the
+/// user is informed of the implicit skip via an always-visible note.
 #[test]
 fn skip_test_implies_skip_coverage() {
     let project = dummy_cargo_project();
@@ -220,9 +224,15 @@ fn skip_test_implies_skip_coverage() {
     let stderr = stderr_text(&output);
     output.assert().success();
     assert!(
-        !stderr.contains("coverage"),
-        "expected no coverage section when test is skipped, got:\n{stderr}"
+        stderr.contains("--skip test implies coverage will be skipped"),
+        "expected note about implicit coverage skip, got:\n{stderr}"
     );
+    for tag in ["coverage PASS", "coverage FAIL", "coverage SKIP"] {
+        assert!(
+            !stderr.contains(tag),
+            "expected no '{tag}' status line, got:\n{stderr}"
+        );
+    }
 }
 
 /// A project that fails `cargo check` causes remaining checks to be skipped.
@@ -528,13 +538,11 @@ fn coverage_runs_against_mocked_cargo_llvm_cov() {
     let project = dummy_cargo_project();
     let canned_json = r#"{ "data": [{ "files": [{}], "totals": { "functions": { "count": 1, "covered": 1 }, "lines": { "count": 1, "covered": 1 }, "regions": { "count": 1, "covered": 1 }, "branches": { "count": 1, "covered": 1 } } }] }"#;
 
-    // `-v` exercises `Check::cmd` for the verbose banner, which is dead
-    // in non-verbose runs and therefore otherwise uncovered.
     let output = lockpick_raw()
         .current_dir(project.path())
         .env("PATH", &new_path)
         .env("LOCKPICK_TEST_COV_JSON", canned_json)
-        .args(["--skip", "machete", "--skip", "audit", "-v"])
+        .args(["--skip", "machete", "--skip", "audit"])
         .output()
         .expect("failed to execute lockpick");
 

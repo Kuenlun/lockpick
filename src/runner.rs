@@ -8,7 +8,7 @@ use indicatif::ProgressBar;
 
 use crate::checks::{self, CargoCli, Check, Runner, coverage::CoverageCheck};
 use crate::cli::{Cli, SkipOption};
-use crate::config::Config;
+use crate::config::{Config, LockpickMetadata};
 use crate::error::LockpickError;
 use crate::reporter::{CheckOutcome, Reporter, TaskStatus};
 use crate::tooling::{INSTALL_AUDIT, INSTALL_LLVM_COV, INSTALL_MACHETE, Toolchain};
@@ -18,9 +18,16 @@ use crate::tooling::{INSTALL_AUDIT, INSTALL_LLVM_COV, INSTALL_MACHETE, Toolchain
 pub fn run(cli: &Cli) -> Result<(), LockpickError> {
     let reporter = Reporter::auto(cli.verbose);
     let toolchain = Toolchain::detect();
-    let config = Config::load();
+    let metadata = LockpickMetadata::load();
     let runner = CargoCli::detect();
-    run_with(cli, &reporter, toolchain, &config, &runner)
+    run_with(
+        cli,
+        &reporter,
+        toolchain,
+        &metadata.config,
+        metadata.has_lib_target,
+        &runner,
+    )
 }
 
 /// Orchestrator with every collaborator injected so tests can drive
@@ -30,17 +37,18 @@ pub fn run_with(
     reporter: &Reporter,
     toolchain: Toolchain,
     config: &Config,
+    has_lib: bool,
     runner: &dyn Runner,
 ) -> Result<(), LockpickError> {
     let coverage_active = is_coverage_active(cli);
 
     require_tooling(cli, coverage_active, toolchain)?;
     if cli.skips(&SkipOption::Test) && !cli.skips(&SkipOption::Coverage) {
-        reporter.info("--skip test implies coverage will be skipped");
+        reporter.note("--skip test implies coverage will be skipped");
     }
 
     let run_compile = !cli.skips(&SkipOption::Check);
-    let parallel = checks::build_parallel(cli, coverage_active, toolchain, config);
+    let parallel = checks::build_parallel(cli, coverage_active, toolchain, config, has_lib);
     let coverage_check = coverage_active.then_some(CoverageCheck {
         thresholds: config.coverage,
     });
@@ -53,12 +61,14 @@ pub fn run_with(
         return Ok(());
     }
 
-    print_planned_commands(
-        reporter,
-        run_compile,
-        &parallel,
-        coverage_check.as_ref().map(|c| c as &dyn Check),
-    );
+    if reporter.is_verbose {
+        print_planned_commands(
+            reporter,
+            run_compile,
+            &parallel,
+            coverage_check.as_ref().map(|c| c as &dyn Check),
+        );
+    }
 
     let compile_pb = run_compile.then(|| reporter.add_spinner("check"));
     let parallel_pbs: Vec<ProgressBar> = parallel
@@ -81,17 +91,12 @@ pub fn run_with(
     let parallel_outcomes: Vec<CheckOutcome> = if compile_passed {
         run_parallel(&parallel, runner)
     } else {
-        (0..parallel.len())
-            .map(|_| CheckOutcome::skipped())
+        std::iter::repeat_with(CheckOutcome::skipped)
+            .take(parallel.len())
             .collect()
     };
     for ((check, outcome), pb) in parallel.iter().zip(&parallel_outcomes).zip(&parallel_pbs) {
-        let status = if compile_passed {
-            outcome.status
-        } else {
-            TaskStatus::Skip
-        };
-        reporter.finish_spinner(pb, check.label(), status);
+        reporter.finish_spinner(pb, check.label(), outcome.status);
     }
 
     // Phase 3: coverage gate (only if active and tests succeeded).
@@ -105,14 +110,13 @@ pub fn run_with(
         outcome
     });
 
-    let failure_count = report_results(
-        reporter,
+    let items = flatten_outcomes(
         compile_outcome.as_ref(),
         &parallel,
         &parallel_outcomes,
-        compile_passed,
         coverage_outcome.as_ref(),
     );
+    let failure_count = report_results(reporter, &items);
 
     if failure_count > 0 {
         return Err(LockpickError::ChecksFailed(failure_count));
@@ -172,15 +176,15 @@ fn should_run_coverage_phase(
             .is_some_and(|(_, o)| o.passed())
 }
 
+/// Caller has already gated on `reporter.is_verbose`; print one banner
+/// line per planned cargo invocation, plus a trailing blank line so the
+/// spinners start on a fresh row.
 fn print_planned_commands(
     reporter: &Reporter,
     run_compile: bool,
     parallel: &[Box<dyn Check>],
     coverage: Option<&dyn Check>,
 ) {
-    if !reporter.is_verbose {
-        return;
-    }
     if run_compile {
         reporter.command(&checks::compile::CompileCheck.cmd());
     }
@@ -204,91 +208,60 @@ fn run_parallel(checks: &[Box<dyn Check>], runner: &dyn Runner) -> Vec<CheckOutc
             .map(|c| s.spawn(move || c.run(runner)))
             .collect::<Vec<_>>()
             .into_iter()
-            .map(|handle| handle.join().unwrap_or_else(|_| failed_outcome()))
+            .map(|handle| {
+                handle.join().unwrap_or_else(|_| CheckOutcome {
+                    status: TaskStatus::Fail,
+                    output: String::new(),
+                })
+            })
             .collect()
     })
 }
 
-const fn failed_outcome() -> CheckOutcome {
-    CheckOutcome {
-        status: TaskStatus::Fail,
-        output: String::new(),
+/// Build the flat list of `(label, outcome)` pairs used by reporting.
+/// Pulling this out keeps the orchestrator's data flow obvious and lets
+/// the single-pass [`report_results`] stay branch-free.
+fn flatten_outcomes<'a>(
+    compile_outcome: Option<&'a CheckOutcome>,
+    parallel: &'a [Box<dyn Check>],
+    parallel_outcomes: &'a [CheckOutcome],
+    coverage_outcome: Option<&'a CheckOutcome>,
+) -> Vec<(&'a str, &'a CheckOutcome)> {
+    let mut items: Vec<(&str, &CheckOutcome)> = Vec::new();
+    if let Some(o) = compile_outcome {
+        items.push(("check", o));
     }
+    for (c, o) in parallel.iter().zip(parallel_outcomes) {
+        items.push((c.label(), o));
+    }
+    if let Some(o) = coverage_outcome {
+        items.push(("coverage", o));
+    }
+    items
 }
 
-fn report_results(
-    reporter: &Reporter,
-    compile_outcome: Option<&CheckOutcome>,
-    parallel: &[Box<dyn Check>],
-    parallel_outcomes: &[CheckOutcome],
-    compile_passed: bool,
-    coverage_outcome: Option<&CheckOutcome>,
-) -> usize {
-    // PASS sections first when verbose so the operator can scan green-to-red.
+/// Print PASS sections (verbose only) and FAIL sections in two passes
+/// over the flat item list. Returns the number of failing checks.
+fn report_results(reporter: &Reporter, items: &[(&str, &CheckOutcome)]) -> usize {
     if reporter.is_verbose {
-        if let Some(o) = compile_outcome
-            && o.passed()
-        {
-            reporter.print_section("check", &o.output, TaskStatus::Pass);
-        }
-        for (check, outcome) in parallel.iter().zip(parallel_outcomes) {
-            if outcome.passed() && compile_passed {
-                reporter.print_section(check.label(), &outcome.output, TaskStatus::Pass);
-            }
-        }
-        if let Some(o) = coverage_outcome
-            && o.passed()
-        {
-            reporter.print_section("coverage", &o.output, TaskStatus::Pass);
-        }
-    }
-
-    // FAIL sections.
-    if let Some(o) = compile_outcome
-        && o.failed()
-    {
-        reporter.print_section("check", &o.output, TaskStatus::Fail);
-    }
-    for (check, outcome) in parallel.iter().zip(parallel_outcomes) {
-        if outcome.failed() && compile_passed {
-            reporter.print_section(check.label(), &outcome.output, TaskStatus::Fail);
-        }
-    }
-    if let Some(o) = coverage_outcome
-        && o.failed()
-    {
-        reporter.print_section("coverage", &o.output, TaskStatus::Fail);
-    }
-
-    let mut failed: Vec<&str> = Vec::new();
-    if let Some(o) = compile_outcome
-        && o.failed()
-    {
-        failed.push("check");
-    }
-    if compile_passed {
-        for (check, outcome) in parallel.iter().zip(parallel_outcomes) {
-            if outcome.failed() {
-                failed.push(check.label());
+        for (label, outcome) in items {
+            if outcome.passed() {
+                reporter.print_section(label, &outcome.output, TaskStatus::Pass);
             }
         }
     }
-    if let Some(o) = coverage_outcome
-        && o.failed()
-    {
-        failed.push("coverage");
+    for (label, outcome) in items {
+        if outcome.failed() {
+            reporter.print_section(label, &outcome.output, TaskStatus::Fail);
+        }
     }
 
-    let mut total = parallel.len();
-    if compile_outcome.is_some() {
-        total += 1;
-    }
-    if coverage_outcome.is_some() {
-        total += 1;
-    }
-
-    reporter.summary(total, &failed);
-
+    let failed: Vec<&str> = items
+        .iter()
+        .filter(|(_, o)| o.failed())
+        .map(|(l, _)| *l)
+        .collect();
+    reporter.summary(items.len(), &failed);
     failed.len()
 }
 
@@ -323,233 +296,67 @@ mod tests {
 
     #[test]
     fn report_results_returns_zero_when_everything_passes() {
+        let reporter = Reporter::new(true, false);
+        let compile = pass("check");
+        let clippy = pass("clippy");
+        let coverage = pass("coverage");
+        let items = vec![
+            ("check", &compile),
+            ("clippy", &clippy),
+            ("coverage", &coverage),
+        ];
+        assert_eq!(report_results(&reporter, &items), 0);
+    }
+
+    #[test]
+    fn report_results_counts_every_failure_and_emits_fail_sections() {
         let reporter = Reporter::new(false, false);
+        let compile = pass("check");
+        let fmt_fail = fail("fmt");
+        let cov_fail = fail("coverage");
+        let items = vec![
+            ("check", &compile),
+            ("fmt", &fmt_fail),
+            ("coverage", &cov_fail),
+        ];
+        assert_eq!(report_results(&reporter, &items), 2);
+    }
+
+    #[test]
+    fn report_results_ignores_skipped_outcomes() {
+        let reporter = Reporter::new(true, false);
+        let compile = fail("check");
+        let skipped = CheckOutcome::skipped();
+        let items = vec![("check", &compile), ("clippy", &skipped)];
+        assert_eq!(report_results(&reporter, &items), 1);
+    }
+
+    #[test]
+    fn report_results_on_empty_items_prints_ok_with_zero_total() {
+        let reporter = Reporter::new(false, false);
+        assert_eq!(report_results(&reporter, &[]), 0);
+    }
+
+    #[test]
+    fn flatten_outcomes_drops_none_outcomes_and_preserves_parallel_order() {
+        let compile = pass("check");
+        let clippy = pass("clippy");
+        let fmt = fail("fmt");
+        let coverage = pass("coverage");
         let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck), Box::new(FmtCheck)];
-        let outcomes = vec![pass("clippy"), pass("fmt")];
-        let n = report_results(
-            &reporter,
-            Some(&pass("check")),
-            &parallel,
-            &outcomes,
-            true,
-            Some(&pass("coverage")),
+        let outcomes = vec![clippy, fmt];
+        let items = flatten_outcomes(Some(&compile), &parallel, &outcomes, Some(&coverage));
+        assert_eq!(
+            items.iter().map(|(l, _)| *l).collect::<Vec<_>>(),
+            vec!["check", "clippy", "fmt", "coverage"]
         );
-        assert_eq!(n, 0);
-    }
 
-    #[test]
-    fn report_results_counts_a_failing_parallel_check() {
-        let reporter = Reporter::new(false, false);
-        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck), Box::new(FmtCheck)];
-        let outcomes = vec![pass("clippy"), fail("fmt")];
-        let n = report_results(
-            &reporter,
-            Some(&pass("check")),
-            &parallel,
-            &outcomes,
-            true,
-            None,
+        // Drop the compile/coverage edges to cover the `None` arms.
+        let no_compile = flatten_outcomes(None, &parallel, &outcomes, None);
+        assert_eq!(
+            no_compile.iter().map(|(l, _)| *l).collect::<Vec<_>>(),
+            vec!["clippy", "fmt"]
         );
-        assert_eq!(n, 1);
-    }
-
-    #[test]
-    fn report_results_counts_a_failing_compile_check() {
-        let reporter = Reporter::new(false, false);
-        let parallel: Vec<Box<dyn Check>> = vec![];
-        let outcomes: Vec<CheckOutcome> = vec![];
-        let n = report_results(
-            &reporter,
-            Some(&fail("check")),
-            &parallel,
-            &outcomes,
-            false,
-            None,
-        );
-        assert_eq!(n, 1);
-    }
-
-    #[test]
-    fn report_results_counts_a_failing_coverage_gate() {
-        let reporter = Reporter::new(false, false);
-        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck)];
-        let outcomes = vec![pass("clippy")];
-        let n = report_results(
-            &reporter,
-            Some(&pass("check")),
-            &parallel,
-            &outcomes,
-            true,
-            Some(&fail("coverage")),
-        );
-        assert_eq!(n, 1);
-    }
-
-    #[test]
-    fn report_results_does_not_count_parallel_when_compile_failed() {
-        let reporter = Reporter::new(false, false);
-        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck), Box::new(FmtCheck)];
-        let outcomes = vec![CheckOutcome::skipped(), CheckOutcome::skipped()];
-        let n = report_results(
-            &reporter,
-            Some(&fail("check")),
-            &parallel,
-            &outcomes,
-            false,
-            None,
-        );
-        assert_eq!(n, 1);
-    }
-
-    #[test]
-    fn report_results_verbose_path_still_returns_correct_count() {
-        let reporter = Reporter::new(true, false);
-        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck)];
-        let outcomes = vec![pass("clippy")];
-        let n = report_results(
-            &reporter,
-            Some(&pass("check")),
-            &parallel,
-            &outcomes,
-            true,
-            Some(&pass("coverage")),
-        );
-        assert_eq!(n, 0);
-    }
-
-    #[test]
-    fn report_results_verbose_emits_pass_and_fail_sections_for_coverage() {
-        let reporter = Reporter::new(true, false);
-        let parallel: Vec<Box<dyn Check>> = vec![];
-        let outcomes: Vec<CheckOutcome> = vec![];
-        let n = report_results(
-            &reporter,
-            Some(&pass("check")),
-            &parallel,
-            &outcomes,
-            true,
-            Some(&fail("coverage")),
-        );
-        assert_eq!(n, 1);
-    }
-
-    #[test]
-    fn report_results_works_without_compile_outcome_when_skipped() {
-        let reporter = Reporter::new(false, false);
-        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck)];
-        let outcomes = vec![pass("clippy")];
-        let n = report_results(&reporter, None, &parallel, &outcomes, true, None);
-        assert_eq!(n, 0);
-    }
-
-    #[test]
-    fn report_results_verbose_with_no_compile_or_coverage_outcome() {
-        let reporter = Reporter::new(true, false);
-        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck)];
-        let outcomes = vec![pass("clippy")];
-        let n = report_results(&reporter, None, &parallel, &outcomes, true, None);
-        assert_eq!(n, 0);
-    }
-
-    #[test]
-    fn report_results_verbose_with_failing_compile_skips_pass_section() {
-        let reporter = Reporter::new(true, false);
-        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck)];
-        let outcomes = vec![CheckOutcome::skipped()];
-        let n = report_results(
-            &reporter,
-            Some(&fail("check")),
-            &parallel,
-            &outcomes,
-            false,
-            None,
-        );
-        assert_eq!(n, 1);
-    }
-
-    #[test]
-    fn report_results_verbose_with_failing_coverage_skips_pass_section() {
-        let reporter = Reporter::new(true, false);
-        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck)];
-        let outcomes = vec![fail("clippy")];
-        let n = report_results(
-            &reporter,
-            Some(&pass("check")),
-            &parallel,
-            &outcomes,
-            true,
-            Some(&fail("coverage")),
-        );
-        assert_eq!(n, 2);
-    }
-
-    #[test]
-    fn report_results_non_verbose_with_failing_coverage_only() {
-        let reporter = Reporter::new(false, false);
-        let parallel: Vec<Box<dyn Check>> = vec![];
-        let outcomes: Vec<CheckOutcome> = vec![];
-        let n = report_results(
-            &reporter,
-            None,
-            &parallel,
-            &outcomes,
-            true,
-            Some(&fail("coverage")),
-        );
-        assert_eq!(n, 1);
-    }
-
-    #[test]
-    fn report_results_non_verbose_with_passing_coverage_only() {
-        let reporter = Reporter::new(false, false);
-        let parallel: Vec<Box<dyn Check>> = vec![];
-        let outcomes: Vec<CheckOutcome> = vec![];
-        let n = report_results(
-            &reporter,
-            None,
-            &parallel,
-            &outcomes,
-            true,
-            Some(&pass("coverage")),
-        );
-        assert_eq!(n, 0);
-    }
-
-    #[test]
-    fn report_results_with_compile_failed_and_parallel_outcomes_doesnt_double_count() {
-        let reporter = Reporter::new(false, false);
-        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck)];
-        // outcome.failed() is true, but compile_passed=false → parallel section
-        // is skipped in report_results. Only the compile failure counts.
-        let outcomes = vec![fail("clippy")];
-        let n = report_results(
-            &reporter,
-            Some(&fail("check")),
-            &parallel,
-            &outcomes,
-            false,
-            None,
-        );
-        assert_eq!(n, 1);
-    }
-
-    #[test]
-    fn report_results_verbose_skips_parallel_pass_section_when_compile_failed() {
-        // Synthetic case: compile_passed=false but parallel outcomes were
-        // synthesised as passing. The verbose pass-section branch must
-        // still short-circuit on the compile_passed guard.
-        let reporter = Reporter::new(true, false);
-        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck)];
-        let outcomes = vec![pass("clippy")];
-        let n = report_results(
-            &reporter,
-            Some(&fail("check")),
-            &parallel,
-            &outcomes,
-            false,
-            None,
-        );
-        assert_eq!(n, 1);
     }
 
     #[test]
@@ -644,14 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn print_planned_commands_is_no_op_when_verbose_is_false() {
-        let reporter = Reporter::new(false, false);
-        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck)];
-        print_planned_commands(&reporter, true, &parallel, None);
-    }
-
-    #[test]
-    fn print_planned_commands_prints_when_verbose() {
+    fn print_planned_commands_prints_compile_parallel_and_coverage() {
         let reporter = Reporter::new(true, false);
         let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck)];
         let coverage = CoverageCheck {
@@ -689,9 +489,7 @@ mod tests {
     }
 
     /// Runner that always panics when spawned. Used to exercise the
-    /// `run_parallel` panic-recovery branch without introducing a custom
-    /// `Check` fixture whose `label()`/`cmd()` methods would only exist
-    /// to satisfy the trait.
+    /// `run_parallel` panic-recovery branch.
     struct PanickingRunner;
     impl Runner for PanickingRunner {
         fn spawn(
@@ -716,13 +514,6 @@ mod tests {
         assert_eq!(outcomes.len(), 1);
         assert!(outcomes[0].failed());
         assert!(outcomes[0].output.is_empty());
-    }
-
-    #[test]
-    fn failed_outcome_helper_is_fail_with_empty_output() {
-        let o = failed_outcome();
-        assert!(o.failed());
-        assert!(o.output.is_empty());
     }
 
     fn passing_runner() -> FakeRunner {
@@ -753,9 +544,17 @@ mod tests {
             verbose: true,
         };
         let runner = passing_runner();
-        let toolchain = Toolchain::all_present();
-        let config = Config::default();
-        assert!(run_with(&cli, &reporter, toolchain, &config, &runner).is_ok());
+        assert!(
+            run_with(
+                &cli,
+                &reporter,
+                Toolchain::all_present(),
+                &Config::default(),
+                false,
+                &runner,
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -779,9 +578,15 @@ mod tests {
             stdout: b"compile error".to_vec(),
             stderr: Vec::new(),
         })]);
-        let toolchain = Toolchain::all_present();
-        let config = Config::default();
-        let err = run_with(&cli, &reporter, toolchain, &config, &runner).unwrap_err();
+        let err = run_with(
+            &cli,
+            &reporter,
+            Toolchain::all_present(),
+            &Config::default(),
+            false,
+            &runner,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("check(s) failed"));
     }
 
@@ -792,15 +597,22 @@ mod tests {
             skip: vec![],
             verbose: false,
         };
-        let toolchain = Toolchain::default(); // nothing present
-        let config = Config::default();
+        // Toolchain::default() reports nothing present.
         let runner = FakeRunner::passing();
-        let err = run_with(&cli, &reporter, toolchain, &config, &runner).unwrap_err();
+        let err = run_with(
+            &cli,
+            &reporter,
+            Toolchain::default(),
+            &Config::default(),
+            false,
+            &runner,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("required tool"));
     }
 
     #[test]
-    fn run_with_emits_info_when_test_skipped_but_coverage_not_skipped() {
+    fn run_with_emits_note_when_test_skipped_but_coverage_not_skipped() {
         let reporter = Reporter::new(true, false);
         let cli = Cli {
             skip: vec![
@@ -813,9 +625,17 @@ mod tests {
             verbose: true,
         };
         let runner = passing_runner();
-        let toolchain = Toolchain::all_present();
-        let config = Config::default();
-        assert!(run_with(&cli, &reporter, toolchain, &config, &runner).is_ok());
+        assert!(
+            run_with(
+                &cli,
+                &reporter,
+                Toolchain::all_present(),
+                &Config::default(),
+                false,
+                &runner,
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -834,13 +654,18 @@ mod tests {
             ],
             verbose: false,
         };
-        // Clippy + Fmt remain in `parallel`, so the "all checks disabled"
-        // shortcut must not fire. The runner proceeds and the fake runner
-        // reports them as passing.
         let runner = passing_runner();
-        let toolchain = Toolchain::all_present();
-        let config = Config::default();
-        assert!(run_with(&cli, &reporter, toolchain, &config, &runner).is_ok());
+        assert!(
+            run_with(
+                &cli,
+                &reporter,
+                Toolchain::all_present(),
+                &Config::default(),
+                false,
+                &runner,
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -862,9 +687,17 @@ mod tests {
             verbose: false,
         };
         let runner = FakeRunner::passing();
-        let toolchain = Toolchain::all_present();
-        let config = Config::default();
-        assert!(run_with(&cli, &reporter, toolchain, &config, &runner).is_ok());
+        assert!(
+            run_with(
+                &cli,
+                &reporter,
+                Toolchain::all_present(),
+                &Config::default(),
+                false,
+                &runner,
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -883,8 +716,8 @@ mod tests {
             verbose: false,
         };
         // Phase 1 compile passes; phase 2 single `test` check fails;
-        // phase 3 coverage should be skipped (and the report counts the
-        // single test failure).
+        // phase 3 coverage is skipped (and the single test failure is
+        // reflected in the error).
         let runner = FakeRunner::with_responses(vec![
             Ok(SpawnResult {
                 success: true,
@@ -897,9 +730,15 @@ mod tests {
                 stderr: Vec::new(),
             }),
         ]);
-        let toolchain = Toolchain::all_present();
-        let config = Config::default();
-        let err = run_with(&cli, &reporter, toolchain, &config, &runner).unwrap_err();
+        let err = run_with(
+            &cli,
+            &reporter,
+            Toolchain::all_present(),
+            &Config::default(),
+            false,
+            &runner,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("1 check(s) failed"), "got: {err}");
     }
 
@@ -924,9 +763,15 @@ mod tests {
             stdout: b"compile error".to_vec(),
             stderr: Vec::new(),
         })]);
-        let toolchain = Toolchain::all_present();
-        let config = Config::default();
-        let err = run_with(&cli, &reporter, toolchain, &config, &runner).unwrap_err();
+        let err = run_with(
+            &cli,
+            &reporter,
+            Toolchain::all_present(),
+            &Config::default(),
+            false,
+            &runner,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("1 check(s) failed"), "got: {err}");
     }
 }

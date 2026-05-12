@@ -48,64 +48,14 @@ pub struct Reporter {
     pub is_verbose: bool,
 }
 
-/// Visual flavour of a section banner. Skip statuses don't print anything,
-/// so they're represented as `None` upstream — collapsing the runtime
-/// "no banner for Skip" decision into a single check instead of a Skip
-/// arm in every match.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SectionKind {
-    Pass,
-    Fail,
-}
-
-impl SectionKind {
-    const fn from_status(status: TaskStatus) -> Option<Self> {
-        match status {
-            TaskStatus::Pass => Some(Self::Pass),
-            TaskStatus::Fail => Some(Self::Fail),
-            TaskStatus::Skip => None,
-        }
-    }
-
-    fn header(self, label: &str) -> String {
-        match self {
-            Self::Pass => format!(" ✔ {} OUTPUT ", label.to_uppercase())
-                .green()
-                .bold()
-                .to_string(),
-            Self::Fail => format!(" ✖ {} ERRORS ", label.to_uppercase())
-                .red()
-                .bold()
-                .to_string(),
-        }
-    }
-
-    fn divider(self) -> String {
-        let raw = "━".repeat(40);
-        match self {
-            Self::Pass => raw.green().dimmed().to_string(),
-            Self::Fail => raw.red().dimmed().to_string(),
-        }
-    }
-
-    fn pipe(self) -> String {
-        match self {
-            Self::Pass => "│".green().dimmed().to_string(),
-            Self::Fail => "│".red().dimmed().to_string(),
-        }
-    }
-}
-
 #[allow(clippy::literal_string_with_formatting_args)]
 const SPIN_TEMPLATE: &str = "  {msg:<8} {spinner:.cyan}";
 const DONE_TEMPLATE: &str = "  {msg}";
 const TICK_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
 /// Build an indicatif `ProgressStyle`. The default templates we ship with
-/// always parse, so an invalid template falls back to indicatif's default
-/// style rather than propagating an error — that keeps the `Reporter`
-/// constructor infallible from the caller's perspective. Tests cover both
-/// branches by passing a known-bad template.
+/// always parse, but `expect_used = "deny"` rules out a hard `.expect()`;
+/// the fallback keeps the constructor infallible at zero readability cost.
 fn parse_template(template: &str) -> ProgressStyle {
     ProgressStyle::with_template(template).unwrap_or_else(|_| ProgressStyle::default_spinner())
 }
@@ -173,42 +123,49 @@ impl Reporter {
         }
     }
 
-    /// Print the cargo invocation about to run. Hidden unless `--verbose`.
+    /// Print a planned cargo invocation. The caller is responsible for
+    /// gating this on `is_verbose`; this method just renders the line.
     pub fn command(&self, cmd: &str) {
-        if self.is_verbose {
-            self.println(format!("  {} {cmd}", "$".dimmed()));
-        }
+        self.println(format!("  {} {cmd}", "$".dimmed()));
     }
 
-    /// Print an informational message; hidden unless `--verbose`.
-    pub fn info(&self, msg: &str) {
-        if self.is_verbose {
-            self.println(format!("  {} {msg}", "info:".cyan().bold()));
-        }
-    }
-
-    /// Print a message that is always visible (used for explanatory notes
-    /// such as "All checks disabled, nothing to run").
+    /// Print a message that is always visible (e.g. "All checks disabled,
+    /// nothing to run", or warnings about implicit skips).
     pub fn note(&self, msg: &str) {
         self.println(format!("  {msg}"));
     }
 
     pub fn print_section(&self, label: &str, output: &str, status: TaskStatus) {
-        let Some(kind) = SectionKind::from_status(status) else {
-            return;
+        let (header, divider, pipe) = match status {
+            TaskStatus::Pass => (
+                format!(" ✔ {} OUTPUT ", label.to_uppercase())
+                    .green()
+                    .bold()
+                    .to_string(),
+                "━".repeat(40).green().dimmed().to_string(),
+                "│".green().dimmed().to_string(),
+            ),
+            TaskStatus::Fail => (
+                format!(" ✖ {} ERRORS ", label.to_uppercase())
+                    .red()
+                    .bold()
+                    .to_string(),
+                "━".repeat(40).red().dimmed().to_string(),
+                "│".red().dimmed().to_string(),
+            ),
+            TaskStatus::Skip => return,
         };
         let output = output.trim();
 
         self.println("");
-        self.println(kind.header(label));
+        self.println(header);
 
         if output.is_empty() {
             self.println(format!("  {}", "(no output)".dimmed()));
             return;
         }
 
-        self.println(kind.divider());
-        let pipe = kind.pipe();
+        self.println(divider);
         for line in output.lines() {
             self.println(format!(" {pipe} {line}"));
         }
@@ -319,19 +276,15 @@ mod tests {
         }
     }
 
-    // The reporter writes to stderr / `MultiProgress` without exposing
-    // a swappable sink, so the tests below cannot assert on the rendered
-    // output. They instead drive every branch on both the verbose and
-    // tty axes to lock in the no-panic / no-deadlock contract that the
-    // rest of the pipeline relies on. Pure formatting is verified via
-    // `SectionKind` below.
-
     #[test]
-    fn verbose_gated_methods_drive_both_modes() {
-        for is_verbose in [true, false] {
-            let r = Reporter::new(is_verbose, false);
+    fn command_and_note_render_without_panicking() {
+        // Reporter writes to stderr / MultiProgress without exposing a
+        // swappable sink, so we can't assert on the rendered text. This
+        // drives `command` and `note` to lock in their no-panic contract
+        // on both the tty=false and tty=true paths.
+        for is_tty in [false, true] {
+            let r = Reporter::new(false, is_tty);
             r.command("cargo check");
-            r.info("just so you know");
             r.note("everything skipped");
         }
     }
@@ -354,28 +307,5 @@ mod tests {
         let r = Reporter::new(false, false);
         r.summary(5, &[]);
         r.summary(5, &["fmt", "clippy"]);
-    }
-
-    #[test]
-    fn section_kind_maps_pass_and_fail_to_some_skip_to_none() {
-        assert_eq!(
-            SectionKind::from_status(TaskStatus::Pass),
-            Some(SectionKind::Pass)
-        );
-        assert_eq!(
-            SectionKind::from_status(TaskStatus::Fail),
-            Some(SectionKind::Fail)
-        );
-        assert_eq!(SectionKind::from_status(TaskStatus::Skip), None);
-    }
-
-    #[test]
-    fn section_kind_renders_distinct_decorations_for_pass_and_fail() {
-        for kind in [SectionKind::Pass, SectionKind::Fail] {
-            let h = kind.header("clippy");
-            assert!(h.contains("CLIPPY"));
-            assert!(!kind.divider().is_empty());
-            assert!(!kind.pipe().is_empty());
-        }
     }
 }
