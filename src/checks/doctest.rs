@@ -139,13 +139,16 @@ mod tests {
         assert!(s.starts_with("cargo"));
     }
 
-    #[cfg(unix)]
     #[test]
     fn decode_metadata_stdout_returns_none_for_non_utf8_stdout() {
-        let out = std::process::Command::new("printf")
-            .arg(r"\xff\xfe")
+        // Spawn a trivial command to obtain a real `ExitStatus`, then swap in
+        // bytes that aren't valid UTF-8. Going through a shell tool like
+        // `printf` is non-portable — BSD `printf` on macOS doesn't grok `\xHH`.
+        let mut out = std::process::Command::new("cargo")
+            .arg("--version")
             .output()
-            .expect("printf runs");
+            .expect("cargo runs");
+        out.stdout = vec![0xff, 0xfe];
         assert!(decode_metadata_stdout(Ok(out)).is_none());
     }
 }
