@@ -1,5 +1,10 @@
 # lockpick
 
+[![CI](https://github.com/Kuenlun/lockpick/actions/workflows/rust.yml/badge.svg?branch=master)](https://github.com/Kuenlun/lockpick/actions/workflows/rust.yml)
+[![codecov](https://codecov.io/gh/Kuenlun/lockpick/branch/master/graph/badge.svg)](https://codecov.io/gh/Kuenlun/lockpick)
+[![Crates.io](https://img.shields.io/crates/v/lockpick.svg)](https://crates.io/crates/lockpick)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+
 > One invocation, one truth, zero noise. Run every quality gate your Rust crate needs and ship perfect code.
 
 `lockpick` is a single binary that orchestrates the full quality pipeline for a Rust workspace: compilation, lints, formatting, tests, documentation, dependency hygiene, security advisories, license headers and 100% branch coverage — all in one command, with one summary, and one exit code.
