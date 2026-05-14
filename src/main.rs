@@ -2,32 +2,39 @@
 // lockpick - Rust CLI to enforce merge checks and code quality
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
+mod checks;
 mod cli;
+mod config;
 mod error;
-mod logger;
+mod reporter;
 mod runner;
+mod tooling;
 
-use std::process::ExitCode;
-
-use clap::Parser;
-
-use crate::cli::{Cli, SkipOption};
 use crate::error::LockpickError;
 
+// `main` is excluded from test builds so libtest is the sole entry point
+// and an unused `fn main` does not drag coverage below 100%. Functions
+// only reachable from `main` carry `#[cfg_attr(test, allow(dead_code))]`.
+#[cfg(not(test))]
+use {clap::Parser, std::process::ExitCode};
+
+#[cfg(not(test))]
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    ExitCode::from(dispatch(runner::run(&cli::Cli::parse())))
+}
 
-    if cli.opt_in.coverage && cli.skips(&SkipOption::Test) {
-        eprintln!("error: --coverage and --skip test are mutually exclusive");
-        std::process::exit(2);
-    }
-
-    match runner::run(&cli) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(LockpickError::ChecksFailed(_)) => ExitCode::FAILURE,
-        Err(e) => {
+/// Map a [`runner::run`] result to a process exit code: `0` on success,
+/// `3` on missing-tool errors, `1` otherwise.
+#[cfg_attr(test, allow(dead_code))]
+fn dispatch(result: Result<(), LockpickError>) -> u8 {
+    match result {
+        Ok(()) => 0,
+        Err(LockpickError::ChecksFailed(_)) => 1,
+        Err(e @ LockpickError::MissingTool { .. }) => {
             eprintln!("error: {e}");
-            ExitCode::FAILURE
+            3
         }
     }
 }

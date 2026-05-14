@@ -3,11 +3,11 @@
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
 use clap::{
-    ArgAction, Args, Parser, ValueEnum,
+    Parser, ValueEnum,
     builder::styling::{AnsiColor, Effects, Styles},
 };
 
-/// Steps that can be skipped via `--skip`
+/// Check identifier for `--skip`.
 #[derive(ValueEnum, Clone, Debug, PartialEq, Eq)]
 pub enum SkipOption {
     Check,
@@ -15,53 +15,36 @@ pub enum SkipOption {
     Test,
     DocTest,
     Fmt,
+    Doc,
+    Machete,
+    Audit,
+    License,
+    Coverage,
 }
 
 #[derive(Parser, Debug)]
 #[command(
     version,
-    about = "Rust merge check CLI to enforce successful build, \
-             formatting, Clippy lints, passing tests and code coverage",
+    about = "Rust merge-check CLI. Runs compile, lints, formatting, tests \
+             and 100% coverage in a single invocation.",
     long_about = None,
     styles = cli_styles()
 )]
 pub struct Cli {
-    #[command(flatten)]
-    pub opt_in: OptInFlags,
-
     /// Skip one or more checks (e.g. --skip clippy --skip fmt)
     #[arg(long, value_enum)]
     pub skip: Vec<SkipOption>,
 
-    #[arg(
-        short = 'v',
-        long = "verbose",
-        action = ArgAction::Count,
-        help = "Increase logging verbosity (..= -vvvv)"
-    )]
-    pub verbose: u8,
+    /// Show every command and the full output of all checks (CI mode)
+    #[arg(short = 'v', long = "verbose")]
+    pub verbose: bool,
 }
 
 impl Cli {
+    #[must_use]
     pub fn skips(&self, option: &SkipOption) -> bool {
         self.skip.contains(option)
     }
-}
-
-#[derive(Args, Debug)]
-pub struct OptInFlags {
-    /// Measure and enforce code coverage
-    #[arg(short = 'c', long)]
-    pub coverage: bool,
-
-    /// Minimum line coverage percentage (requires --coverage)
-    #[arg(
-        long,
-        default_value_t = 80,
-        requires = "coverage",
-        value_parser = clap::value_parser!(u8).range(0..=100)
-    )]
-    pub min_coverage: u8,
 }
 
 const fn cli_styles() -> Styles {

@@ -6,16 +6,31 @@ description = "Rust CLI to enforce merge checks and code quality"
 repository = "https://github.com/Kuenlun/lockpick"
 authors = ["Juan Luis Leal Contreras <kuenlunleal@gmail.com>"]
 license = "MIT OR Apache-2.0"
+keywords = ["cli", "ci", "quality", "lint", "merge-check"]
+categories = ["development-tools", "command-line-utilities"]
+
+# Self-hosted lockpick configuration. Same 100% default that ships to
+# consumer projects.
+[package.metadata.lockpick]
+license-header = ".github/license_header.rs"
+
+[package.metadata.lockpick.coverage]
+functions = 100
+lines = 100
+regions = 100
+branches = 100
 
 [dependencies]
-clap = { version = "4.6.0", features = ["derive"] }
+clap = { version = "4.6.1", features = ["derive"] }
 colored = "3.1.1"
+glob = "0.3.3"
 indicatif = "0.18.4"
-log = { version = "0.4.29", features = ["std"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
 thiserror = "2.0.18"
 
 [dev-dependencies]
-assert_cmd = "2.2.0"
+assert_cmd = "2.2.2"
 assert_fs = "1.1.3"
 indoc = "2.0.7"
 
