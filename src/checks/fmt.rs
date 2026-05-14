@@ -5,7 +5,9 @@
 use super::{Check, Runner, cargo_outcome, fmt_cargo_cmd};
 use crate::reporter::CheckOutcome;
 
-const FMT_ARGS: &[&str] = &["--check"];
+// `--all` is required: without it cargo silently formats only the root
+// package and skips workspace members.
+const FMT_ARGS: &[&str] = &["--all", "--check"];
 
 pub struct FmtCheck;
 
@@ -29,7 +31,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cmd_runs_cargo_fmt_check() {
-        assert_eq!(FmtCheck.cmd(), "cargo fmt --check");
+    fn cmd_runs_cargo_fmt_all_check() {
+        assert_eq!(FmtCheck.cmd(), "cargo fmt --all --check");
     }
 }

@@ -6,13 +6,11 @@ description = "Rust CLI to enforce merge checks and code quality"
 repository = "https://github.com/Kuenlun/lockpick"
 authors = ["Juan Luis Leal Contreras <kuenlunleal@gmail.com>"]
 license = "MIT OR Apache-2.0"
+keywords = ["cli", "ci", "quality", "lint", "merge-check"]
+categories = ["development-tools", "command-line-utilities"]
 
-# Dogfooded configuration consumed by lockpick when it runs against
-# itself. We hold ourselves to the same default that ships to consumer
-# projects: 100% on every metric. Subprocess paths (cargo audit /
-# machete) are covered by trait-based fakes, and the coverage flow is
-# covered end-to-end by integration tests against a `cargo-llvm-cov`
-# shim that avoids nested instrumentation.
+# Self-hosted lockpick configuration. Same 100% default that ships to
+# consumer projects.
 [package.metadata.lockpick]
 license-header = ".github/license_header.rs"
 

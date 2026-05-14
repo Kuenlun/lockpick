@@ -2,8 +2,7 @@
 // lockpick - Rust CLI to enforce merge checks and code quality
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
-//! Unused-dependency detector. Wraps `cargo machete` which exits 0 on
-//! a clean workspace and non-zero when unused deps are detected.
+//! Unused-dependency scan via `cargo machete`.
 
 use super::{Check, Runner, cargo_outcome, fmt_cargo_cmd};
 use crate::reporter::CheckOutcome;

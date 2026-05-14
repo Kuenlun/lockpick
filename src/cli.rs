@@ -7,7 +7,7 @@ use clap::{
     builder::styling::{AnsiColor, Effects, Styles},
 };
 
-/// Steps that can be skipped via `--skip`
+/// Check identifier for `--skip`.
 #[derive(ValueEnum, Clone, Debug, PartialEq, Eq)]
 pub enum SkipOption {
     Check,

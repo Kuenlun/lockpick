@@ -11,13 +11,12 @@ pub const INSTALL_LLVM_COV: &str = "cargo install cargo-llvm-cov";
 pub const INSTALL_MACHETE: &str = "cargo install cargo-machete";
 pub const INSTALL_AUDIT: &str = "cargo install cargo-audit";
 
-/// Look for a `cargo-<subcommand>` binary on the supplied `PATH`. Probing
-/// via `cargo <name> --version` would spawn the subcommand and is brittle:
-/// cargo-machete in particular flips its argv parser when `CARGO_PKG_NAME`
-/// is set (the case under `cargo run`), reading "machete" and "--version"
-/// as paths instead of the subcommand and a flag, and reporting itself as
-/// missing. Returns `false` when `path_env` is `None` to mirror the real
-/// behaviour of an unset PATH.
+/// Check `PATH` for a `cargo-<subcommand>` binary.
+///
+/// Filesystem-only probe by design: spawning `cargo <name> --version`
+/// would flip cargo-machete's argv parser into positional-paths mode
+/// under `CARGO_PKG_NAME` (i.e. when invoked from `cargo run`) and
+/// report itself as missing.
 fn has_cargo_subcommand_in(path_env: Option<&OsStr>, subcommand: &str) -> bool {
     path_env.is_some_and(|path| {
         let name = format!("cargo-{subcommand}");
@@ -38,11 +37,9 @@ fn contains_executable(dir: &Path, name: &str) -> bool {
     false
 }
 
-/// Package-scoped env var prefixes whose values describe the *current*
-/// package's build and that must be stripped before spawning child cargo
-/// invocations. Inheriting them poisons tools like cargo-machete, which
-/// interpret `CARGO_PKG_NAME` as "I'm being run from inside a build" and
-/// switch their argv parser into a positional-paths-only mode.
+/// Env var prefixes that describe the *current* package's build. Must
+/// be stripped before spawning child cargo invocations or cargo-machete
+/// flips into positional-paths-only argv parsing.
 const SCRUB_PREFIXES: &[&str] = &["CARGO_PKG_", "CARGO_BIN_", "CARGO_CRATE_"];
 const SCRUB_EXACT: &[&str] = &[
     "CARGO_MANIFEST_DIR",
@@ -54,10 +51,8 @@ fn should_scrub_cargo_env(key: &str) -> bool {
     SCRUB_PREFIXES.iter().any(|p| key.starts_with(p)) || SCRUB_EXACT.contains(&key)
 }
 
-/// Builder for child `cargo` invocations with a hygienic environment.
-/// Use this everywhere lockpick spawns cargo so that package-scoped vars
-/// from lockpick's own build (when run via `cargo run`) don't leak into
-/// subcommands.
+/// Build a [`Command`] for `cargo` with package-scoped env vars
+/// scrubbed so they cannot leak from `cargo run` into subcommands.
 #[must_use]
 pub fn cargo_command() -> Command {
     let mut cmd = Command::new("cargo");
@@ -69,11 +64,8 @@ pub fn cargo_command() -> Command {
     cmd
 }
 
-/// Optional cargo subcommand lockpick can drive. Each variant maps to a
-/// `cargo-<binary>` lookup on the host's `PATH`. Modelling these as enum
-/// variants (rather than four `bool` fields on [`Toolchain`]) avoids the
-/// `struct_excessive_bools` lint without configuration tweaks and reads
-/// more naturally at the call sites (`toolchain.has(Tool::LlvmCov)`).
+/// Optional cargo subcommand lockpick can drive. Each variant resolves
+/// to a `cargo-<binary>` lookup on `PATH`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Tool {
     LlvmCov,
@@ -83,9 +75,7 @@ pub enum Tool {
 }
 
 impl Tool {
-    /// Suffix used in the cargo plugin binary name — e.g.
-    /// `Tool::LlvmCov.subcommand() == "llvm-cov"` resolves to
-    /// `cargo-llvm-cov` on `PATH`.
+    /// Cargo plugin suffix, e.g. `Tool::LlvmCov → "llvm-cov"`.
     const fn subcommand(self) -> &'static str {
         match self {
             Self::LlvmCov => "llvm-cov",
@@ -96,22 +86,17 @@ impl Tool {
     }
 }
 
-/// Every [`Tool`] variant in iteration order. Centralised so `detect` and
-/// `all_present` stay in sync — adding a tool means adding it here once.
+/// Single source of truth for every [`Tool`] variant.
 const ALL_TOOLS: &[Tool] = &[Tool::LlvmCov, Tool::Nextest, Tool::Machete, Tool::Audit];
 
-/// Snapshot of which optional cargo subcommands are installed on the host.
-/// Constructed once at the start of a run via [`Toolchain::detect`]; passed
-/// into the rest of the pipeline so unit tests can substitute fake values.
+/// Snapshot of optional cargo subcommands installed on the host.
 #[derive(Debug, Clone, Default)]
 pub struct Toolchain {
     present: HashSet<Tool>,
 }
 
 impl Toolchain {
-    /// Probe the host for every tool lockpick knows about. Only `runner::run`
-    /// calls this; unit tests construct fixed `Toolchain` snapshots instead,
-    /// so the dead-code lint has to be silenced in test builds.
+    /// Probe the host `PATH` for every known tool.
     #[cfg_attr(test, allow(dead_code))]
     #[must_use]
     pub fn detect() -> Self {
@@ -130,8 +115,7 @@ impl Toolchain {
         self.present.contains(&tool)
     }
 
-    /// Construct a snapshot with every tool reported as present. Useful
-    /// for tests that don't want to be affected by what's installed.
+    /// Snapshot with every tool present.
     #[cfg(test)]
     #[cfg_attr(coverage_nightly, coverage(off))]
     #[must_use]
@@ -141,9 +125,7 @@ impl Toolchain {
         }
     }
 
-    /// Return a copy of `self` with `tool` dropped. Replaces the
-    /// struct-update idiom (`Toolchain { llvm_cov: false, ..all_present() }`)
-    /// used by tests that probe a single missing tool.
+    /// Return `self` minus `tool`.
     #[cfg(test)]
     #[cfg_attr(coverage_nightly, coverage(off))]
     #[must_use]
@@ -185,13 +167,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let fake = dir.join("cargo-lockpicktest");
         std::fs::write(&fake, b"#!/bin/sh\nexit 0\n").unwrap();
-        // No need to mark executable: the lookup only checks `is_file()`.
         let path_value = OsString::from(dir.as_os_str());
         assert!(has_cargo_subcommand_in(
             Some(path_value.as_os_str()),
             "lockpicktest"
         ));
-        // And the negative case for the same PATH:
         assert!(!has_cargo_subcommand_in(
             Some(path_value.as_os_str()),
             "definitely-absent"
@@ -205,10 +185,6 @@ mod tests {
         assert!(!contains_executable(nonexistent, "cargo-x"));
     }
 
-    /// On Windows, `contains_executable` must also probe `<name>.exe`,
-    /// `<name>.cmd`, and `<name>.bat`. This test creates only the `.exe`
-    /// variant (no bare `<name>` file) so the first branch misses and the
-    /// for-loop's `return true` is exercised on Windows CI.
     #[cfg(windows)]
     #[test]
     fn contains_executable_finds_exe_extension_on_windows() {
@@ -240,8 +216,6 @@ mod tests {
 
     #[test]
     fn should_scrub_cargo_env_preserves_global_vars() {
-        // CARGO and CARGO_HOME describe the toolchain itself, not this
-        // package — children need them to find the right cargo/registry.
         assert!(!should_scrub_cargo_env("CARGO"));
         assert!(!should_scrub_cargo_env("CARGO_HOME"));
         assert!(!should_scrub_cargo_env("CARGO_TARGET_DIR"));

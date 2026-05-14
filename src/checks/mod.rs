@@ -2,9 +2,8 @@
 // lockpick - Rust CLI to enforce merge checks and code quality
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
-//! Catalog of individual checks. Each module implements the [`Check`] trait
-//! over its own struct so the runner stays decoupled from the specifics of
-//! each cargo invocation.
+//! Individual checks. Each module implements [`Check`] over its own
+//! struct, keeping the runner agnostic of the cargo invocation details.
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -27,9 +26,8 @@ pub mod test;
 
 pub const COMMON_ARGS: &[&str] = &["--workspace", "--all-targets", "--all-features"];
 
-/// Decoupled view of a finished cargo invocation. Avoids leaking
-/// `std::process::ExitStatus` (which has no portable public constructor)
-/// so tests can synthesise outcomes without spawning a real process.
+/// Captured output of a finished cargo invocation. Synthesizable from
+/// fakes, since [`std::process::ExitStatus`] has no public constructor.
 #[derive(Debug, Clone)]
 pub struct SpawnResult {
     pub success: bool,
@@ -37,12 +35,12 @@ pub struct SpawnResult {
     pub stderr: Vec<u8>,
 }
 
-/// Strategy object that runs `cargo <sub> <args…>`. Production uses
-/// [`CargoCli`]; unit tests substitute fakes that return canned outputs.
+/// Strategy that runs `cargo <sub> <args…>`. Production uses [`CargoCli`].
 pub trait Runner: Send + Sync {
-    /// Spawn the cargo subcommand and capture its raw output. An [`Err`]
-    /// here signals an OS-level failure to launch the process — non-zero
-    /// exit statuses come back as `Ok(SpawnResult { success: false, … })`.
+    /// Spawn the subcommand and capture its raw output.
+    ///
+    /// [`Err`] signals an OS-level launch failure; non-zero exits come
+    /// back as `Ok(SpawnResult { success: false, … })`.
     fn spawn(
         &self,
         sub: &str,
@@ -51,23 +49,17 @@ pub trait Runner: Send + Sync {
     ) -> std::io::Result<SpawnResult>;
 }
 
-/// Production [`Runner`]: shells out to the host `cargo` binary, scrubs
-/// inherited package-scoped env vars, and optionally redirects child
-/// builds to a separate target directory when lockpick itself is running
-/// from inside `target/` (cargo run).
+/// Production [`Runner`]: shells out to the host `cargo`, scrubs
+/// package-scoped env vars, and optionally redirects child builds away
+/// from the parent's target directory.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CargoCli {
-    /// When true, child cargo invocations get `CARGO_TARGET_DIR` set to
-    /// `target/lockpick` so they don't contend with the parent process for
-    /// the same target directory.
+    /// When true, children inherit `CARGO_TARGET_DIR=target/lockpick`.
     redirect_target_dir: bool,
 }
 
 impl CargoCli {
-    /// Probe the runtime environment to decide whether child cargo
-    /// invocations need a redirected `CARGO_TARGET_DIR`. Only `runner::run`
-    /// instantiates this; tests construct `CargoCli` directly with a
-    /// hardcoded redirect flag instead.
+    /// Decide whether children need `CARGO_TARGET_DIR` redirected.
     #[cfg_attr(test, allow(dead_code))]
     #[must_use]
     pub fn detect() -> Self {
@@ -100,9 +92,7 @@ impl Runner for CargoCli {
     }
 }
 
-/// Run a fully-prepared [`Command`] capturing stdout and stderr, and lower
-/// it into a [`SpawnResult`]. Factored out so unit tests can drive the
-/// spawn-failure branch with `Command::new("/does/not/exist")`.
+/// Run a [`Command`] capturing both streams; lower into a [`SpawnResult`].
 fn execute(mut cmd: Command) -> std::io::Result<SpawnResult> {
     let out = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).output()?;
     Ok(SpawnResult {
@@ -112,23 +102,20 @@ fn execute(mut cmd: Command) -> std::io::Result<SpawnResult> {
     })
 }
 
-/// A single quality check that lockpick can execute.
+/// A single quality check.
 pub trait Check: Send + Sync {
-    /// Label shown in the spinner and in section headers.
+    /// Label shown in spinners and section headers.
     fn label(&self) -> &'static str;
     /// Human-readable command line for `--verbose` output.
     fn cmd(&self) -> String;
-    /// Execute the check and capture its outcome.
+    /// Execute the check.
     fn run(&self, runner: &dyn Runner) -> CheckOutcome;
 }
 
-/// Build the list of parallel checks to run after the `compile` gate.
-/// Skipped checks are excluded entirely so they don't appear in the output.
+/// Assemble the checks that run in parallel after the compile gate.
 ///
-/// `coverage_active` enables instrumentation in the `test` check so its
-/// `.profraw` files can be consumed by the coverage gate in phase 3.
-/// `has_lib` comes from the single [`crate::config::LockpickMetadata`]
-/// load and gates the `doc-test` check on bin-only workspaces.
+/// `coverage_active` instruments the `test` check so its `.profraw`
+/// files feed the coverage gate; `has_lib` gates the doc-test check.
 #[must_use]
 pub fn build_parallel(
     cli: &Cli,
@@ -179,27 +166,30 @@ pub fn build_parallel(
     checks
 }
 
-/// Lower a [`Runner::spawn`] result into a [`CheckOutcome`], combining
-/// stdout and stderr into a single string. A process-level failure to
-/// launch becomes [`TaskStatus::Fail`] with no output, matching the
-/// behaviour the rest of the orchestrator depends on.
+/// Concatenate `stdout` and `stderr`, inserting a newline between them
+/// when stdout does not already end with one.
+#[must_use]
+pub fn combine_streams(stdout: &[u8], stderr: &[u8]) -> String {
+    let mut combined = String::from_utf8_lossy(stdout).into_owned();
+    if !combined.is_empty() && !combined.ends_with('\n') {
+        combined.push('\n');
+    }
+    combined.push_str(&String::from_utf8_lossy(stderr));
+    combined
+}
+
+/// Lower a [`Runner::spawn`] result into a [`CheckOutcome`]. A launch
+/// failure becomes [`TaskStatus::Fail`] with empty output.
 pub fn outcome_from(result: std::io::Result<SpawnResult>) -> CheckOutcome {
     match result {
-        Ok(sr) => {
-            let mut combined = String::from_utf8_lossy(&sr.stdout).into_owned();
-            if !combined.is_empty() && !combined.ends_with('\n') {
-                combined.push('\n');
-            }
-            combined.push_str(&String::from_utf8_lossy(&sr.stderr));
-            CheckOutcome {
-                status: if sr.success {
-                    TaskStatus::Pass
-                } else {
-                    TaskStatus::Fail
-                },
-                output: combined,
-            }
-        }
+        Ok(sr) => CheckOutcome {
+            status: if sr.success {
+                TaskStatus::Pass
+            } else {
+                TaskStatus::Fail
+            },
+            output: combine_streams(&sr.stdout, &sr.stderr),
+        },
         Err(_) => CheckOutcome {
             status: TaskStatus::Fail,
             output: String::new(),
@@ -207,13 +197,12 @@ pub fn outcome_from(result: std::io::Result<SpawnResult>) -> CheckOutcome {
     }
 }
 
-/// Shared adapter: spawn `cargo <sub> <args…>` via the given runner and
-/// lower the result into a [`CheckOutcome`].
+/// Spawn `cargo <sub> <args…>` and lower the result into a [`CheckOutcome`].
 pub fn cargo_outcome(runner: &dyn Runner, sub: &str, args: &[&str]) -> CheckOutcome {
     outcome_from(runner.spawn(sub, args, &[]))
 }
 
-/// Variant of [`cargo_outcome`] that injects extra environment variables.
+/// Like [`cargo_outcome`] but with extra env vars.
 pub fn cargo_outcome_with_env(
     runner: &dyn Runner,
     sub: &str,
@@ -223,7 +212,7 @@ pub fn cargo_outcome_with_env(
     outcome_from(runner.spawn(sub, args, envs))
 }
 
-/// Helper to format a cargo command line for display.
+/// Format a cargo command line for display.
 pub fn fmt_cargo_cmd(subcommand: &str, args: &[&str]) -> String {
     if args.is_empty() {
         format!("cargo {subcommand}")
@@ -232,15 +221,10 @@ pub fn fmt_cargo_cmd(subcommand: &str, args: &[&str]) -> String {
     }
 }
 
-/// Pure helper that decides whether child cargo invocations should be
-/// redirected to `target/lockpick`. Inputs:
-/// * `exe` — the running executable's path (None when probing fails).
-/// * `cwd` — the current working directory (None when probing fails).
-/// * `target_dir_env` — the value of `CARGO_TARGET_DIR` if set.
+/// Whether child cargo invocations should redirect their target dir.
 ///
-/// Redirection only kicks in when the binary is running from inside the
-/// project's own `target/` directory AND the operator hasn't already
-/// overridden the target dir.
+/// Redirects only when the running binary lives under `cwd/target/` and
+/// `CARGO_TARGET_DIR` is unset.
 pub fn needs_target_dir_redirect(
     exe: Option<&Path>,
     cwd: Option<&Path>,
@@ -262,8 +246,7 @@ mod test_support {
     use std::io;
     use std::sync::Mutex;
 
-    /// Configurable test double for [`Runner`]. Each call records its
-    /// arguments and pops the next canned response off the queue.
+    /// Test double for [`Runner`]: records calls and pops canned responses.
     pub struct FakeRunner {
         responses: Mutex<Vec<io::Result<SpawnResult>>>,
         pub calls: Mutex<Vec<FakeCall>>,
@@ -519,7 +502,6 @@ mod tests {
 
     #[test]
     fn cargo_cli_spawn_runs_a_real_cargo_subcommand_without_redirect() {
-        // `cargo --version` is universally available and finishes in ms.
         let cli = CargoCli::default();
         let result = cli.spawn("--version", &[], &[]).expect("spawn succeeds");
         assert!(result.success, "expected `cargo --version` to succeed");
@@ -528,9 +510,6 @@ mod tests {
 
     #[test]
     fn cargo_cli_spawn_honors_target_dir_redirect() {
-        // With redirect on, the resulting cargo command receives the env var.
-        // `cargo --version` ignores the env so we can't observe it indirectly,
-        // but the spawn still succeeds and the branch executes.
         let cli = CargoCli {
             redirect_target_dir: true,
         };
@@ -558,8 +537,6 @@ mod tests {
 
     #[test]
     fn execute_returns_ok_for_a_real_command() {
-        // `true` is a no-op binary present on every Unix-like system; on
-        // Windows we fall back to `cmd /c exit 0`.
         #[cfg(unix)]
         let cmd = Command::new("true");
         #[cfg(windows)]

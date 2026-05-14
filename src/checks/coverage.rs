@@ -2,14 +2,12 @@
 // lockpick - Rust CLI to enforce merge checks and code quality
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
-//! Coverage gate. Parses the JSON summary produced by `cargo llvm-cov
-//! report` and enforces per-metric thresholds (functions, lines, regions,
-//! branches). The report is generated from `.profraw` files emitted by
-//! the previous `test` check when it ran with instrumentation.
+//! Coverage gate. Parses the JSON summary from `cargo llvm-cov report`
+//! and enforces per-metric thresholds.
 
 use serde::Deserialize;
 
-use super::{Check, Runner};
+use super::{Check, Runner, combine_streams};
 use crate::config::CoverageConfig;
 use crate::reporter::{CheckOutcome, TaskStatus};
 
@@ -19,9 +17,13 @@ pub struct CoverageCheck {
     pub thresholds: CoverageConfig,
 }
 
+impl CoverageCheck {
+    pub const LABEL: &'static str = "coverage";
+}
+
 impl Check for CoverageCheck {
     fn label(&self) -> &'static str {
-        "coverage"
+        Self::LABEL
     }
 
     fn cmd(&self) -> String {
@@ -43,7 +45,9 @@ fn collect_report(runner: &dyn Runner) -> Result<Report, String> {
     match runner.spawn("llvm-cov", COV_REPORT_ARGS, &[]) {
         Ok(sr) if sr.success => serde_json::from_slice::<Report>(&sr.stdout)
             .map_err(|e| format!("malformed llvm-cov JSON: {e}")),
-        Ok(sr) => Err(String::from_utf8_lossy(&sr.stderr).into_owned()),
+        // Some llvm-cov failures write diagnostics to stdout, so both
+        // streams must surface to the user.
+        Ok(sr) => Err(combine_streams(&sr.stdout, &sr.stderr)),
         Err(e) => Err(format!("failed to launch `cargo llvm-cov`: {e}")),
     }
 }
@@ -72,11 +76,9 @@ fn evaluate(report: &Report, t: CoverageConfig) -> CheckOutcome {
                 continue;
             }
             any_real = true;
-            // Integer comparison instead of `(covered/count)*100 >= threshold`
-            // in f64: keeps the gate deterministic at the ULP boundaries and
-            // avoids the precision-loss waiver. `covered <= count <= u64::MAX`
-            // and `threshold <= 100`, so `count * 100` cannot overflow within
-            // the range coverage reports can legally produce.
+            // Integer comparison rather than f64 percentages so the gate
+            // is exact at ULP boundaries. `count * 100` cannot overflow
+            // since `count <= u64::MAX` and `threshold <= 100`.
             if metric.covered * 100 < metric.count * u64::from(threshold) {
                 let missing = metric.count - metric.covered;
                 lines.push(format!(
@@ -127,14 +129,11 @@ const fn metric_rows(entry: &DataEntry, t: CoverageConfig) -> [(&'static str, Me
     ]
 }
 
-/// Render `covered/count` as a two-decimal percentage string, e.g.
-/// `"99.50%"`. Pure integer arithmetic so the gate decision in `evaluate`
-/// and the displayed value can never disagree at ULP boundaries. The
-/// caller has already excluded `count == 0`.
+/// Render `covered/count` as a two-decimal percentage (e.g. `"99.50%"`).
+/// Integer arithmetic so the displayed value cannot disagree with the
+/// gate. Caller has already excluded `count == 0`.
 fn format_pct(covered: u64, count: u64) -> String {
-    // 10_000× scaling so the two decimal places fall out as integers.
-    // u128 keeps us overflow-safe even on absurdly large coverage counts
-    // — the cost on a non-hot display path is irrelevant.
+    // Scale by 10_000 to recover two decimal places as integers.
     let scaled = u128::from(covered) * 10_000 / u128::from(count);
     let whole = scaled / 100;
     let frac = scaled % 100;
@@ -213,6 +212,15 @@ mod tests {
     }
 
     #[test]
+    fn label_constant_matches_trait_method() {
+        assert_eq!(CoverageCheck::LABEL, "coverage");
+        let c = CoverageCheck {
+            thresholds: CoverageConfig::default(),
+        };
+        assert_eq!(c.label(), CoverageCheck::LABEL);
+    }
+
+    #[test]
     fn evaluate_passes_when_all_metrics_at_100() {
         let report = report_from(COVERED_REPORT);
         let outcome = evaluate(&report, CoverageConfig::default());
@@ -255,9 +263,6 @@ mod tests {
         assert!(outcome.passed(), "got: {}", outcome.output);
     }
 
-    /// Boundary: a metric sitting *exactly* on its threshold must pass.
-    /// The previous f64 + `EPSILON` gate was an attempt to absorb rounding
-    /// at this seam; the integer comparison makes the boundary exact.
     #[test]
     fn evaluate_passes_when_metric_sits_exactly_on_threshold() {
         let report = report_from(
@@ -278,8 +283,6 @@ mod tests {
         assert!(outcome.passed(), "got: {}", outcome.output);
     }
 
-    /// One covered point short of the threshold must fail. This pins the
-    /// strict inequality that drives the gate.
     #[test]
     fn evaluate_fails_one_point_below_threshold() {
         let report = report_from(
@@ -303,15 +306,10 @@ mod tests {
 
     #[test]
     fn format_pct_renders_two_decimals_for_non_round_ratios() {
-        // 1/3 = 33.33…% → truncated to two decimals.
         assert_eq!(format_pct(1, 3), "33.33%");
-        // 2/3 = 66.66…% → truncation (NOT printf round-to-even).
         assert_eq!(format_pct(2, 3), "66.66%");
-        // 1/8 = 12.5 exactly → trailing-zero formatting.
         assert_eq!(format_pct(1, 8), "12.50%");
-        // 0/100 must format with a leading zero in the fractional part.
         assert_eq!(format_pct(0, 100), "0.00%");
-        // 100% boundary.
         assert_eq!(format_pct(50, 50), "100.00%");
     }
 
@@ -382,6 +380,18 @@ mod tests {
         })]);
         let err = collect_report(&fake).unwrap_err();
         assert!(err.contains("llvm-cov boom"));
+    }
+
+    #[test]
+    fn collect_report_includes_stdout_in_failure_message() {
+        let fake = FakeRunner::with_responses(vec![Ok(SpawnResult {
+            success: false,
+            stdout: b"error on stdout".to_vec(),
+            stderr: b"err on stderr".to_vec(),
+        })]);
+        let err = collect_report(&fake).unwrap_err();
+        assert!(err.contains("error on stdout"), "got: {err}");
+        assert!(err.contains("err on stderr"), "got: {err}");
     }
 
     #[test]

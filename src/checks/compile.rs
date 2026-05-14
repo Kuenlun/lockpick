@@ -7,9 +7,13 @@ use crate::reporter::CheckOutcome;
 
 pub struct CompileCheck;
 
+impl CompileCheck {
+    pub const LABEL: &'static str = "check";
+}
+
 impl Check for CompileCheck {
     fn label(&self) -> &'static str {
-        "check"
+        Self::LABEL
     }
 
     fn cmd(&self) -> String {
@@ -33,5 +37,11 @@ mod tests {
         assert!(cmd.contains("--workspace"));
         assert!(cmd.contains("--all-targets"));
         assert!(cmd.contains("--all-features"));
+    }
+
+    #[test]
+    fn label_constant_matches_trait_method() {
+        assert_eq!(CompileCheck::LABEL, "check");
+        assert_eq!(CompileCheck.label(), CompileCheck::LABEL);
     }
 }

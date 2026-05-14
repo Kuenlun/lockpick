@@ -2,9 +2,7 @@
 // lockpick - Rust CLI to enforce merge checks and code quality
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
-//! `RustSec` advisory check. Wraps `cargo audit`, which fetches the
-//! advisory database (network required) and scans the workspace's
-//! lockfile against known vulnerabilities.
+//! `RustSec` advisory scan via `cargo audit`. Requires network access.
 
 use super::{Check, Runner, cargo_outcome, fmt_cargo_cmd};
 use crate::reporter::CheckOutcome;

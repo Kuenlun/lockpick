@@ -6,17 +6,16 @@ use std::thread;
 
 use indicatif::ProgressBar;
 
-use crate::checks::{self, CargoCli, Check, Runner, coverage::CoverageCheck, test::TestCheck};
+use crate::checks::{
+    self, CargoCli, Check, Runner, compile::CompileCheck, coverage::CoverageCheck, test::TestCheck,
+};
 use crate::cli::{Cli, SkipOption};
 use crate::config::{Config, LockpickMetadata};
 use crate::error::LockpickError;
 use crate::reporter::{CheckOutcome, Reporter, TaskStatus};
 use crate::tooling::{INSTALL_AUDIT, INSTALL_LLVM_COV, INSTALL_MACHETE, Tool, Toolchain};
 
-/// Production entry point: builds the dependencies and delegates to the
-/// pure orchestrator in [`run_with`]. Only `main` calls this directly; the
-/// orchestrator is unit-tested through [`run_with`] with fakes, and this
-/// wrapper is integration-tested through the spawned binary.
+/// Resolve runtime dependencies and delegate to [`run_with`].
 #[cfg_attr(test, allow(dead_code))]
 pub fn run(cli: &Cli) -> Result<(), LockpickError> {
     let reporter = Reporter::auto(cli.verbose);
@@ -33,8 +32,7 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
     )
 }
 
-/// Orchestrator with every collaborator injected so tests can drive
-/// the full pipeline against fakes.
+/// Orchestrate the full check pipeline with every collaborator injected.
 pub fn run_with(
     cli: &Cli,
     reporter: &Reporter,
@@ -56,12 +54,8 @@ pub fn run_with(
         thresholds: config.coverage,
     });
 
-    // `parallel.is_empty()` already implies `coverage_check.is_none()`
-    // because coverage is only active when the `test` check is enabled
-    // (which always lives in `parallel`). The `debug_assert!` makes that
-    // load-bearing invariant explicit so a future refactor that moves
-    // `test` out of `parallel` fails loudly in tests instead of silently
-    // skipping the coverage phase in production.
+    // Coverage rides on `test`, which always lives in `parallel`; the
+    // assert pins that invariant for future refactors.
     if !run_compile && parallel.is_empty() {
         debug_assert!(
             coverage_check.is_none(),
@@ -80,7 +74,7 @@ pub fn run_with(
         );
     }
 
-    let compile = checks::compile::CompileCheck;
+    let compile = CompileCheck;
     let compile_pb = run_compile.then(|| reporter.add_spinner(compile.label()));
     let parallel_pbs: Vec<ProgressBar> = parallel
         .iter()
@@ -90,7 +84,7 @@ pub fn run_with(
         .as_ref()
         .map(|c| reporter.add_spinner(c.label()));
 
-    // Phase 1: compile gate.
+    // Phase 1 — compile gate.
     let compile_outcome = compile_pb.map(|pb| {
         let outcome = compile.run(runner);
         reporter.finish_spinner(&pb, compile.label(), outcome.status);
@@ -98,26 +92,26 @@ pub fn run_with(
     });
     let compile_passed = compile_outcome.as_ref().is_none_or(CheckOutcome::passed);
 
-    // Phase 2: parallel checks (only if compile passed).
+    // Phase 2 — parallel checks. Skipped wholesale if compile failed.
     let parallel_outcomes: Vec<CheckOutcome> = if compile_passed {
-        run_parallel(&parallel, runner)
+        run_parallel(&parallel, &parallel_pbs, reporter, runner)
     } else {
+        for (check, pb) in parallel.iter().zip(&parallel_pbs) {
+            reporter.finish_spinner(pb, check.label(), TaskStatus::Skip);
+        }
         std::iter::repeat_with(CheckOutcome::skipped)
             .take(parallel.len())
             .collect()
     };
-    for ((check, outcome), pb) in parallel.iter().zip(&parallel_outcomes).zip(&parallel_pbs) {
-        reporter.finish_spinner(pb, check.label(), outcome.status);
-    }
 
-    // Phase 3: coverage gate (only if active and tests succeeded).
+    // Phase 3 — coverage gate, only when tests passed.
     let coverage_outcome = coverage_check.as_ref().zip(coverage_pb).map(|(cov, pb)| {
         let outcome = if should_run_coverage_phase(compile_passed, &parallel, &parallel_outcomes) {
             cov.run(runner)
         } else {
             CheckOutcome::skipped()
         };
-        reporter.finish_spinner(&pb, "coverage", outcome.status);
+        reporter.finish_spinner(&pb, cov.label(), outcome.status);
         outcome
     });
 
@@ -136,15 +130,13 @@ pub fn run_with(
     Ok(())
 }
 
-/// Whether the coverage gate should run at all. The user can disable it
-/// explicitly (`--skip coverage`) or implicitly by skipping tests.
+/// Whether the coverage gate runs. Disabled by `--skip coverage` or by
+/// `--skip test` (no instrumentation, no coverage).
 fn is_coverage_active(cli: &Cli) -> bool {
     !cli.skips(&SkipOption::Coverage) && !cli.skips(&SkipOption::Test)
 }
 
-/// Fail fast if any enabled check requires an external cargo subcommand
-/// that is not installed. Coverage, machete and audit are the only
-/// tool-dependent checks in v1.
+/// Fail fast when an enabled check needs an absent cargo subcommand.
 fn require_tooling(
     cli: &Cli,
     coverage_active: bool,
@@ -171,9 +163,8 @@ fn require_tooling(
     Ok(())
 }
 
-/// Whether phase 3 should actually invoke the coverage check. Coverage
-/// runs only when the compile gate and the `test` check both succeed —
-/// otherwise the `.profraw` files are missing or stale.
+/// Coverage runs only when compile and `test` both succeeded, else the
+/// `.profraw` files are absent or stale.
 fn should_run_coverage_phase(
     compile_passed: bool,
     parallel: &[Box<dyn Check>],
@@ -187,9 +178,8 @@ fn should_run_coverage_phase(
             .is_some_and(|(_, o)| o.passed())
 }
 
-/// Caller has already gated on `reporter.is_verbose`; print one banner
-/// line per planned cargo invocation, plus a trailing blank line so the
-/// spinners start on a fresh row.
+/// Render one banner line per planned cargo invocation, plus a trailing
+/// blank line. Caller is responsible for the `is_verbose` gate.
 fn print_planned_commands(
     reporter: &Reporter,
     run_compile: bool,
@@ -197,7 +187,7 @@ fn print_planned_commands(
     coverage: Option<&dyn Check>,
 ) {
     if run_compile {
-        reporter.command(&checks::compile::CompileCheck.cmd());
+        reporter.command(&CompileCheck.cmd());
     }
     for c in parallel {
         reporter.command(&c.cmd());
@@ -208,15 +198,29 @@ fn print_planned_commands(
     reporter.println("");
 }
 
-/// Spawn each check on its own scoped thread and collect the outcomes.
-/// A check that panics is treated as a bug: re-raise the panic so it
-/// surfaces with its original payload rather than masking it behind a
-/// `Fail` outcome that would also drop the user's diagnostics.
-fn run_parallel(checks: &[Box<dyn Check>], runner: &dyn Runner) -> Vec<CheckOutcome> {
+/// Run every check on its own scoped thread and collect outcomes in
+/// input order. Each spinner is finished from inside its worker so
+/// PASS/FAIL marks land progressively rather than in one batch.
+///
+/// A panicking check propagates the panic — masking it as a `Fail`
+/// would also drop the user's diagnostics.
+fn run_parallel(
+    checks: &[Box<dyn Check>],
+    pbs: &[ProgressBar],
+    reporter: &Reporter,
+    runner: &dyn Runner,
+) -> Vec<CheckOutcome> {
     thread::scope(|s| {
         checks
             .iter()
-            .map(|c| s.spawn(move || c.run(runner)))
+            .zip(pbs)
+            .map(|(check, pb)| {
+                s.spawn(move || {
+                    let outcome = check.run(runner);
+                    reporter.finish_spinner(pb, check.label(), outcome.status);
+                    outcome
+                })
+            })
             .collect::<Vec<_>>()
             .into_iter()
             .map(|handle| match handle.join() {
@@ -227,9 +231,7 @@ fn run_parallel(checks: &[Box<dyn Check>], runner: &dyn Runner) -> Vec<CheckOutc
     })
 }
 
-/// Build the flat list of `(label, outcome)` pairs used by reporting.
-/// Pulling this out keeps the orchestrator's data flow obvious and lets
-/// the single-pass [`report_results`] stay branch-free.
+/// Flatten the three phases into `(label, outcome)` pairs for reporting.
 fn flatten_outcomes<'a>(
     compile_outcome: Option<&'a CheckOutcome>,
     parallel: &'a [Box<dyn Check>],
@@ -238,19 +240,19 @@ fn flatten_outcomes<'a>(
 ) -> Vec<(&'a str, &'a CheckOutcome)> {
     let mut items: Vec<(&str, &CheckOutcome)> = Vec::new();
     if let Some(o) = compile_outcome {
-        items.push(("check", o));
+        items.push((CompileCheck::LABEL, o));
     }
     for (c, o) in parallel.iter().zip(parallel_outcomes) {
         items.push((c.label(), o));
     }
     if let Some(o) = coverage_outcome {
-        items.push(("coverage", o));
+        items.push((CoverageCheck::LABEL, o));
     }
     items
 }
 
-/// Print PASS sections (verbose only) and FAIL sections in two passes
-/// over the flat item list. Returns the number of failing checks.
+/// Print PASS sections (verbose only) then FAIL sections; return the
+/// number of failing checks.
 fn report_results(reporter: &Reporter, items: &[(&str, &CheckOutcome)]) -> usize {
     if reporter.is_verbose {
         for (label, outcome) in items {
@@ -280,7 +282,6 @@ mod tests {
     use super::*;
     use crate::checks::audit::AuditCheck;
     use crate::checks::clippy::ClippyCheck;
-    use crate::checks::compile::CompileCheck;
     use crate::checks::doc::DocCheck;
     use crate::checks::doctest::DocTestCheck;
     use crate::checks::fmt::FmtCheck;
@@ -311,10 +312,6 @@ mod tests {
         }
     }
 
-    /// Guards `LABEL_WIDTH` against a future check whose label is wider
-    /// than the spinner column. Adding such a label would silently break
-    /// alignment in real output; this assertion forces it to be caught
-    /// in CI/pre-commit instead.
     #[test]
     fn every_check_label_fits_inside_label_width() {
         let labels: Vec<&'static str> = vec![
@@ -406,7 +403,6 @@ mod tests {
             vec!["check", "clippy", "fmt", "coverage"]
         );
 
-        // Drop the compile/coverage edges to cover the `None` arms.
         let no_compile = flatten_outcomes(None, &parallel, &outcomes, None);
         assert_eq!(
             no_compile.iter().map(|(l, _)| *l).collect::<Vec<_>>(),
@@ -513,11 +509,6 @@ mod tests {
         print_planned_commands(&reporter, false, &parallel, None);
     }
 
-    /// Real contract: a check that panics must propagate the panic instead
-    /// of being silently turned into a `Fail` outcome (which would also
-    /// hide the panic message from the user). `thread::scope` joins handles
-    /// with `Err(payload)`, and `run_parallel` calls `resume_unwind` so the
-    /// panic bubbles out of the orchestrator like any other Rust panic.
     #[test]
     #[should_panic = "simulated check panic"]
     fn run_parallel_re_raises_a_panicking_check_thread() {
@@ -532,16 +523,19 @@ mod tests {
                 panic!("simulated check panic");
             }
         }
-        // Suppress libtest's panic backtrace for the expected panic so the
-        // test output stays clean even on success.
+        // Suppress libtest's backtrace so the expected panic stays quiet.
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));
+        let reporter = Reporter::new(false, false);
         let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck)];
+        let pbs: Vec<ProgressBar> = parallel
+            .iter()
+            .map(|c| reporter.add_spinner(c.label()))
+            .collect();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run_parallel(&parallel, &PanickingRunner)
+            run_parallel(&parallel, &pbs, &reporter, &PanickingRunner)
         }));
         std::panic::set_hook(prev);
-        // Re-raise the captured payload so `#[should_panic]` observes it.
         match result {
             Ok(_) => panic!("expected panic, run_parallel returned Ok"),
             Err(payload) => std::panic::resume_unwind(payload),
@@ -550,7 +544,12 @@ mod tests {
 
     #[test]
     fn run_parallel_executes_each_check_and_collects_outcomes() {
+        let reporter = Reporter::new(false, false);
         let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck), Box::new(FmtCheck)];
+        let pbs: Vec<ProgressBar> = parallel
+            .iter()
+            .map(|c| reporter.add_spinner(c.label()))
+            .collect();
         let fake = FakeRunner::with_responses(vec![
             Ok(SpawnResult {
                 success: true,
@@ -563,15 +562,14 @@ mod tests {
                 stderr: Vec::new(),
             }),
         ]);
-        let outcomes = run_parallel(&parallel, &fake);
+        let outcomes = run_parallel(&parallel, &pbs, &reporter, &fake);
         assert_eq!(outcomes.len(), 2);
         assert!(outcomes.iter().any(CheckOutcome::passed));
         assert!(outcomes.iter().any(CheckOutcome::failed));
+        assert!(pbs.iter().all(ProgressBar::is_finished));
     }
 
     fn passing_runner() -> FakeRunner {
-        // Enough canned responses to cover every cargo call across all
-        // phases (compile + parallel + coverage).
         let mut responses = Vec::new();
         for _ in 0..32 {
             responses.push(Ok(SpawnResult {
@@ -597,8 +595,6 @@ mod tests {
             verbose: true,
         };
         let runner = passing_runner();
-        // `has_lib = true` so the doc-test check joins the parallel set; that
-        // exercises every per-check `run`/`label` body via the orchestrator.
         assert!(
             run_with(
                 &cli,
@@ -627,7 +623,6 @@ mod tests {
             ],
             verbose: false,
         };
-        // Single failing response for the lone compile check.
         let runner = FakeRunner::with_responses(vec![Ok(SpawnResult {
             success: false,
             stdout: b"compile error".to_vec(),
@@ -652,7 +647,6 @@ mod tests {
             skip: vec![],
             verbose: false,
         };
-        // Toolchain::default() reports nothing present.
         let runner = FakeRunner::passing();
         let err = run_with(
             &cli,
@@ -770,9 +764,6 @@ mod tests {
             ],
             verbose: false,
         };
-        // Phase 1 compile passes; phase 2 single `test` check fails;
-        // phase 3 coverage is skipped (and the single test failure is
-        // reflected in the error).
         let runner = FakeRunner::with_responses(vec![
             Ok(SpawnResult {
                 success: true,
@@ -812,7 +803,6 @@ mod tests {
             ],
             verbose: false,
         };
-        // Compile fails -> parallel checks marked Skip, no coverage.
         let runner = FakeRunner::with_responses(vec![Ok(SpawnResult {
             success: false,
             stdout: b"compile error".to_vec(),

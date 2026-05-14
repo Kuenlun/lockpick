@@ -2,8 +2,7 @@
 // lockpick - Rust CLI to enforce merge checks and code quality
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
-//! Doc-test runner. Only added to the parallel set when the workspace
-//! actually exposes a `lib` target (see [`crate::config::LockpickMetadata`]).
+//! Doc-test runner. Skipped on workspaces with no `lib` target.
 
 use super::{Check, Runner, cargo_outcome, fmt_cargo_cmd};
 use crate::reporter::CheckOutcome;

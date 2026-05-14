@@ -2,14 +2,11 @@
 // lockpick - Rust CLI to enforce merge checks and code quality
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
-use super::{Check, Runner, cargo_outcome, fmt_cargo_cmd};
+use super::{COMMON_ARGS, Check, Runner, cargo_outcome, fmt_cargo_cmd};
 use crate::reporter::CheckOutcome;
 
-const TEST_PLAIN_ARGS: &[&str] = &["--workspace", "--all-targets", "--all-features"];
-// `--no-tests=pass` matches `cargo test`'s behaviour when a target has zero
-// test functions. Without it, nextest >= 0.9.85 exits non-zero by default,
-// which makes lockpick's test gate flap based purely on whether nextest is
-// installed on the host.
+// `--no-tests=pass`: align nextest >= 0.9.85 with `cargo test`'s default
+// of treating zero discovered tests as success.
 const NEXTEST_PLAIN_ARGS: &[&str] = &[
     "run",
     "--workspace",
@@ -37,19 +34,13 @@ const LLVM_COV_NEXTEST_ARGS: &[&str] = &[
 ];
 
 pub struct TestCheck {
-    /// When `true`, run tests through `cargo llvm-cov` so the resulting
-    /// `.profraw` files can be consumed by the coverage gate.
+    /// Run tests through `cargo llvm-cov` to emit `.profraw` files.
     pub instrumented: bool,
-    /// When `true`, prefer `cargo nextest` as the test runner.
+    /// Prefer `cargo nextest` as the runner.
     pub nextest: bool,
 }
 
 impl TestCheck {
-    /// Single source of truth for the test check's label. The coverage
-    /// orchestrator references this constant when deciding whether the
-    /// `test` outcome passed — keeping the binding here means a rename of
-    /// the label is caught at compile time instead of silently disabling
-    /// the coverage phase.
     pub const LABEL: &'static str = "test";
 
     const fn dispatch(&self) -> (&'static str, &'static [&'static str]) {
@@ -57,7 +48,7 @@ impl TestCheck {
             (true, true) => ("llvm-cov", LLVM_COV_NEXTEST_ARGS),
             (true, false) => ("llvm-cov", LLVM_COV_ARGS),
             (false, true) => ("nextest", NEXTEST_PLAIN_ARGS),
-            (false, false) => ("test", TEST_PLAIN_ARGS),
+            (false, false) => ("test", COMMON_ARGS),
         }
     }
 }
@@ -83,10 +74,6 @@ impl Check for TestCheck {
 mod tests {
     use super::*;
 
-    /// The coverage orchestrator references `TestCheck::LABEL` directly to
-    /// pick the test outcome out of the parallel set. Pinning the value
-    /// here guards against a silent rename that would disable the
-    /// coverage phase without anyone noticing at compile time.
     #[test]
     fn label_constant_matches_the_value_the_orchestrator_relies_on() {
         assert_eq!(TestCheck::LABEL, "test");
@@ -145,9 +132,6 @@ mod tests {
         assert!(c.cmd().contains("llvm-cov nextest"));
     }
 
-    /// Regression: nextest >= 0.9.85 defaults to exiting non-zero when the
-    /// run discovers zero tests. Every nextest path must opt in to `pass`
-    /// so lockpick's test gate stays consistent with `cargo test`.
     #[test]
     fn every_nextest_path_opts_out_of_no_tests_failure() {
         for (instrumented, nextest) in [(false, true), (true, true)] {

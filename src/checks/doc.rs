@@ -2,9 +2,8 @@
 // lockpick - Rust CLI to enforce merge checks and code quality
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
-//! Documentation build with rustdoc warnings escalated to errors.
-//! Catches broken intra-doc links, unresolvable references and missing
-//! examples in code blocks.
+//! `cargo doc` with `RUSTDOCFLAGS=-D warnings` to fail on broken
+//! intra-doc links and unresolvable references.
 
 use super::{Check, Runner, cargo_outcome_with_env, fmt_cargo_cmd};
 use crate::reporter::CheckOutcome;
@@ -44,9 +43,6 @@ mod tests {
         assert!(cmd.contains("--workspace"));
     }
 
-    /// [`DocCheck`] is the only check that injects an extra env var;
-    /// verifying it lands on the spawned cargo invocation guards the
-    /// `cargo_outcome_with_env` path that no other check exercises.
     #[test]
     fn run_injects_rustdocflags_env() {
         let fake = FakeRunner::passing();

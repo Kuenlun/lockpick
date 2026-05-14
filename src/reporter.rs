@@ -48,48 +48,33 @@ pub struct Reporter {
     pub is_verbose: bool,
 }
 
-/// Column width used to align the check label across spinners, in-place
-/// finishers and non-TTY status lines. Picked to fit every label lockpick
-/// currently emits ("doc test", "coverage", … all ≤ 8 chars) plus a small
-/// headroom for future checks. A unit test in `runner` (driven by every
-/// concrete `Check` impl) pins this number against the longest known
-/// label, so growing a label past the width fails CI loudly instead of
-/// silently breaking alignment.
+/// Column width used to align check labels in spinners and status lines.
+/// Pinned against the longest known label by a test in `runner`.
 pub const LABEL_WIDTH: usize = 10;
 
 const DONE_TEMPLATE: &str = "  {msg}";
 const TICK_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
-/// Build the indicatif spinner template at runtime so the `{msg:<…}`
-/// width tracks [`LABEL_WIDTH`] rather than being a magic number copy.
 fn spin_template() -> String {
     format!("  {{msg:<{LABEL_WIDTH}}} {{spinner:.cyan}}")
 }
 
-/// Build an indicatif `ProgressStyle`. The default templates we ship with
-/// always parse, but `expect_used = "deny"` rules out a hard `.expect()`;
-/// the fallback keeps the constructor infallible at zero readability cost.
+/// Parse an indicatif template, falling back to the default spinner so
+/// the caller stays infallible under `clippy::expect_used`.
 fn parse_template(template: &str) -> ProgressStyle {
     ProgressStyle::with_template(template).unwrap_or_else(|_| ProgressStyle::default_spinner())
 }
 
 impl Reporter {
-    /// Production constructor: probe stderr for tty-ness and delegate to
-    /// [`Self::new`]. Kept as a separate entry point so the orchestrator
-    /// does not need to know about `IsTerminal` or `std::io::stderr` —
-    /// production calls `Reporter::auto(verbose)`, tests call
-    /// `Reporter::new(verbose, is_tty)` to drive both code paths
-    /// deterministically.
+    /// Build a [`Reporter`] with `is_tty` probed from stderr.
     #[cfg_attr(test, allow(dead_code))]
     #[must_use]
     pub fn auto(is_verbose: bool) -> Self {
         Self::new(is_verbose, std::io::stderr().is_terminal())
     }
 
-    /// Construct a Reporter using the default templates. `is_tty` selects
-    /// between progress-bar rendering (true) and plain stderr (false);
-    /// production calls [`Self::auto`] which probes `stderr`, tests pass
-    /// an explicit boolean so both branches stay deterministic.
+    /// Build a [`Reporter`]. `is_tty = true` enables progress-bar
+    /// rendering; `false` falls back to plain stderr lines.
     #[must_use]
     pub fn new(is_verbose: bool, is_tty: bool) -> Self {
         let spin_style = parse_template(&spin_template()).tick_chars(TICK_CHARS);
@@ -143,14 +128,12 @@ impl Reporter {
         }
     }
 
-    /// Print a planned cargo invocation. The caller is responsible for
-    /// gating this on `is_verbose`; this method just renders the line.
+    /// Render a planned cargo invocation. Caller gates on `is_verbose`.
     pub fn command(&self, cmd: &str) {
         self.println(format!("  {} {cmd}", "$".dimmed()));
     }
 
-    /// Print a message that is always visible (e.g. "All checks disabled,
-    /// nothing to run", or warnings about implicit skips).
+    /// Render an always-visible status note.
     pub fn note(&self, msg: &str) {
         self.println(format!("  {msg}"));
     }
@@ -193,8 +176,7 @@ impl Reporter {
         self.println("");
     }
 
-    /// Final summary line. Lists the labels that failed when any did,
-    /// otherwise reports total checks that passed.
+    /// Final footer. Lists failing labels, or reports total on success.
     pub fn summary(&self, total: usize, failures: &[&str]) {
         self.println("");
         if failures.is_empty() {
@@ -214,13 +196,6 @@ impl Reporter {
 mod tests {
     use super::*;
 
-    /// Exercises the production tty probe. The tty value reported is
-    /// environmental (depends on whether the test harness pipes stderr),
-    /// so we don't assert on it — only that the helper returns a usable
-    /// `Reporter`, that the verbose flag is faithfully propagated, and
-    /// that the spinner pipeline still works against the constructed
-    /// reporter. This is the only call site that drives the `auto`
-    /// branch in unit-test builds.
     #[test]
     fn auto_delegates_to_new_and_propagates_verbose_flag() {
         for verbose in [false, true] {
@@ -234,18 +209,10 @@ mod tests {
 
     #[test]
     fn parse_template_falls_back_to_default_for_an_invalid_template() {
-        // `{}` is rejected by indicatif's parser; we fall back gracefully
-        // so the production constructor can stay infallible. The valid-
-        // template branch is exercised implicitly by every `Reporter::new`
-        // call in this module.
+        // `{}` is rejected by indicatif's parser.
         let _ = parse_template("{}");
     }
 
-    /// Exercises both branches of `add_spinner` and `finish_spinner`. We
-    /// can't observe what indicatif writes, so the assertion is the
-    /// status-transition contract: after `finish_spinner` the bar reads
-    /// as finished, which is the signal the rest of the pipeline waits
-    /// on. `println` is also driven on both branches as a side effect.
     #[test]
     fn finish_spinner_drives_both_modes_through_every_status() {
         for is_tty in [true, false] {
@@ -266,7 +233,6 @@ mod tests {
             r.print_section("clippy", "fine\nmore\n", TaskStatus::Pass);
             r.print_section("fmt", "bad\n", TaskStatus::Fail);
             r.print_section("test", "anything", TaskStatus::Skip);
-            // Empty output triggers the "(no output)" marker branch.
             r.print_section("doc", "", TaskStatus::Pass);
             r.print_section("audit", "", TaskStatus::Fail);
         }

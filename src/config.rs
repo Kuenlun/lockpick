@@ -3,10 +3,7 @@
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
 //! Lockpick configuration loaded from `[workspace.metadata.lockpick]`
-//! or `[package.metadata.lockpick]` in `Cargo.toml`. Read transparently
-//! via `cargo metadata --format-version 1 --no-deps`. The same call also
-//! exposes the workspace's target kinds so the doc-test check can opt
-//! out on bin-only workspaces without a second cargo invocation.
+//! (preferred) or `[package.metadata.lockpick]` via `cargo metadata`.
 
 use std::path::PathBuf;
 use std::process::{Output, Stdio};
@@ -16,7 +13,7 @@ use serde_json::Value;
 
 use crate::tooling::cargo_command;
 
-/// Per-metric coverage thresholds. Defaults to 100% on every metric.
+/// Per-metric coverage thresholds. Every metric defaults to 100%.
 #[derive(Deserialize, Debug, Clone, Copy)]
 #[serde(default)]
 pub struct CoverageConfig {
@@ -45,9 +42,8 @@ pub struct Config {
     pub coverage: CoverageConfig,
 }
 
-/// Loaded `cargo metadata` view: lockpick configuration plus the
-/// workspace facts the runner needs upfront. Folding the two into one
-/// struct keeps `cargo metadata` to a single invocation per run.
+/// Lockpick config and workspace facts derived from a single
+/// `cargo metadata` invocation.
 #[derive(Debug, Clone, Default)]
 pub struct LockpickMetadata {
     pub config: Config,
@@ -77,16 +73,12 @@ struct CargoTarget {
 }
 
 impl LockpickMetadata {
-    /// Load both lockpick configuration and the workspace's lib-target
-    /// flag via a single `cargo metadata` invocation. Falls back to
-    /// defaults when cargo cannot run or returns unexpected output.
+    /// Probe `cargo metadata` and fall back to defaults on any failure.
     #[must_use]
     pub fn load() -> Self {
         Self::load_from(run_cargo_metadata())
     }
 
-    /// Pure variant of [`Self::load`] that takes the already-fetched
-    /// metadata so unit tests can drive every branch deterministically.
     fn load_from(metadata: Option<CargoMetadata>) -> Self {
         let Some(metadata) = metadata else {
             return Self::default();
@@ -121,10 +113,8 @@ fn run_cargo_metadata() -> Option<CargoMetadata> {
     )
 }
 
-/// Pure helper: lower a `cargo metadata` spawn result into the parsed
-/// [`CargoMetadata`]. Returns `None` for every error path the production
-/// code already silently tolerates (spawn failed, cargo exited non-zero,
-/// stdout was not valid metadata JSON).
+/// Parse a `cargo metadata` spawn result; returns `None` on any failure
+/// (spawn error, non-zero exit, or malformed JSON).
 fn parse_cargo_metadata(result: std::io::Result<Output>) -> Option<CargoMetadata> {
     let output = result.ok()?;
     if !output.status.success() {
@@ -133,19 +123,14 @@ fn parse_cargo_metadata(result: std::io::Result<Output>) -> Option<CargoMetadata
     serde_json::from_slice(&output.stdout).ok()
 }
 
-/// Locate the effective `[*.metadata.lockpick]` section, in priority order:
+/// Locate `[*.metadata.lockpick]` in priority order:
 ///
-/// 1. `[workspace.metadata.lockpick]` (always wins when set).
-/// 2. `[package.metadata.lockpick]` from the lone member of a single-package
-///    workspace.
+/// 1. `[workspace.metadata.lockpick]`.
+/// 2. `[package.metadata.lockpick]` of a single-package workspace.
 ///
-/// Multi-package workspaces that put `[package.metadata.lockpick]` on one or
-/// more members without setting the workspace-scoped section are a footgun:
-/// the configuration is silently dropped (we can't pick a winner for the
-/// whole workspace). We surface a warning through `warn` instead of staying
-/// quiet, matching the project's "FAIL clearly, never skip silently"
-/// preference. `warn` is injected so unit tests can capture the exact
-/// message without resorting to stderr scraping.
+/// Multi-package workspaces that set `[package.metadata.lockpick]` without
+/// the workspace-scoped section get a warning — there is no safe winner to
+/// pick workspace-wide, so the configuration is dropped.
 fn extract_lockpick(metadata: &CargoMetadata, warn: &mut dyn FnMut(&str)) -> Option<Value> {
     fn lockpick_in(value: &Value) -> Option<Value> {
         value.as_object().and_then(|m| m.get("lockpick")).cloned()
@@ -220,8 +205,6 @@ mod tests {
         assert_eq!(c.coverage.functions, 100);
     }
 
-    /// Collect warnings emitted by `extract_lockpick` so tests can assert
-    /// on the exact text without resorting to stderr capture.
     fn extract_with_warnings(meta: &CargoMetadata) -> (Option<Value>, Vec<String>) {
         let mut warnings: Vec<String> = Vec::new();
         let result = extract_lockpick(meta, &mut |w| warnings.push(w.to_string()));
@@ -341,6 +324,26 @@ mod tests {
     }
 
     #[test]
+    fn coverage_defaults_to_100_when_section_is_entirely_omitted() {
+        let v = json!({ "license-header": "header.txt" });
+        let cfg: Config = serde_json::from_value(v).unwrap();
+        assert_eq!(cfg.coverage.functions, 100);
+        assert_eq!(cfg.coverage.lines, 100);
+        assert_eq!(cfg.coverage.regions, 100);
+        assert_eq!(cfg.coverage.branches, 100);
+    }
+
+    #[test]
+    fn coverage_partial_override_keeps_unspecified_fields_at_100() {
+        let v = json!({ "coverage": { "branches": 0 } });
+        let cfg: Config = serde_json::from_value(v).unwrap();
+        assert_eq!(cfg.coverage.functions, 100);
+        assert_eq!(cfg.coverage.lines, 100);
+        assert_eq!(cfg.coverage.regions, 100);
+        assert_eq!(cfg.coverage.branches, 0);
+    }
+
+    #[test]
     fn load_from_none_returns_defaults() {
         let m = LockpickMetadata::load_from(None);
         assert!(m.config.license_header.is_none());
@@ -365,10 +368,6 @@ mod tests {
         );
     }
 
-    /// Drives the production stderr-writer closure in `load_from` so its
-    /// `eprintln!` line is reached at runtime. The user-visible warning
-    /// text is asserted on by the dedicated `extract_lockpick_warns_…`
-    /// tests; here we only confirm the config falls back to defaults.
     #[test]
     fn load_from_multi_crate_workspace_with_stray_per_package_metadata_falls_back_to_defaults() {
         let m = LockpickMetadata::load_from(Some(meta_with(
@@ -383,8 +382,6 @@ mod tests {
 
     #[test]
     fn load_from_falls_back_to_defaults_on_invalid_section_and_warns() {
-        // `coverage` must deserialize to CoverageConfig; passing a string
-        // forces a deserialization error and exercises the warning branch.
         let m = LockpickMetadata::load_from(Some(meta_with(
             json!({ "lockpick": { "coverage": "not a number" } }),
             vec![],
@@ -419,11 +416,6 @@ mod tests {
 
     #[test]
     fn load_smoke_test_against_real_cargo_metadata() {
-        // Real cargo metadata works in lockpick's own repo; this exercises
-        // the production `LockpickMetadata::load` wrapper end-to-end (which
-        // in turn drives `run_cargo_metadata` and the `Ok` arm of
-        // `parse_cargo_metadata`). Lockpick is a bin-only crate, so we
-        // expect has_lib_target=false.
         let m = LockpickMetadata::load();
         assert!(!m.has_lib_target);
     }
