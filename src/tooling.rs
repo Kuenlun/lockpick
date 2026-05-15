@@ -7,10 +7,6 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Command;
 
-pub const INSTALL_LLVM_COV: &str = "cargo install cargo-llvm-cov";
-pub const INSTALL_MACHETE: &str = "cargo install cargo-machete";
-pub const INSTALL_AUDIT: &str = "cargo install cargo-audit";
-
 /// Check `PATH` for a `cargo-<subcommand>` binary.
 ///
 /// Filesystem-only probe by design: spawning `cargo <name> --version`

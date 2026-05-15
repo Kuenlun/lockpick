@@ -2,6 +2,9 @@
 // lockpick - Rust CLI to enforce merge checks and code quality
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
+use std::fmt::Write;
+
+use colored::Colorize;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -9,9 +12,188 @@ pub enum LockpickError {
     #[error("{0} check(s) failed")]
     ChecksFailed(usize),
 
-    #[error("required tool `{tool}` is not installed.\nInstall it with: {install}")]
-    MissingTool {
-        tool: &'static str,
-        install: &'static str,
-    },
+    /// One or more required cargo subcommands are absent from `PATH`.
+    /// The Display impl bundles every entry into a single message with
+    /// a unified `cargo install …` line so the user only hits this
+    /// error once per pipeline run.
+    #[error("{}", render_missing(.0))]
+    MissingTools(Vec<MissingTool>),
+}
+
+/// One absent cargo subcommand row used by [`LockpickError::MissingTools`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MissingTool {
+    /// Binary name on `PATH`, doubles as the `cargo install` argument.
+    pub binary: &'static str,
+    /// `--skip` value that disables the dependent check.
+    pub skip_flag: &'static str,
+}
+
+/// Render the bundled install-or-skip hint. Caller ensures `missing`
+/// is non-empty.
+fn render_missing(missing: &[MissingTool]) -> String {
+    debug_assert!(
+        !missing.is_empty(),
+        "render_missing requires at least one entry"
+    );
+    let n = missing.len();
+    let (noun, verb) = if n == 1 {
+        ("tool", "is")
+    } else {
+        ("tools", "are")
+    };
+    let width = missing.iter().map(|m| m.binary.len()).max().unwrap_or(0);
+
+    let mut out = String::new();
+    let _ = writeln!(&mut out, "{n} required {noun} {verb} missing:");
+    out.push('\n');
+    for m in missing {
+        let bin = format!("{:<width$}", m.binary, width = width);
+        let _ = writeln!(
+            &mut out,
+            "  {bullet} {bin}  (needed for: {check})",
+            bullet = "•".dimmed(),
+            bin = bin.yellow().bold(),
+            check = m.skip_flag.cyan(),
+        );
+    }
+
+    let install_cmd = format!(
+        "cargo install {}",
+        missing
+            .iter()
+            .map(|m| m.binary)
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    let skip_cmd = format!(
+        "lockpick {}",
+        missing
+            .iter()
+            .map(|m| format!("--skip {}", m.skip_flag))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+
+    out.push('\n');
+    let _ = writeln!(&mut out, "{}", "Install:".bold());
+    let _ = writeln!(&mut out, "  {}", install_cmd.cyan().bold());
+    out.push('\n');
+    let _ = writeln!(&mut out, "{}", "Or skip:".bold());
+    let _ = write!(&mut out, "  {}", skip_cmd.cyan());
+
+    out
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    const LLVM_COV: MissingTool = MissingTool {
+        binary: "cargo-llvm-cov",
+        skip_flag: "coverage",
+    };
+    const MACHETE: MissingTool = MissingTool {
+        binary: "cargo-machete",
+        skip_flag: "machete",
+    };
+    const AUDIT: MissingTool = MissingTool {
+        binary: "cargo-audit",
+        skip_flag: "audit",
+    };
+
+    /// Strip ANSI SGR escapes (`ESC [ params LETTER`) so assertions stay
+    /// independent of `colored`'s tty auto-detection. Sufficient because
+    /// `colored` only emits SGR, never OSC or other CSI shapes.
+    fn plain(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                for skipped in chars.by_ref() {
+                    if skipped.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn checks_failed_display_uses_pluralized_noun() {
+        assert_eq!(
+            LockpickError::ChecksFailed(3).to_string(),
+            "3 check(s) failed"
+        );
+    }
+
+    #[test]
+    fn render_missing_single_tool_uses_singular_header() {
+        let msg = plain(&render_missing(&[LLVM_COV]));
+        assert!(
+            msg.starts_with("1 required tool is missing:\n"),
+            "got: {msg}"
+        );
+        assert!(msg.contains("• cargo-llvm-cov"), "got: {msg}");
+        assert!(msg.contains("(needed for: coverage)"), "got: {msg}");
+        assert!(
+            msg.contains("\nInstall:\n  cargo install cargo-llvm-cov\n"),
+            "got: {msg}"
+        );
+        assert!(
+            msg.contains("\nOr skip:\n  lockpick --skip coverage"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn render_missing_multiple_tools_bundles_install_and_skip_into_one_line_each() {
+        let msg = plain(&render_missing(&[LLVM_COV, MACHETE, AUDIT]));
+        assert!(
+            msg.starts_with("3 required tools are missing:\n"),
+            "got: {msg}"
+        );
+        // Every tool appears as its own bullet row.
+        for tool in ["cargo-llvm-cov", "cargo-machete", "cargo-audit"] {
+            assert!(
+                msg.contains(&format!("• {tool}")),
+                "missing bullet for {tool}:\n{msg}"
+            );
+        }
+        // Single combined install command.
+        assert!(
+            msg.contains("cargo install cargo-llvm-cov cargo-machete cargo-audit"),
+            "expected combined install line, got: {msg}"
+        );
+        // Single combined skip command.
+        assert!(
+            msg.contains("lockpick --skip coverage --skip machete --skip audit"),
+            "expected combined skip line, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn render_missing_aligns_bullet_rows_to_the_longest_binary_name() {
+        let msg = plain(&render_missing(&[LLVM_COV, MACHETE, AUDIT]));
+        let suffix = "  (needed for:";
+        // `cargo-llvm-cov` is the widest binary name; rows for shorter
+        // names must be padded so the `(needed for:` column lines up.
+        let columns: Vec<usize> = msg.lines().filter_map(|l| l.find(suffix)).collect();
+        assert!(columns.len() >= 2, "expected >=2 bullet rows, got: {msg}");
+        assert!(
+            columns.windows(2).all(|w| w[0] == w[1]),
+            "bullet rows are not column-aligned: {columns:?}\n{msg}",
+        );
+    }
+
+    #[test]
+    fn missing_tools_display_renders_through_the_error_variant() {
+        let err = LockpickError::MissingTools(vec![LLVM_COV]);
+        let s = plain(&err.to_string());
+        assert!(s.contains("cargo install cargo-llvm-cov"), "got: {s}");
+    }
 }
