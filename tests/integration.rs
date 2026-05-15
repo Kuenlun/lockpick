@@ -566,9 +566,22 @@ fn missing_required_tool_exits_with_three_and_prints_install_hint() {
 
     let stderr = stderr_text(&output);
     output.assert().failure().code(3);
+    // Drip-feed regression: a single error must cover every missing
+    // tool, with one combined `cargo install` line and one combined
+    // `--skip` escape hatch.
+    for binary in ["cargo-llvm-cov", "cargo-machete", "cargo-audit"] {
+        assert!(
+            stderr.contains(binary),
+            "expected `{binary}` in error message, got:\n{stderr}"
+        );
+    }
     assert!(
-        stderr.contains("cargo install "),
-        "expected install hint in error message, got:\n{stderr}"
+        stderr.contains("cargo install cargo-llvm-cov cargo-machete cargo-audit"),
+        "expected combined install hint, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("lockpick --skip coverage --skip machete --skip audit"),
+        "expected combined skip hint, got:\n{stderr}"
     );
 }
 

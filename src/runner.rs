@@ -11,9 +11,9 @@ use crate::checks::{
 };
 use crate::cli::{Cli, SkipOption};
 use crate::config::{Config, LockpickMetadata};
-use crate::error::LockpickError;
+use crate::error::{LockpickError, MissingTool};
 use crate::reporter::{CheckOutcome, Reporter, TaskStatus};
-use crate::tooling::{INSTALL_AUDIT, INSTALL_LLVM_COV, INSTALL_MACHETE, Tool, Toolchain};
+use crate::tooling::{Tool, Toolchain};
 
 /// Resolve runtime dependencies and delegate to [`run_with`].
 #[cfg_attr(test, allow(dead_code))]
@@ -136,31 +136,38 @@ fn is_coverage_active(cli: &Cli) -> bool {
     !cli.skips(&SkipOption::Coverage) && !cli.skips(&SkipOption::Test)
 }
 
-/// Fail fast when an enabled check needs an absent cargo subcommand.
+/// Collect every absent cargo subcommand at once so the user can install
+/// all of them in a single `cargo install …` invocation instead of
+/// re-running lockpick after each one.
 fn require_tooling(
     cli: &Cli,
     coverage_active: bool,
     toolchain: &Toolchain,
 ) -> Result<(), LockpickError> {
+    let mut missing = Vec::new();
     if coverage_active && !toolchain.has(Tool::LlvmCov) {
-        return Err(LockpickError::MissingTool {
-            tool: "cargo-llvm-cov",
-            install: INSTALL_LLVM_COV,
+        missing.push(MissingTool {
+            binary: "cargo-llvm-cov",
+            skip_flag: SkipOption::Coverage.skip_flag(),
         });
     }
     if !cli.skips(&SkipOption::Machete) && !toolchain.has(Tool::Machete) {
-        return Err(LockpickError::MissingTool {
-            tool: "cargo-machete",
-            install: INSTALL_MACHETE,
+        missing.push(MissingTool {
+            binary: "cargo-machete",
+            skip_flag: SkipOption::Machete.skip_flag(),
         });
     }
     if !cli.skips(&SkipOption::Audit) && !toolchain.has(Tool::Audit) {
-        return Err(LockpickError::MissingTool {
-            tool: "cargo-audit",
-            install: INSTALL_AUDIT,
+        missing.push(MissingTool {
+            binary: "cargo-audit",
+            skip_flag: SkipOption::Audit.skip_flag(),
         });
     }
-    Ok(())
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(LockpickError::MissingTools(missing))
+    }
 }
 
 /// Coverage runs only when compile and `test` both succeeded, else the
@@ -446,6 +453,24 @@ mod tests {
         let toolchain = Toolchain::all_present().without(Tool::Audit);
         let err = require_tooling(&cli, false, &toolchain).unwrap_err();
         assert!(err.to_string().contains("cargo-audit"));
+    }
+
+    #[test]
+    fn require_tooling_bundles_every_missing_tool_into_one_error() {
+        let cli = cli_skipping(&[]);
+        let toolchain = Toolchain::default();
+        let err = require_tooling(&cli, true, &toolchain).unwrap_err();
+        let msg = err.to_string();
+        // Drip-feed regression: every absent tool must be reported in
+        // a single error, not just the first one that fails the check.
+        for binary in ["cargo-llvm-cov", "cargo-machete", "cargo-audit"] {
+            assert!(msg.contains(binary), "missing `{binary}` in error: {msg}");
+        }
+        // …and the install hint must combine them into one cargo invocation.
+        assert!(
+            msg.contains("cargo install cargo-llvm-cov cargo-machete cargo-audit"),
+            "expected combined install line in error: {msg}"
+        );
     }
 
     #[test]
