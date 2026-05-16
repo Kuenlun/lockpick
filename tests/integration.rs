@@ -593,7 +593,11 @@ fn missing_required_tool_exits_with_three_and_prints_install_hint() {
 }
 
 #[test]
-fn skipping_all_checks_succeeds_with_info() {
+fn skipping_all_checks_exits_two_as_a_misconfiguration() {
+    // CI guard: a merge gate that ran nothing must never read as
+    // green, so disabling every phase via `--skip` is a usage error
+    // (exit 2), not success. Equivalent in spirit to pytest's exit 5
+    // ("no tests collected").
     let output = lockpick_raw()
         .args([
             "--skip", "check", "--skip", "clippy", "--skip", "fmt", "--skip", "test", "--skip",
@@ -604,9 +608,9 @@ fn skipping_all_checks_succeeds_with_info() {
         .expect("failed to execute lockpick");
 
     let stderr = stderr_text(&output);
-    output.assert().success();
+    output.assert().failure().code(2);
     assert!(
-        stderr.contains("All checks disabled, nothing to run"),
-        "expected informational message, got:\n{stderr}"
+        stderr.contains("all checks skipped"),
+        "expected misconfiguration error, got:\n{stderr}"
     );
 }

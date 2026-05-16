@@ -86,12 +86,12 @@ The license check reads the header file, walks the globs (default: `src/**/*.rs`
 
 ## Exit codes
 
-| Code | Meaning                                                                              |
-|------|--------------------------------------------------------------------------------------|
-| 0    | All checks passed                                                                    |
-| 1    | One or more checks failed                                                            |
-| 2    | Usage error (unknown flag, invalid `--skip` value)                                   |
-| 3    | A required external tool (`cargo-llvm-cov`, `cargo-machete`, `cargo-audit`) is absent|
+| Code | Meaning                                                                                |
+|------|----------------------------------------------------------------------------------------|
+| 0    | All checks passed                                                                      |
+| 1    | One or more checks failed                                                              |
+| 2    | Usage error (unknown flag, invalid `--skip` value, or every check skipped via `--skip`)|
+| 3    | A required external tool (`cargo-llvm-cov`, `cargo-machete`, `cargo-audit`) is absent  |
 
 ## Pre-commit / CI
 
