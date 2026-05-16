@@ -123,25 +123,34 @@ impl Reporter {
 
     /// Finish a spinner and emit the matching status line.
     ///
-    /// Stream routing follows the UNIX split: the report stream (stdout)
-    /// always receives the status line, so `lockpick > report.txt` yields
-    /// a clean machine-readable record. The spinner on stderr only stays
-    /// as the final visible state when stdout is captured. When stdout
-    /// is also a TTY, clearing the spinner avoids printing the same line
-    /// twice on the terminal.
+    /// Three TTY cases, each with a different routing:
+    ///
+    /// * Stderr TTY, stdout TTY (pure interactive). Anchor the spinner
+    ///   in place with `finish_with_message`, so siblings still running
+    ///   in the `MultiProgress` band do not shift up to fill its row.
+    ///   Skip the `reportln`: the report stream is the same terminal as
+    ///   the spinner, and a `mp.suspend` write would clear-and-redraw
+    ///   the active band plus duplicate the line above it.
+    /// * Stderr TTY, stdout captured (`lockpick > report.txt`). Anchor
+    ///   the spinner so the user keeps a visible final state on stderr,
+    ///   and emit the line on stdout for the capture.
+    /// * Stderr not a TTY. The spinner draw target is hidden, so the
+    ///   clear is a no-op. Emit the line on stdout as the sole record.
     pub fn finish_spinner(&self, pb: &ProgressBar, label: &str, status: TaskStatus) {
         let tag = match status {
             TaskStatus::Pass => "PASS".green().bold(),
             TaskStatus::Fail => "FAIL".red().bold(),
             TaskStatus::Skip => "SKIP".yellow().bold(),
         };
-        if self.is_tty && !self.stdout_is_tty {
+        if self.is_tty {
             pb.set_style(self.done_style.clone());
             pb.finish_with_message(format!("{label:<LABEL_WIDTH$} {tag}"));
         } else {
             pb.finish_and_clear();
         }
-        self.reportln(format!("  {label:<LABEL_WIDTH$} {tag}"));
+        if !(self.is_tty && self.stdout_is_tty) {
+            self.reportln(format!("  {label:<LABEL_WIDTH$} {tag}"));
+        }
     }
 
     /// Write a line to the diagnostic stream (stderr): banners, notes,
