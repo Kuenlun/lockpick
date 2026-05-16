@@ -614,3 +614,66 @@ fn skipping_all_checks_exits_two_as_a_misconfiguration() {
         "expected misconfiguration error, got:\n{stderr}"
     );
 }
+
+/// Install a `cargo-audit` shim at `shim_dir` and return a `PATH` with
+/// it prepended. The shim records its cwd (via `pwd -P`, which always
+/// queries the kernel) to `LOCKPICK_TEST_AUDIT_CWD_FILE` and exits 0.
+#[cfg(unix)]
+fn install_cargo_audit_shim(shim_dir: &TempDir) -> String {
+    use std::os::unix::fs::PermissionsExt;
+
+    let shim_src = indoc! {r#"#!/bin/sh
+        # Cargo plugins receive the plugin name as $1; strip it.
+        if [ "$1" = "audit" ]; then shift; fi
+        pwd -P > "$LOCKPICK_TEST_AUDIT_CWD_FILE"
+    "#};
+    let shim_path = shim_dir.child("cargo-audit");
+    shim_path.write_str(shim_src).unwrap();
+    let mut perms = std::fs::metadata(shim_path.path()).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(shim_path.path(), perms).unwrap();
+
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    format!("{}:{}", shim_dir.path().display(), original_path)
+}
+
+#[cfg(unix)]
+#[test]
+fn audit_runs_from_workspace_root_when_lockpick_invoked_in_a_subdirectory() {
+    // B-3 regression. `cargo audit` only opens `./Cargo.lock`; unlike
+    // build/clippy/fmt/machete it does not walk the manifest tree. Before
+    // the fix, running lockpick from `project/src/` produced a spurious
+    // audit failure while every other phase quietly succeeded — a wedge
+    // that broke the "one binary, one verdict" contract. The shim records
+    // its actual cwd so we can assert it was anchored to the workspace
+    // root regardless of where the user invoked lockpick from.
+    let shim_dir = TempDir::new().unwrap();
+    let new_path = install_cargo_audit_shim(&shim_dir);
+    let cwd_record = shim_dir.child("audit-cwd.txt");
+
+    let project = dummy_cargo_project();
+    let subdir = project.child("src");
+
+    let output = lockpick_raw()
+        .current_dir(subdir.path())
+        .env("PATH", &new_path)
+        .env("LOCKPICK_TEST_AUDIT_CWD_FILE", cwd_record.path())
+        .args(["--skip", "coverage", "--skip", "machete"])
+        .output()
+        .expect("failed to execute lockpick");
+
+    output.assert().success();
+
+    let recorded =
+        std::fs::read_to_string(cwd_record.path()).expect("audit shim did not record its cwd");
+    // Canonicalise both sides: on systems where the temp prefix is a
+    // symlink (e.g. macOS `/tmp` → `/private/tmp`), the recorded path
+    // and the project path resolve to the same target but differ as
+    // strings.
+    let observed = std::fs::canonicalize(recorded.trim()).unwrap();
+    let expected = std::fs::canonicalize(project.path()).unwrap();
+    assert_eq!(
+        observed, expected,
+        "cargo-audit must run from the workspace root, not the invoker's cwd",
+    );
+}
