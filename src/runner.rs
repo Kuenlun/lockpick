@@ -2,6 +2,7 @@
 // lockpick - Rust CLI to enforce merge checks and code quality
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
+use std::io::IsTerminal;
 use std::path::Path;
 use std::thread;
 
@@ -12,7 +13,7 @@ use crate::cli::{Cli, SkipOption};
 use crate::config::{Config, LockpickMetadata};
 use crate::error::{LockpickError, MissingTool};
 use crate::reporter::{CheckOutcome, Reporter, TaskStatus};
-use crate::tooling::{self, Tool, Toolchain};
+use crate::tooling::{self, ColorMode, Tool, Toolchain};
 
 /// Resolve runtime dependencies and delegate to [`run_with`].
 #[cfg_attr(test, allow(dead_code))]
@@ -23,7 +24,11 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
     pin_to_workspace_root(metadata.workspace_root.as_deref(), &|p| {
         std::env::set_current_dir(p)
     });
-    let runner = CargoCli::detect();
+    // Subprocess color tracks the report stream: keep ANSI when stdout
+    // is an interactive TTY, strip it otherwise so piping into `cat`,
+    // CI logs or files never carries stray escape sequences.
+    let color = ColorMode::for_stdout(std::io::stdout().is_terminal());
+    let runner = CargoCli::detect(color);
     // Probe the toolchain once at startup. Both the early `branches`-on-
     // stable gate and the per-check `--branch` argv key off this single
     // boolean, so caching is wasted state.
@@ -36,6 +41,7 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
         metadata.has_lib_target,
         &runner,
         is_nightly,
+        color,
     )
 }
 
@@ -63,6 +69,13 @@ fn pin_to_workspace_root(
 }
 
 /// Orchestrate the full check pipeline with every collaborator injected.
+///
+/// This is the testable seam: every dependency is passed in, so unit
+/// tests can substitute a fake [`Runner`], a captive [`Reporter`], a
+/// hand-rolled [`Toolchain`], and so on. Each parameter names a
+/// distinct collaborator, so bundling them just to satisfy
+/// `clippy::too_many_arguments` would obscure that, not clarify it.
+#[allow(clippy::too_many_arguments)]
 pub fn run_with(
     cli: &Cli,
     reporter: &Reporter,
@@ -71,6 +84,7 @@ pub fn run_with(
     has_lib: bool,
     runner: &dyn Runner,
     is_nightly: bool,
+    color: ColorMode,
 ) -> Result<(), LockpickError> {
     let coverage_active = is_coverage_active(cli);
 
@@ -89,6 +103,7 @@ pub fn run_with(
         config,
         has_lib,
         branch_coverage,
+        color,
     );
     let coverage_check = coverage_active.then_some(CoverageCheck {
         thresholds: config.coverage,
@@ -484,7 +499,10 @@ mod tests {
         let labels: Vec<&'static str> = vec![
             CompileCheck.label(),
             ClippyCheck.label(),
-            FmtCheck.label(),
+            FmtCheck {
+                color: ColorMode::Never,
+            }
+            .label(),
             crate::checks::test::TestCheck {
                 instrumented: false,
                 nextest: false,
@@ -563,7 +581,12 @@ mod tests {
         let compile = pass("check");
         let fmt = fail("fmt");
         let coverage = pass("coverage");
-        let plan = Plan::from_items(vec![Box::new(CompileCheck), Box::new(FmtCheck)]);
+        let plan = Plan::from_items(vec![
+            Box::new(CompileCheck),
+            Box::new(FmtCheck {
+                color: ColorMode::Never,
+            }),
+        ]);
         let outcomes = vec![compile, fmt];
         let items = flatten_outcomes(&plan, &outcomes, Some(&coverage));
         assert_eq!(
@@ -688,7 +711,9 @@ mod tests {
         std::panic::set_hook(Box::new(|_| {}));
         let reporter = Reporter::new(false, false, false);
         // FmtCheck is independent; this exercises the indep-cohort join.
-        let plan = Plan::from_items(vec![Box::new(FmtCheck)]);
+        let plan = Plan::from_items(vec![Box::new(FmtCheck {
+            color: ColorMode::Never,
+        })]);
         let pbs = pbs_for(&plan, &reporter);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             run_pipeline(&plan, &pbs, None, &reporter, &PanickingRunner)
@@ -798,7 +823,9 @@ mod tests {
         // insertion order, which is what the returned outcomes follow.
         let plan = Plan::from_items(vec![
             Box::new(ClippyCheck),
-            Box::new(FmtCheck),
+            Box::new(FmtCheck {
+                color: ColorMode::Never,
+            }),
             Box::new(DocCheck),
             Box::new(AuditCheck),
             Box::new(CompileCheck),
@@ -868,7 +895,9 @@ mod tests {
                 nextest: false,
                 branch_coverage: false,
             }),
-            Box::new(FmtCheck),
+            Box::new(FmtCheck {
+                color: ColorMode::Never,
+            }),
             Box::new(AuditCheck),
         ]);
         let pbs = pbs_for(&plan, &reporter);
@@ -1052,6 +1081,7 @@ mod tests {
                 true,
                 &CoverageReportRunner,
                 true,
+                ColorMode::Never,
             )
             .is_ok()
         );
@@ -1083,6 +1113,7 @@ mod tests {
             false,
             &runner,
             true,
+            ColorMode::Never,
         )
         .unwrap_err();
         assert!(err.to_string().contains("check(s) failed"));
@@ -1104,6 +1135,7 @@ mod tests {
             false,
             &runner,
             true,
+            ColorMode::Never,
         )
         .unwrap_err();
         assert!(err.to_string().contains("required tool"));
@@ -1131,6 +1163,7 @@ mod tests {
                 false,
                 &CoverageReportRunner,
                 true,
+                ColorMode::Never,
             )
             .is_ok()
         );
@@ -1161,6 +1194,7 @@ mod tests {
                 true,
                 &CoverageReportRunner,
                 true,
+                ColorMode::Never,
             )
             .is_ok()
         );
@@ -1191,6 +1225,7 @@ mod tests {
                 false,
                 &CoverageReportRunner,
                 true,
+                ColorMode::Never,
             )
             .is_ok()
         );
@@ -1223,6 +1258,7 @@ mod tests {
             false,
             &runner,
             true,
+            ColorMode::Never,
         )
         .expect_err("empty pipeline must be a misconfiguration, not success");
         assert!(matches!(err, LockpickError::NoChecksToRun));
@@ -1254,6 +1290,7 @@ mod tests {
             false,
             &runner,
             true,
+            ColorMode::Never,
         )
         .unwrap_err();
         assert!(err.to_string().contains("1 check(s) failed"), "got: {err}");
@@ -1285,6 +1322,7 @@ mod tests {
             false,
             &runner,
             true,
+            ColorMode::Never,
         )
         .unwrap_err();
         assert!(err.to_string().contains("1 check(s) failed"), "got: {err}");
@@ -1325,6 +1363,7 @@ mod tests {
             false,
             &FakeRunner::passing(),
             false,
+            ColorMode::Never,
         )
         .expect_err("stable + branches must error before running checks");
         assert!(matches!(err, LockpickError::BranchesRequireNightly));
@@ -1353,6 +1392,7 @@ mod tests {
                 true,
                 &CoverageReportRunner,
                 true,
+                ColorMode::Never,
             )
             .is_ok()
         );
@@ -1376,6 +1416,7 @@ mod tests {
                 true,
                 &CoverageReportRunner,
                 false,
+                ColorMode::Never,
             )
             .is_ok()
         );
@@ -1400,6 +1441,7 @@ mod tests {
                 true,
                 &CoverageReportRunner,
                 false,
+                ColorMode::Never,
             )
             .is_ok()
         );
