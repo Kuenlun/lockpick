@@ -50,3 +50,42 @@ fn dispatch(result: Result<(), LockpickError>) -> u8 {
         }
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    use crate::error::MissingTool;
+
+    #[test]
+    fn dispatch_maps_ok_to_zero() {
+        assert_eq!(dispatch(Ok(())), 0);
+    }
+
+    #[test]
+    fn dispatch_maps_checks_failed_to_one() {
+        assert_eq!(dispatch(Err(LockpickError::ChecksFailed(2))), 1);
+    }
+
+    #[test]
+    fn dispatch_maps_no_checks_to_run_to_two() {
+        assert_eq!(dispatch(Err(LockpickError::NoChecksToRun)), 2);
+    }
+
+    #[test]
+    fn dispatch_maps_missing_tools_to_three() {
+        let missing = vec![MissingTool {
+            binary: "cargo-llvm-cov",
+            skip_flag: "coverage",
+        }];
+        assert_eq!(dispatch(Err(LockpickError::MissingTools(missing))), 3);
+    }
+
+    #[test]
+    fn dispatch_maps_branches_require_nightly_to_four() {
+        // Covers the arm on non-unix targets, where the integration test
+        // `coverage_branches_on_stable_exits_with_four_and_actionable_hint`
+        // is gated by `#[cfg(unix)]`.
+        assert_eq!(dispatch(Err(LockpickError::BranchesRequireNightly)), 4);
+    }
+}
