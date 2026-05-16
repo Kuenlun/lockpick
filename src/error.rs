@@ -24,6 +24,13 @@ pub enum LockpickError {
     /// merge gate that ran nothing never reads as green in CI.
     #[error("all checks skipped; nothing to verify")]
     NoChecksToRun,
+
+    /// The user configured `coverage.branches` but the active toolchain
+    /// is stable. Branch coverage relies on `-Z coverage-options=branch`,
+    /// which only nightly accepts, so refusing up front beats handing
+    /// back a raw `rustc` error mid-pipeline.
+    #[error("{}", render_branches_nightly())]
+    BranchesRequireNightly,
 }
 
 /// One absent cargo subcommand row used by [`LockpickError::MissingTools`].
@@ -87,6 +94,40 @@ fn render_missing(missing: &[MissingTool]) -> String {
     out.push('\n');
     let _ = writeln!(&mut out, "{}", "Or skip:".bold());
     let _ = write!(&mut out, "  {}", skip_cmd.cyan());
+
+    out
+}
+
+/// Render the actionable hint for [`LockpickError::BranchesRequireNightly`].
+///
+/// Mirrors the layout of [`render_missing`] so users see a familiar
+/// "what is wrong / how to fix" structure across error variants.
+fn render_branches_nightly() -> String {
+    let mut out = String::new();
+    let _ = writeln!(
+        &mut out,
+        "{key} requires nightly Rust",
+        key = "coverage.branches".yellow().bold(),
+    );
+    out.push('\n');
+    let _ = writeln!(
+        &mut out,
+        "Branch coverage uses `-Z coverage-options=branch`, which only nightly accepts."
+    );
+    out.push('\n');
+    let _ = writeln!(&mut out, "{}", "Either:".bold());
+    let _ = writeln!(
+        &mut out,
+        "  {bullet} remove {key} from [*.metadata.lockpick.coverage]",
+        bullet = "•".dimmed(),
+        key = "branches".cyan(),
+    );
+    let _ = write!(
+        &mut out,
+        "  {bullet} install nightly: {cmd}",
+        bullet = "•".dimmed(),
+        cmd = "rustup toolchain install nightly".cyan().bold(),
+    );
 
     out
 }
@@ -209,5 +250,36 @@ mod tests {
             LockpickError::NoChecksToRun.to_string(),
             "all checks skipped; nothing to verify"
         );
+    }
+
+    #[test]
+    fn render_branches_nightly_names_the_offending_key_and_offers_two_remedies() {
+        let msg = plain(&render_branches_nightly());
+        assert!(
+            msg.contains("coverage.branches"),
+            "expected the offending key in the header, got: {msg}"
+        );
+        assert!(
+            msg.contains("requires nightly Rust"),
+            "expected the nightly requirement to be named, got: {msg}"
+        );
+        // Both escape hatches must be present so the user knows there
+        // are two valid routes out of the failure.
+        assert!(
+            msg.contains("remove") && msg.contains("branches"),
+            "expected the `remove branches` remedy, got: {msg}"
+        );
+        assert!(
+            msg.contains("rustup toolchain install nightly"),
+            "expected the `install nightly` remedy, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn branches_require_nightly_display_renders_through_the_error_variant() {
+        let err = LockpickError::BranchesRequireNightly;
+        let s = plain(&err.to_string());
+        assert!(s.contains("coverage.branches"), "got: {s}");
+        assert!(s.contains("nightly"), "got: {s}");
     }
 }

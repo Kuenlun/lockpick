@@ -11,14 +11,30 @@ use super::{Check, Runner, combine_streams};
 use crate::config::CoverageConfig;
 use crate::reporter::{CheckOutcome, TaskStatus};
 
-const COV_REPORT_ARGS: &[&str] = &["report", "--json", "--summary-only", "--branch"];
+const COV_REPORT_BRANCH_ARGS: &[&str] = &["report", "--json", "--summary-only", "--branch"];
+const COV_REPORT_PLAIN_ARGS: &[&str] = &["report", "--json", "--summary-only"];
 
 pub struct CoverageCheck {
     pub thresholds: CoverageConfig,
+    /// Whether to ask `llvm-cov report` for branch coverage and to
+    /// enforce the branches threshold. Off on stable Rust; the runner
+    /// keys it on [`crate::tooling::is_nightly`].
+    pub branch_coverage: bool,
 }
 
 impl CoverageCheck {
     pub const LABEL: &'static str = "coverage";
+
+    /// Pick the `llvm-cov report` argv that matches the current
+    /// branch-coverage stance. Centralised so `cmd()`, `run()`, and the
+    /// `--verbose` banner cannot drift from each other.
+    const fn report_args(&self) -> &'static [&'static str] {
+        if self.branch_coverage {
+            COV_REPORT_BRANCH_ARGS
+        } else {
+            COV_REPORT_PLAIN_ARGS
+        }
+    }
 }
 
 impl Check for CoverageCheck {
@@ -27,12 +43,12 @@ impl Check for CoverageCheck {
     }
 
     fn cmd(&self) -> String {
-        format!("cargo llvm-cov {}", COV_REPORT_ARGS.join(" "))
+        format!("cargo llvm-cov {}", self.report_args().join(" "))
     }
 
     fn run(&self, runner: &dyn Runner) -> CheckOutcome {
-        match collect_report(runner) {
-            Ok(report) => evaluate(&report, self.thresholds),
+        match collect_report(runner, self.report_args()) {
+            Ok(report) => evaluate(&report, self.thresholds, self.branch_coverage),
             Err(output) => CheckOutcome {
                 status: TaskStatus::Fail,
                 output,
@@ -50,8 +66,8 @@ impl Check for CoverageCheck {
     }
 }
 
-fn collect_report(runner: &dyn Runner) -> Result<Report, String> {
-    match runner.spawn("llvm-cov", COV_REPORT_ARGS, &[]) {
+fn collect_report(runner: &dyn Runner, args: &[&str]) -> Result<Report, String> {
+    match runner.spawn("llvm-cov", args, &[]) {
         Ok(sr) if sr.success => serde_json::from_slice::<Report>(&sr.stdout)
             .map_err(|e| format!("malformed llvm-cov JSON: {e}")),
         // Some llvm-cov failures write diagnostics to stdout, so both
@@ -61,7 +77,7 @@ fn collect_report(runner: &dyn Runner) -> Result<Report, String> {
     }
 }
 
-fn evaluate(report: &Report, t: CoverageConfig) -> CheckOutcome {
+fn evaluate(report: &Report, t: CoverageConfig, branch_coverage: bool) -> CheckOutcome {
     let mut lines: Vec<String> = Vec::new();
     let mut passed = true;
 
@@ -79,7 +95,7 @@ fn evaluate(report: &Report, t: CoverageConfig) -> CheckOutcome {
             continue;
         }
         let mut any_real = false;
-        for (name, metric, threshold) in metric_rows(entry, t) {
+        for (name, metric, threshold) in metric_rows(entry, t, branch_coverage) {
             if metric.count == 0 {
                 lines.push(format!("ok   {name:<METRIC_NAME_WIDTH$}: 0/0 (vacuous)"));
                 continue;
@@ -117,7 +133,12 @@ fn evaluate(report: &Report, t: CoverageConfig) -> CheckOutcome {
     }
 
     lines.push(String::new());
-    lines.push("Inspect: cargo llvm-cov --branch --html".to_string());
+    let inspect_cmd = if branch_coverage {
+        "Inspect: cargo llvm-cov --branch --html"
+    } else {
+        "Inspect: cargo llvm-cov --html"
+    };
+    lines.push(inspect_cmd.to_string());
     lines.push("         target/llvm-cov/html/index.html".to_string());
 
     CheckOutcome {
@@ -134,13 +155,33 @@ fn evaluate(report: &Report, t: CoverageConfig) -> CheckOutcome {
 /// column lines up. Equal to the longest name (`"functions"`).
 const METRIC_NAME_WIDTH: usize = 9;
 
-const fn metric_rows(entry: &DataEntry, t: CoverageConfig) -> [(&'static str, Metric, u8); 4] {
-    [
+/// Effective branches threshold when measurement is active. Mirrors the
+/// pre-`Option` behaviour: an unset `branches` enforces 100%, just like
+/// the other metrics.
+const DEFAULT_BRANCH_THRESHOLD: u8 = 100;
+
+/// Materialise the metric rows in display order. The `branches` row is
+/// only included when `branch_coverage` is true; on stable Rust we did
+/// not pass `--branch`, so `llvm-cov` reports zeros for it and surfacing
+/// the row would be misleading.
+fn metric_rows(
+    entry: &DataEntry,
+    t: CoverageConfig,
+    branch_coverage: bool,
+) -> Vec<(&'static str, Metric, u8)> {
+    let mut rows = vec![
         ("functions", entry.totals.functions, t.functions),
         ("lines", entry.totals.lines, t.lines),
         ("regions", entry.totals.regions, t.regions),
-        ("branches", entry.totals.branches, t.branches),
-    ]
+    ];
+    if branch_coverage {
+        rows.push((
+            "branches",
+            entry.totals.branches,
+            t.branches.unwrap_or(DEFAULT_BRANCH_THRESHOLD),
+        ));
+    }
+    rows
 }
 
 /// Render `covered/count` as a two-decimal percentage (e.g. `"99.50%"`).
@@ -214,9 +255,10 @@ mod tests {
     }
 
     #[test]
-    fn cmd_runs_cargo_llvm_cov_report() {
+    fn cmd_runs_cargo_llvm_cov_report_with_branch_flag_when_branch_coverage_on() {
         let c = CoverageCheck {
             thresholds: CoverageConfig::default(),
+            branch_coverage: true,
         };
         let cmd = c.cmd();
         assert!(cmd.contains("cargo llvm-cov report"));
@@ -226,10 +268,24 @@ mod tests {
     }
 
     #[test]
+    fn cmd_drops_branch_flag_when_branch_coverage_off() {
+        // On stable lockpick must not pass `--branch`, or `llvm-cov`
+        // bails with an unhelpful raw rustc error.
+        let c = CoverageCheck {
+            thresholds: CoverageConfig::default(),
+            branch_coverage: false,
+        };
+        let cmd = c.cmd();
+        assert!(cmd.contains("cargo llvm-cov report"));
+        assert!(!cmd.contains("--branch"));
+    }
+
+    #[test]
     fn label_constant_matches_trait_method() {
         assert_eq!(CoverageCheck::LABEL, "coverage");
         let c = CoverageCheck {
             thresholds: CoverageConfig::default(),
+            branch_coverage: true,
         };
         assert_eq!(c.label(), CoverageCheck::LABEL);
     }
@@ -237,7 +293,7 @@ mod tests {
     #[test]
     fn evaluate_passes_when_all_metrics_at_100() {
         let report = report_from(COVERED_REPORT);
-        let outcome = evaluate(&report, CoverageConfig::default());
+        let outcome = evaluate(&report, CoverageConfig::default(), true);
         assert!(outcome.passed(), "got status {:?}", outcome.output);
     }
 
@@ -251,7 +307,7 @@ mod tests {
                 "branches": { "count": 20, "covered": 10 }
             } }] }"#,
         );
-        let outcome = evaluate(&report, CoverageConfig::default());
+        let outcome = evaluate(&report, CoverageConfig::default(), true);
         assert!(outcome.failed());
         assert!(outcome.output.contains("FAIL branches"));
         assert!(outcome.output.contains("missing 10"));
@@ -271,9 +327,9 @@ mod tests {
             functions: 100,
             lines: 100,
             regions: 100,
-            branches: 50,
+            branches: Some(50),
         };
-        let outcome = evaluate(&report, thresholds);
+        let outcome = evaluate(&report, thresholds, true);
         assert!(outcome.passed(), "got: {}", outcome.output);
     }
 
@@ -291,9 +347,9 @@ mod tests {
             functions: 100,
             lines: 100,
             regions: 100,
-            branches: 50,
+            branches: Some(50),
         };
-        let outcome = evaluate(&report, thresholds);
+        let outcome = evaluate(&report, thresholds, true);
         assert!(outcome.passed(), "got: {}", outcome.output);
     }
 
@@ -311,11 +367,66 @@ mod tests {
             functions: 100,
             lines: 100,
             regions: 100,
-            branches: 50,
+            branches: Some(50),
         };
-        let outcome = evaluate(&report, thresholds);
+        let outcome = evaluate(&report, thresholds, true);
         assert!(outcome.failed());
         assert!(outcome.output.contains("FAIL branches"));
+    }
+
+    #[test]
+    fn evaluate_skips_branches_row_when_branch_coverage_off() {
+        // Stable run: `--branch` was never passed, so even if the report
+        // happens to contain a `branches` block it would be all zeros.
+        // The row must not surface at all, neither as a real gate nor
+        // as a `0/0 (vacuous)` cell that would suggest measurement.
+        let report = report_from(
+            r#"{ "data": [{ "files": [{}], "totals": {
+                "functions": { "count": 10, "covered": 10 },
+                "lines": { "count": 100, "covered": 100 },
+                "regions": { "count": 50, "covered": 50 },
+                "branches": { "count": 0, "covered": 0 }
+            } }] }"#,
+        );
+        let outcome = evaluate(&report, CoverageConfig::default(), false);
+        assert!(outcome.passed(), "got: {}", outcome.output);
+        assert!(
+            !outcome.output.contains("branches"),
+            "branches row leaked into stable output:\n{}",
+            outcome.output
+        );
+    }
+
+    #[test]
+    fn evaluate_inspect_hint_matches_branch_coverage_setting() {
+        // The inspect hint we hand back to the user must mirror what we
+        // actually ran, or copy-pasting it reproduces the bug we fix.
+        let report = report_from(COVERED_REPORT);
+        let on = evaluate(&report, CoverageConfig::default(), true);
+        assert!(on.output.contains("cargo llvm-cov --branch --html"));
+
+        let off = evaluate(&report, CoverageConfig::default(), false);
+        assert!(off.output.contains("cargo llvm-cov --html"));
+        assert!(!off.output.contains("--branch"));
+    }
+
+    #[test]
+    fn evaluate_with_branches_unset_defaults_to_full_branch_threshold() {
+        // None means "user did not set this"; on nightly the gate must
+        // still demand 100% coverage to match the always-on semantics
+        // of the other three metrics.
+        let report = report_from(
+            r#"{ "data": [{ "files": [{}], "totals": {
+                "functions": { "count": 10, "covered": 10 },
+                "lines": { "count": 100, "covered": 100 },
+                "regions": { "count": 50, "covered": 50 },
+                "branches": { "count": 20, "covered": 19 }
+            } }] }"#,
+        );
+        let outcome = evaluate(&report, CoverageConfig::default(), true);
+        assert!(outcome.failed());
+        assert!(outcome.output.contains("FAIL branches"));
+        assert!(outcome.output.contains("threshold 100%"));
     }
 
     #[test]
@@ -337,7 +448,7 @@ mod tests {
                 "branches": { "count": 0, "covered": 0 }
             } }] }"#,
         );
-        let outcome = evaluate(&report, CoverageConfig::default());
+        let outcome = evaluate(&report, CoverageConfig::default(), true);
         assert!(outcome.passed());
         assert!(outcome.output.contains("0/0 (vacuous)"));
     }
@@ -345,7 +456,7 @@ mod tests {
     #[test]
     fn evaluate_rejects_report_with_no_data_entries() {
         let report = report_from(r#"{ "data": [] }"#);
-        let outcome = evaluate(&report, CoverageConfig::default());
+        let outcome = evaluate(&report, CoverageConfig::default(), true);
         assert!(outcome.failed());
         assert!(outcome.output.contains("no data entries"));
     }
@@ -357,7 +468,7 @@ mod tests {
                 "functions": { "count": 1, "covered": 1 }
             } }] }"#,
         );
-        let outcome = evaluate(&report, CoverageConfig::default());
+        let outcome = evaluate(&report, CoverageConfig::default(), true);
         assert!(outcome.failed());
         assert!(outcome.output.contains("no files reported"));
     }
@@ -372,7 +483,7 @@ mod tests {
                 "branches": { "count": 0, "covered": 0 }
             } }] }"#,
         );
-        let outcome = evaluate(&report, CoverageConfig::default());
+        let outcome = evaluate(&report, CoverageConfig::default(), true);
         assert!(outcome.failed());
         assert!(outcome.output.contains("broken instrumentation"));
     }
@@ -380,8 +491,8 @@ mod tests {
     #[test]
     fn collect_report_parses_runner_stdout_on_success() {
         let fake = fake_with_stdout(COVERED_REPORT.as_bytes(), true);
-        let report = collect_report(&fake).expect("parsed");
-        let outcome = evaluate(&report, CoverageConfig::default());
+        let report = collect_report(&fake, COV_REPORT_BRANCH_ARGS).expect("parsed");
+        let outcome = evaluate(&report, CoverageConfig::default(), true);
         assert!(outcome.passed());
     }
 
@@ -392,7 +503,7 @@ mod tests {
             stdout: Vec::new(),
             stderr: b"llvm-cov boom".to_vec(),
         })]);
-        let err = collect_report(&fake).unwrap_err();
+        let err = collect_report(&fake, COV_REPORT_BRANCH_ARGS).unwrap_err();
         assert!(err.contains("llvm-cov boom"));
     }
 
@@ -403,7 +514,7 @@ mod tests {
             stdout: b"error on stdout".to_vec(),
             stderr: b"err on stderr".to_vec(),
         })]);
-        let err = collect_report(&fake).unwrap_err();
+        let err = collect_report(&fake, COV_REPORT_BRANCH_ARGS).unwrap_err();
         assert!(err.contains("error on stdout"), "got: {err}");
         assert!(err.contains("err on stderr"), "got: {err}");
     }
@@ -411,14 +522,14 @@ mod tests {
     #[test]
     fn collect_report_complains_about_malformed_json() {
         let fake = fake_with_stdout(b"definitely not json", true);
-        let err = collect_report(&fake).unwrap_err();
+        let err = collect_report(&fake, COV_REPORT_BRANCH_ARGS).unwrap_err();
         assert!(err.contains("malformed llvm-cov JSON"));
     }
 
     #[test]
     fn collect_report_surfaces_io_error_with_launch_message() {
         let fake = FakeRunner::with_responses(vec![Err(io::Error::other("ENOENT"))]);
-        let err = collect_report(&fake).unwrap_err();
+        let err = collect_report(&fake, COV_REPORT_BRANCH_ARGS).unwrap_err();
         assert!(err.contains("failed to launch"));
         assert!(err.contains("ENOENT"));
     }
@@ -428,12 +539,36 @@ mod tests {
         let fake = fake_with_stdout(COVERED_REPORT.as_bytes(), true);
         let check = CoverageCheck {
             thresholds: CoverageConfig::default(),
+            branch_coverage: true,
         };
         let outcome = check.run(&fake);
         assert!(outcome.passed());
         let calls = fake.calls.lock().unwrap().clone();
         assert_eq!(calls[0].sub, "llvm-cov");
         assert!(calls[0].args.contains(&"report".to_string()));
+        assert!(
+            calls[0].args.iter().any(|a| a == "--branch"),
+            "expected `--branch` in args when branch_coverage = true, got: {:?}",
+            calls[0].args
+        );
+    }
+
+    #[test]
+    fn run_without_branch_coverage_omits_branch_flag_from_spawn_args() {
+        let fake = fake_with_stdout(COVERED_REPORT.as_bytes(), true);
+        let check = CoverageCheck {
+            thresholds: CoverageConfig::default(),
+            branch_coverage: false,
+        };
+        let _ = check.run(&fake);
+        let calls = fake.calls.lock().unwrap().clone();
+        assert_eq!(calls[0].sub, "llvm-cov");
+        assert!(calls[0].args.contains(&"report".to_string()));
+        assert!(
+            !calls[0].args.iter().any(|a| a == "--branch"),
+            "stable run must not request branch coverage, got: {:?}",
+            calls[0].args
+        );
     }
 
     #[test]
@@ -441,6 +576,7 @@ mod tests {
         let fake = fake_with_stdout(b"definitely not json", true);
         let check = CoverageCheck {
             thresholds: CoverageConfig::default(),
+            branch_coverage: true,
         };
         let outcome = check.run(&fake);
         assert!(outcome.failed());
@@ -451,6 +587,7 @@ mod tests {
     fn chain_position_is_none_because_coverage_is_runner_scheduled() {
         let check = CoverageCheck {
             thresholds: CoverageConfig::default(),
+            branch_coverage: true,
         };
         assert_eq!(check.chain_position(), None);
     }

@@ -60,6 +60,29 @@ pub fn cargo_command() -> Command {
     cmd
 }
 
+/// Whether the active `rustc` advertises itself as a nightly build.
+///
+/// Nightly is what unlocks `-Z coverage-options=branch`, so this is the
+/// gating signal for branch-coverage measurement. A spawn failure or
+/// non-zero exit reads as "not nightly": stable is the safe fallback.
+#[cfg_attr(test, allow(dead_code))]
+#[must_use]
+pub fn is_nightly() -> bool {
+    Command::new("rustc")
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .is_some_and(|o| version_string_is_nightly(&String::from_utf8_lossy(&o.stdout)))
+}
+
+/// Pure parse half of [`is_nightly`], factored out so tests can pin the
+/// matching rule against synthetic version strings without spawning a
+/// real `rustc`.
+fn version_string_is_nightly(version: &str) -> bool {
+    version.contains("nightly")
+}
+
 /// Optional cargo subcommand lockpick can drive. Each variant resolves
 /// to a `cargo-<binary>` lookup on `PATH`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -217,5 +240,35 @@ mod tests {
         assert!(!should_scrub_cargo_env("CARGO_TARGET_DIR"));
         assert!(!should_scrub_cargo_env("PATH"));
         assert!(!should_scrub_cargo_env("RUSTUP_TOOLCHAIN"));
+    }
+
+    #[test]
+    fn version_string_is_nightly_matches_canonical_nightly_banner() {
+        assert!(version_string_is_nightly(
+            "rustc 1.86.0-nightly (a2bcfae5c 2025-01-17)"
+        ));
+    }
+
+    #[test]
+    fn version_string_is_nightly_rejects_stable_and_beta_banners() {
+        assert!(!version_string_is_nightly(
+            "rustc 1.85.0 (4d91de4e4 2025-02-17)"
+        ));
+        assert!(!version_string_is_nightly(
+            "rustc 1.85.0-beta.1 (4d91de4e4 2025-02-17)"
+        ));
+    }
+
+    #[test]
+    fn version_string_is_nightly_is_false_on_empty_input() {
+        assert!(!version_string_is_nightly(""));
+    }
+
+    #[test]
+    fn is_nightly_runs_against_real_rustc_without_panicking() {
+        // The test environment may be stable or nightly; this is a
+        // smoke test that exercises the spawn path and asserts the
+        // call returns *some* boolean, not which one.
+        let _ = is_nightly();
     }
 }

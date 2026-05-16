@@ -673,6 +673,92 @@ fn install_cargo_audit_shim(shim_dir: &TempDir) -> String {
     format!("{}:{}", shim_dir.path().display(), original_path)
 }
 
+/// Install a `rustc` shim that fakes a stable banner for `--version`
+/// (so `is_nightly()` reports stable) and execs the real rustc, whose
+/// absolute path is read from `$LOCKPICK_TEST_REAL_RUSTC`, for every
+/// other invocation. Returns a `PATH` with `shim_dir` prepended, matching
+/// the convention of [`install_cargo_llvm_cov_shim`].
+#[cfg(unix)]
+fn install_stable_rustc_shim(shim_dir: &TempDir) -> String {
+    use std::os::unix::fs::PermissionsExt;
+
+    let shim_src = indoc! {r#"#!/bin/sh
+        if [ "$1" = "--version" ]; then
+            echo "rustc 1.85.0 (4d91de4e4 2025-02-17)"
+            exit 0
+        fi
+        exec "$LOCKPICK_TEST_REAL_RUSTC" "$@"
+    "#};
+    let shim_path = shim_dir.child("rustc");
+    shim_path.write_str(shim_src).unwrap();
+    let mut perms = std::fs::metadata(shim_path.path()).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(shim_path.path(), perms).unwrap();
+
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    format!("{}:{}", shim_dir.path().display(), original_path)
+}
+
+#[cfg(unix)]
+#[test]
+fn coverage_branches_on_stable_exits_with_four_and_actionable_hint() {
+    // Triggers the `BranchesRequireNightly` arm of `dispatch` end-to-end:
+    // a project that opts into `coverage.branches` plus a stable rustc
+    // banner must short-circuit before any check spawns. The shim only
+    // lies about `rustc --version`; cargo's own rustc calls bypass it
+    // through `$RUSTC`, so `cargo metadata` keeps working.
+    let shim_dir = TempDir::new().unwrap();
+    install_stable_rustc_shim(&shim_dir);
+    let new_path = install_cargo_llvm_cov_shim(&shim_dir);
+
+    let real_rustc = Command::new("which")
+        .arg("rustc")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .expect("real rustc must be on PATH for the shim passthrough");
+
+    let project = TempDir::new().unwrap();
+    project
+        .child("Cargo.toml")
+        .write_str(&cargo_toml_strict(
+            "branches_stable",
+            "[package.metadata.lockpick.coverage]\nbranches = 80\n",
+        ))
+        .unwrap();
+    project.child("README.md").write_str("").unwrap();
+    project
+        .child("src/main.rs")
+        .write_str(FORMATTED_MAIN_RS)
+        .unwrap();
+
+    let output = lockpick_raw()
+        .current_dir(project.path())
+        .env("PATH", &new_path)
+        .env("RUSTC", &real_rustc)
+        .env("LOCKPICK_TEST_REAL_RUSTC", &real_rustc)
+        .args(["--skip", "machete", "--skip", "audit"])
+        .output()
+        .expect("failed to execute lockpick");
+
+    let stderr = stderr_text(&output);
+    output.assert().failure().code(4);
+    assert!(
+        stderr.contains("coverage.branches"),
+        "expected the offending key in the error, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("nightly"),
+        "expected the nightly requirement to be named, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("rustup toolchain install nightly"),
+        "expected the install hint in the error, got:\n{stderr}"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn audit_runs_from_workspace_root_when_lockpick_invoked_in_a_subdirectory() {

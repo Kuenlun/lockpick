@@ -12,7 +12,7 @@ use crate::cli::{Cli, SkipOption};
 use crate::config::{Config, LockpickMetadata};
 use crate::error::{LockpickError, MissingTool};
 use crate::reporter::{CheckOutcome, Reporter, TaskStatus};
-use crate::tooling::{Tool, Toolchain};
+use crate::tooling::{self, Tool, Toolchain};
 
 /// Resolve runtime dependencies and delegate to [`run_with`].
 #[cfg_attr(test, allow(dead_code))]
@@ -24,6 +24,10 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
         std::env::set_current_dir(p)
     });
     let runner = CargoCli::detect();
+    // Probe the toolchain once at startup. Both the early `branches`-on-
+    // stable gate and the per-check `--branch` argv key off this single
+    // boolean, so caching is wasted state.
+    let is_nightly = tooling::is_nightly();
     run_with(
         cli,
         &reporter,
@@ -31,6 +35,7 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
         &metadata.config,
         metadata.has_lib_target,
         &runner,
+        is_nightly,
     )
 }
 
@@ -65,14 +70,29 @@ pub fn run_with(
     config: &Config,
     has_lib: bool,
     runner: &dyn Runner,
+    is_nightly: bool,
 ) -> Result<(), LockpickError> {
     let coverage_active = is_coverage_active(cli);
 
     require_tooling(cli, coverage_active, toolchain)?;
+    require_nightly_for_branches(coverage_active, config, is_nightly)?;
 
-    let plan = checks::build_plan(cli, coverage_active, toolchain, config, has_lib);
+    // Branch coverage measurement is gated on nightly because
+    // `-Z coverage-options=branch` is unstable. Stable runs still get
+    // functions/lines/regions; only the branches metric is dropped.
+    let branch_coverage = is_nightly;
+
+    let plan = checks::build_plan(
+        cli,
+        coverage_active,
+        toolchain,
+        config,
+        has_lib,
+        branch_coverage,
+    );
     let coverage_check = coverage_active.then_some(CoverageCheck {
         thresholds: config.coverage,
+        branch_coverage,
     });
 
     // Coverage rides on `test`, which is the only path that emits the
@@ -95,6 +115,9 @@ pub fn run_with(
     }
     if cli.skips(&SkipOption::License) && config.license_header.is_none() {
         reporter.note("--skip license has no effect: no license_header configured");
+    }
+    if coverage_active && !is_nightly {
+        reporter.note("branch coverage disabled: requires nightly");
     }
 
     if reporter.is_verbose {
@@ -130,6 +153,22 @@ pub fn run_with(
 /// `--skip test` (no instrumentation, no coverage).
 fn is_coverage_active(cli: &Cli) -> bool {
     !cli.skips(&SkipOption::Coverage) && !cli.skips(&SkipOption::Test)
+}
+
+/// Refuse to run when the user configured `coverage.branches` but the
+/// active toolchain is stable. Branch coverage relies on
+/// `-Z coverage-options=branch` (nightly-only), and degrading silently
+/// to a non-branch measurement would mask the user's explicit threshold.
+const fn require_nightly_for_branches(
+    coverage_active: bool,
+    config: &Config,
+    is_nightly: bool,
+) -> Result<(), LockpickError> {
+    if coverage_active && config.coverage.branches.is_some() && !is_nightly {
+        Err(LockpickError::BranchesRequireNightly)
+    } else {
+        Ok(())
+    }
 }
 
 /// Collect every absent cargo subcommand at once so the user can install
@@ -449,6 +488,7 @@ mod tests {
             crate::checks::test::TestCheck {
                 instrumented: false,
                 nextest: false,
+                branch_coverage: false,
             }
             .label(),
             DocTestCheck.label(),
@@ -462,6 +502,7 @@ mod tests {
             .label(),
             CoverageCheck {
                 thresholds: crate::config::CoverageConfig::default(),
+                branch_coverage: true,
             }
             .label(),
         ];
@@ -617,6 +658,7 @@ mod tests {
         let plan = Plan::from_items(vec![Box::new(CompileCheck), Box::new(ClippyCheck)]);
         let coverage = CoverageCheck {
             thresholds: crate::config::CoverageConfig::default(),
+            branch_coverage: true,
         };
         print_planned_commands(&reporter, &plan, Some(&coverage as &dyn Check));
     }
@@ -722,11 +764,13 @@ mod tests {
             Box::new(crate::checks::test::TestCheck {
                 instrumented: true,
                 nextest: false,
+                branch_coverage: true,
             }),
         ]);
         let pbs = pbs_for(&plan, &reporter);
         let cov_check = CoverageCheck {
             thresholds: crate::config::CoverageConfig::default(),
+            branch_coverage: true,
         };
         let cov_pb = reporter.add_spinner(cov_check.label());
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -795,6 +839,7 @@ mod tests {
             Box::new(crate::checks::test::TestCheck {
                 instrumented: false,
                 nextest: false,
+                branch_coverage: false,
             }),
             Box::new(ClippyCheck),
             Box::new(CompileCheck),
@@ -821,6 +866,7 @@ mod tests {
             Box::new(crate::checks::test::TestCheck {
                 instrumented: false,
                 nextest: false,
+                branch_coverage: false,
             }),
             Box::new(FmtCheck),
             Box::new(AuditCheck),
@@ -852,12 +898,14 @@ mod tests {
             Box::new(crate::checks::test::TestCheck {
                 instrumented: true,
                 nextest: false,
+                branch_coverage: true,
             }),
             Box::new(ClippyCheck),
         ]);
         let pbs = pbs_for(&plan, &reporter);
         let cov_check = CoverageCheck {
             thresholds: crate::config::CoverageConfig::default(),
+            branch_coverage: true,
         };
         let cov_pb = reporter.add_spinner(cov_check.label());
 
@@ -881,11 +929,13 @@ mod tests {
             Box::new(crate::checks::test::TestCheck {
                 instrumented: true,
                 nextest: false,
+                branch_coverage: true,
             }),
         ]);
         let pbs = pbs_for(&plan, &reporter);
         let cov_check = CoverageCheck {
             thresholds: crate::config::CoverageConfig::default(),
+            branch_coverage: true,
         };
         let cov_pb = reporter.add_spinner(cov_check.label());
 
@@ -908,11 +958,13 @@ mod tests {
             Box::new(crate::checks::test::TestCheck {
                 instrumented: true,
                 nextest: false,
+                branch_coverage: true,
             }),
         ]);
         let pbs = pbs_for(&plan, &reporter);
         let cov_check = CoverageCheck {
             thresholds: crate::config::CoverageConfig::default(),
+            branch_coverage: true,
         };
         let cov_pb = reporter.add_spinner(cov_check.label());
 
@@ -999,6 +1051,7 @@ mod tests {
                 &Config::default(),
                 true,
                 &CoverageReportRunner,
+                true,
             )
             .is_ok()
         );
@@ -1029,6 +1082,7 @@ mod tests {
             &Config::default(),
             false,
             &runner,
+            true,
         )
         .unwrap_err();
         assert!(err.to_string().contains("check(s) failed"));
@@ -1049,6 +1103,7 @@ mod tests {
             &Config::default(),
             false,
             &runner,
+            true,
         )
         .unwrap_err();
         assert!(err.to_string().contains("required tool"));
@@ -1075,6 +1130,7 @@ mod tests {
                 &Config::default(),
                 false,
                 &CoverageReportRunner,
+                true,
             )
             .is_ok()
         );
@@ -1104,6 +1160,7 @@ mod tests {
                 &config,
                 true,
                 &CoverageReportRunner,
+                true,
             )
             .is_ok()
         );
@@ -1133,6 +1190,7 @@ mod tests {
                 &Config::default(),
                 false,
                 &CoverageReportRunner,
+                true,
             )
             .is_ok()
         );
@@ -1164,6 +1222,7 @@ mod tests {
             &Config::default(),
             false,
             &runner,
+            true,
         )
         .expect_err("empty pipeline must be a misconfiguration, not success");
         assert!(matches!(err, LockpickError::NoChecksToRun));
@@ -1194,6 +1253,7 @@ mod tests {
             &Config::default(),
             false,
             &runner,
+            true,
         )
         .unwrap_err();
         assert!(err.to_string().contains("1 check(s) failed"), "got: {err}");
@@ -1224,8 +1284,145 @@ mod tests {
             &Config::default(),
             false,
             &runner,
+            true,
         )
         .unwrap_err();
         assert!(err.to_string().contains("1 check(s) failed"), "got: {err}");
+    }
+
+    #[test]
+    fn run_with_rejects_branches_threshold_on_stable_with_a_dedicated_error() {
+        // Coverage active + `coverage.branches = Some(80)` + stable Rust
+        // must produce the BranchesRequireNightly variant *before* any
+        // check runs. The fake runner is irrelevant here; the gate
+        // short-circuits before we ever spawn a cargo subprocess.
+        let reporter = Reporter::new(false, false);
+        let cli = Cli {
+            skip: vec![
+                SkipOption::Check,
+                SkipOption::Clippy,
+                SkipOption::Fmt,
+                SkipOption::DocTest,
+                SkipOption::Doc,
+                SkipOption::Audit,
+                SkipOption::Machete,
+                SkipOption::License,
+            ],
+            verbose: false,
+        };
+        let config = Config {
+            coverage: crate::config::CoverageConfig {
+                branches: Some(80),
+                ..crate::config::CoverageConfig::default()
+            },
+            ..Config::default()
+        };
+        let err = run_with(
+            &cli,
+            &reporter,
+            &Toolchain::all_present(),
+            &config,
+            false,
+            &FakeRunner::passing(),
+            false,
+        )
+        .expect_err("stable + branches must error before running checks");
+        assert!(matches!(err, LockpickError::BranchesRequireNightly));
+    }
+
+    #[test]
+    fn run_with_allows_branches_threshold_on_nightly() {
+        let reporter = Reporter::new(false, false);
+        let cli = Cli {
+            skip: vec![SkipOption::Doc],
+            verbose: false,
+        };
+        let config = Config {
+            coverage: crate::config::CoverageConfig {
+                branches: Some(80),
+                ..crate::config::CoverageConfig::default()
+            },
+            ..Config::default()
+        };
+        assert!(
+            run_with(
+                &cli,
+                &reporter,
+                &Toolchain::all_present(),
+                &config,
+                true,
+                &CoverageReportRunner,
+                true,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn run_with_allows_default_config_on_stable_because_branches_stays_unset() {
+        // Stable + no `branches` in config must run cleanly: the gate
+        // only fires when the user explicitly opted into the metric.
+        let reporter = Reporter::new(false, false);
+        let cli = Cli {
+            skip: vec![SkipOption::Doc],
+            verbose: false,
+        };
+        assert!(
+            run_with(
+                &cli,
+                &reporter,
+                &Toolchain::all_present(),
+                &Config::default(),
+                true,
+                &CoverageReportRunner,
+                false,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn run_with_emits_branch_coverage_degradation_note_on_stable() {
+        // Coverage active + stable Rust must surface a visible note so
+        // the user does not silently lose the branches metric. Pins the
+        // `coverage_active && !is_nightly` arm of the note ladder.
+        let reporter = Reporter::new(true, false);
+        let cli = Cli {
+            skip: vec![SkipOption::Doc],
+            verbose: false,
+        };
+        assert!(
+            run_with(
+                &cli,
+                &reporter,
+                &Toolchain::all_present(),
+                &Config::default(),
+                true,
+                &CoverageReportRunner,
+                false,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn require_nightly_for_branches_is_a_no_op_when_coverage_is_inactive() {
+        // Even if the user set `branches`, skipping coverage means we
+        // never measure anything: the nightly gate must not fire.
+        let config = Config {
+            coverage: crate::config::CoverageConfig {
+                branches: Some(80),
+                ..crate::config::CoverageConfig::default()
+            },
+            ..Config::default()
+        };
+        assert!(require_nightly_for_branches(false, &config, false).is_ok());
+    }
+
+    #[test]
+    fn require_nightly_for_branches_is_a_no_op_when_branches_is_unset() {
+        // Default config keeps `branches = None`; stable users must not
+        // hit the gate just because they ran with coverage on.
+        assert!(require_nightly_for_branches(true, &Config::default(), false).is_ok());
     }
 }
