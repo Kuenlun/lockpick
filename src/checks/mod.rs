@@ -441,7 +441,7 @@ mod tests {
         assert!(has("fmt"));
         assert!(has("test"));
         assert!(has("doc"));
-        assert!(has("doc test"));
+        assert!(has("doc-test"));
         assert!(has("machete"));
         assert!(has("audit"));
         assert!(!has("license"));
@@ -465,7 +465,7 @@ mod tests {
         assert_eq!(
             labels,
             vec![
-                "check", "clippy", "fmt", "test", "doc", "doc test", "machete", "audit", "license",
+                "check", "clippy", "fmt", "test", "doc", "doc-test", "machete", "audit", "license",
             ],
         );
     }
@@ -499,7 +499,7 @@ mod tests {
             &Config::default(),
             false,
         );
-        assert!(plan.iter().all(|(_, c)| c.label() != "doc test"));
+        assert!(plan.iter().all(|(_, c)| c.label() != "doc-test"));
     }
 
     #[test]
@@ -550,7 +550,7 @@ mod tests {
         // Serial chain in canonical order — pinned by `chain_position`,
         // independent of the order build_plan inserted them in.
         let chain: Vec<&str> = plan.serial_chain().map(|(_, c)| c.label()).collect();
-        assert_eq!(chain, vec!["check", "test", "clippy", "doc", "doc test"]);
+        assert_eq!(chain, vec!["check", "test", "clippy", "doc", "doc-test"]);
     }
 
     #[test]

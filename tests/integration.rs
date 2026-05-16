@@ -246,6 +246,42 @@ fn skip_test_implies_skip_coverage() {
 }
 
 #[test]
+fn skip_doc_test_notes_no_op_on_bin_only_workspace() {
+    let project = dummy_cargo_project();
+
+    let output = lockpick()
+        .current_dir(project.path())
+        .args(["--skip", "doc-test"])
+        .output()
+        .expect("failed to execute lockpick");
+
+    let stderr = stderr_text(&output);
+    output.assert().success();
+    assert!(
+        stderr.contains("--skip doc-test has no effect"),
+        "expected inert-skip note for doc-test, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn skip_license_notes_no_op_when_no_header_configured() {
+    let project = dummy_cargo_project();
+
+    let output = lockpick()
+        .current_dir(project.path())
+        .args(["--skip", "license"])
+        .output()
+        .expect("failed to execute lockpick");
+
+    let stderr = stderr_text(&output);
+    output.assert().success();
+    assert!(
+        stderr.contains("--skip license has no effect"),
+        "expected inert-skip note for license, got:\n{stderr}"
+    );
+}
+
+#[test]
 fn check_failure_skips_chain_tail_but_independent_still_runs() {
     let project = dummy_cargo_project();
     project

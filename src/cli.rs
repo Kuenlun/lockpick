@@ -46,8 +46,9 @@ impl SkipOption {
 #[derive(Parser, Debug)]
 #[command(
     version,
-    about = "Rust merge-check CLI. Runs compile, lints, formatting, tests \
-             and 100% coverage in a single invocation.",
+    about = "Rust merge-check CLI. Runs compile, clippy, fmt, tests, doc, \
+             doc-tests, machete, audit, license headers and 100% branch \
+             coverage in a single invocation.",
     long_about = None,
     styles = cli_styles()
 )]

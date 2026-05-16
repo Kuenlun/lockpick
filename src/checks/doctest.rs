@@ -13,7 +13,7 @@ pub struct DocTestCheck;
 
 impl Check for DocTestCheck {
     fn label(&self) -> &'static str {
-        "doc test"
+        "doc-test"
     }
 
     fn cmd(&self) -> String {
