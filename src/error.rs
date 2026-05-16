@@ -18,6 +18,12 @@ pub enum LockpickError {
     /// error once per pipeline run.
     #[error("{}", render_missing(.0))]
     MissingTools(Vec<MissingTool>),
+
+    /// Every check was disabled via `--skip`, leaving the pipeline
+    /// empty. Reported as a misconfiguration rather than success so a
+    /// merge gate that ran nothing never reads as green in CI.
+    #[error("all checks skipped; nothing to verify")]
+    NoChecksToRun,
 }
 
 /// One absent cargo subcommand row used by [`LockpickError::MissingTools`].
@@ -195,5 +201,13 @@ mod tests {
         let err = LockpickError::MissingTools(vec![LLVM_COV]);
         let s = plain(&err.to_string());
         assert!(s.contains("cargo install cargo-llvm-cov"), "got: {s}");
+    }
+
+    #[test]
+    fn no_checks_to_run_display_is_a_short_actionable_message() {
+        assert_eq!(
+            LockpickError::NoChecksToRun.to_string(),
+            "all checks skipped; nothing to verify"
+        );
     }
 }

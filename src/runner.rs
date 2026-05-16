@@ -57,8 +57,7 @@ pub fn run_with(
             coverage_check.is_none(),
             "invariant: empty `plan` must imply no coverage check"
         );
-        reporter.note("All checks disabled, nothing to run");
-        return Ok(());
+        return Err(LockpickError::NoChecksToRun);
     }
 
     if cli.skips(&SkipOption::Test) && !cli.skips(&SkipOption::Coverage) {
@@ -1042,7 +1041,7 @@ mod tests {
     }
 
     #[test]
-    fn run_with_reports_all_disabled_path() {
+    fn run_with_rejects_a_pipeline_disabled_in_full() {
         let reporter = Reporter::new(false, false);
         let cli = Cli {
             skip: vec![
@@ -1060,17 +1059,16 @@ mod tests {
             verbose: false,
         };
         let runner = FakeRunner::passing();
-        assert!(
-            run_with(
-                &cli,
-                &reporter,
-                &Toolchain::all_present(),
-                &Config::default(),
-                false,
-                &runner,
-            )
-            .is_ok()
-        );
+        let err = run_with(
+            &cli,
+            &reporter,
+            &Toolchain::all_present(),
+            &Config::default(),
+            false,
+            &runner,
+        )
+        .expect_err("empty pipeline must be a misconfiguration, not success");
+        assert!(matches!(err, LockpickError::NoChecksToRun));
     }
 
     #[test]
