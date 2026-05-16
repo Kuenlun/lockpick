@@ -15,7 +15,7 @@ use crate::tooling::cargo_command;
 
 /// Per-metric coverage thresholds. Every metric defaults to 100%.
 #[derive(Deserialize, Debug, Clone, Copy)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct CoverageConfig {
     pub functions: u8,
     pub lines: u8,
@@ -35,7 +35,7 @@ impl Default for CoverageConfig {
 }
 
 #[derive(Deserialize, Debug, Default, Clone)]
-#[serde(default, rename_all = "kebab-case")]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Config {
     pub license_header: Option<PathBuf>,
     pub license_header_globs: Option<Vec<String>>,
@@ -353,6 +353,26 @@ mod tests {
     }
 
     #[test]
+    fn config_rejects_unknown_top_level_key() {
+        let v = json!({ "license-header": "hdr.txt", "licens-header": "typo.txt" });
+        let err = serde_json::from_value::<Config>(v).expect_err("typo must fail");
+        assert!(
+            err.to_string().contains("licens-header"),
+            "error should name the offending key, got: {err}"
+        );
+    }
+
+    #[test]
+    fn coverage_config_rejects_unknown_key() {
+        let v = json!({ "coverage": { "branches": 80, "branchs": 90 } });
+        let err = serde_json::from_value::<Config>(v).expect_err("typo must fail");
+        assert!(
+            err.to_string().contains("branchs"),
+            "error should name the offending key, got: {err}"
+        );
+    }
+
+    #[test]
     fn load_from_none_returns_defaults() {
         let m = LockpickMetadata::load_from(None);
         assert!(m.config.license_header.is_none());
@@ -410,6 +430,26 @@ mod tests {
             vec![],
         )));
         assert!(m.config.license_header.is_none());
+        assert_eq!(m.config.coverage.functions, 100);
+    }
+
+    #[test]
+    fn load_from_unknown_top_level_key_falls_back_to_defaults() {
+        let m = LockpickMetadata::load_from(Some(meta_with(
+            json!({ "lockpick": { "licens-header": "typo.txt" } }),
+            vec![],
+        )));
+        assert!(m.config.license_header.is_none());
+        assert_eq!(m.config.coverage.functions, 100);
+    }
+
+    #[test]
+    fn load_from_unknown_coverage_key_falls_back_to_defaults() {
+        let m = LockpickMetadata::load_from(Some(meta_with(
+            json!({ "lockpick": { "coverage": { "branchs": 90 } } }),
+            vec![],
+        )));
+        assert_eq!(m.config.coverage.branches, 100);
         assert_eq!(m.config.coverage.functions, 100);
     }
 
