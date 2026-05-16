@@ -90,6 +90,12 @@ pub fn run_with(
     if cli.skips(&SkipOption::Test) && !cli.skips(&SkipOption::Coverage) {
         reporter.note("--skip test implies coverage will be skipped");
     }
+    if cli.skips(&SkipOption::DocTest) && !has_lib {
+        reporter.note("--skip doc-test has no effect: workspace has no lib target");
+    }
+    if cli.skips(&SkipOption::License) && config.license_header.is_none() {
+        reporter.note("--skip license has no effect: no license_header configured");
+    }
 
     if reporter.is_verbose {
         print_planned_commands(
@@ -347,6 +353,7 @@ mod tests {
     use crate::checks::{FakeRunner, SpawnResult};
     use crate::cli::SkipOption;
     use crate::reporter::LABEL_WIDTH;
+    use std::path::PathBuf;
 
     fn pass(label: &str) -> CheckOutcome {
         CheckOutcome {
@@ -782,7 +789,7 @@ mod tests {
     fn run_pipeline_walks_serial_chain_in_canonical_order() {
         let reporter = Reporter::new(false, false);
         // Inserted out of canonical order; serial chain must still drive
-        // them as `check → test → clippy → doc → doc test`.
+        // them as `check → test → clippy → doc → doc-test`.
         let plan = Plan::from_items(vec![
             Box::new(DocCheck),
             Box::new(crate::checks::test::TestCheck {
@@ -981,7 +988,7 @@ mod tests {
     fn run_with_succeeds_when_every_check_passes() {
         let reporter = Reporter::new(true, false);
         let cli = Cli {
-            skip: vec![SkipOption::Doc, SkipOption::License],
+            skip: vec![SkipOption::Doc],
             verbose: true,
         };
         assert!(
@@ -1067,6 +1074,35 @@ mod tests {
                 &Toolchain::all_present(),
                 &Config::default(),
                 false,
+                &CoverageReportRunner,
+            )
+            .is_ok()
+        );
+    }
+
+    /// `--skip doc-test` on a lib-bearing workspace and `--skip license`
+    /// with a header configured are real skips, not no-ops, so neither
+    /// inert-skip note must fire. Pins the negative branch of both ifs.
+    #[test]
+    fn run_with_does_not_warn_when_doc_test_and_license_skips_are_effective() {
+        let reporter = Reporter::new(true, false);
+        let cli = cli_skipping(&[
+            SkipOption::DocTest,
+            SkipOption::License,
+            SkipOption::Machete,
+            SkipOption::Audit,
+        ]);
+        let config = Config {
+            license_header: Some(PathBuf::from(".header.txt")),
+            ..Config::default()
+        };
+        assert!(
+            run_with(
+                &cli,
+                &reporter,
+                &Toolchain::all_present(),
+                &config,
+                true,
                 &CoverageReportRunner,
             )
             .is_ok()
