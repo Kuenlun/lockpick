@@ -21,6 +21,10 @@ impl Check for MacheteCheck {
     fn run(&self, runner: &dyn Runner) -> CheckOutcome {
         cargo_outcome(runner, "machete", &[])
     }
+
+    fn chain_position(&self) -> Option<u8> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -31,5 +35,10 @@ mod tests {
     #[test]
     fn cmd_is_cargo_machete() {
         assert_eq!(MacheteCheck.cmd(), "cargo machete");
+    }
+
+    #[test]
+    fn chain_position_is_none_because_machete_only_reads_manifests() {
+        assert_eq!(MacheteCheck.chain_position(), None);
     }
 }

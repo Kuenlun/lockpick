@@ -4,7 +4,7 @@
 
 //! Doc-test runner. Skipped on workspaces with no `lib` target.
 
-use super::{Check, Runner, cargo_outcome, fmt_cargo_cmd};
+use super::{Check, Runner, cargo_outcome, chain, fmt_cargo_cmd};
 use crate::reporter::CheckOutcome;
 
 const DOCTEST_ARGS: &[&str] = &["--doc", "--workspace", "--all-features"];
@@ -23,6 +23,10 @@ impl Check for DocTestCheck {
     fn run(&self, runner: &dyn Runner) -> CheckOutcome {
         cargo_outcome(runner, "test", DOCTEST_ARGS)
     }
+
+    fn chain_position(&self) -> Option<u8> {
+        Some(chain::DOCTEST)
+    }
 }
 
 #[cfg(test)]
@@ -37,5 +41,10 @@ mod tests {
         assert!(cmd.contains("--doc"));
         assert!(cmd.contains("--workspace"));
         assert!(cmd.contains("--all-features"));
+    }
+
+    #[test]
+    fn chain_position_is_doctest_so_doc_tests_close_the_chain() {
+        assert_eq!(DocTestCheck.chain_position(), Some(chain::DOCTEST));
     }
 }

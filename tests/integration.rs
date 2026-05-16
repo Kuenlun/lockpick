@@ -246,7 +246,7 @@ fn skip_test_implies_skip_coverage() {
 }
 
 #[test]
-fn check_failure_skips_remaining_checks() {
+fn check_failure_skips_chain_tail_but_independent_still_runs() {
     let project = dummy_cargo_project();
     project
         .child("src/main.rs")
@@ -265,13 +265,20 @@ fn check_failure_skips_remaining_checks() {
         stderr.contains("FAIL"),
         "expected check to FAIL, got:\n{stderr}"
     );
-    // `10` mirrors `reporter::LABEL_WIDTH`.
-    for label in ["clippy", "fmt", "test"] {
+    // `10` mirrors `reporter::LABEL_WIDTH`. The chain — everything that
+    // would have to compile — is skipped behind a failing `check`.
+    for label in ["clippy", "test", "doc"] {
         assert!(
             stderr.contains(&format!("{label:<10} SKIP")),
-            "expected '{label}' to be SKIP, got:\n{stderr}"
+            "expected chain check '{label}' to be SKIP, got:\n{stderr}"
         );
     }
+    // `fmt` is independent of the build — it runs in parallel with the
+    // chain and must not be dragged down by a compile failure.
+    assert!(
+        stderr.contains(&format!("{label:<10} PASS", label = "fmt")),
+        "expected independent 'fmt' to PASS regardless of compile failure, got:\n{stderr}"
+    );
 }
 
 #[test]

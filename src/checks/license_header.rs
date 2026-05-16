@@ -62,6 +62,10 @@ impl Check for LicenseHeaderCheck {
         )
     }
 
+    fn chain_position(&self) -> Option<u8> {
+        None
+    }
+
     fn run(&self, _runner: &dyn Runner) -> CheckOutcome {
         let header = match fs::read(&self.header_path) {
             Ok(bytes) => bytes,
@@ -430,5 +434,14 @@ mod tests {
         let collected = collect_files(&[p1, p2]).unwrap();
         assert_eq!(collected.len(), 2, "got: {collected:?}");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn chain_position_is_none_because_the_check_runs_in_process_against_sources() {
+        let check = LicenseHeaderCheck {
+            header_path: PathBuf::from("hdr.txt"),
+            globs: Vec::new(),
+        };
+        assert_eq!(check.chain_position(), None);
     }
 }

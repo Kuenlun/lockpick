@@ -5,7 +5,7 @@
 //! `cargo doc` with `RUSTDOCFLAGS=-D warnings` to fail on broken
 //! intra-doc links and unresolvable references.
 
-use super::{Check, Runner, cargo_outcome_with_env, fmt_cargo_cmd};
+use super::{Check, Runner, cargo_outcome_with_env, chain, fmt_cargo_cmd};
 use crate::reporter::CheckOutcome;
 
 const DOC_ARGS: &[&str] = &["--no-deps", "--workspace", "--all-features"];
@@ -26,6 +26,10 @@ impl Check for DocCheck {
 
     fn run(&self, runner: &dyn Runner) -> CheckOutcome {
         cargo_outcome_with_env(runner, "doc", DOC_ARGS, &[("RUSTDOCFLAGS", "-D warnings")])
+    }
+
+    fn chain_position(&self) -> Option<u8> {
+        Some(chain::DOC)
     }
 }
 
@@ -52,5 +56,10 @@ mod tests {
             calls[0].envs,
             vec![("RUSTDOCFLAGS".to_string(), "-D warnings".to_string())]
         );
+    }
+
+    #[test]
+    fn chain_position_is_doc_so_doc_runs_after_clippy_in_the_chain() {
+        assert_eq!(DocCheck.chain_position(), Some(chain::DOC));
     }
 }

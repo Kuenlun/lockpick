@@ -6,9 +6,7 @@ use std::thread;
 
 use indicatif::ProgressBar;
 
-use crate::checks::{
-    self, CargoCli, Check, Runner, compile::CompileCheck, coverage::CoverageCheck, test::TestCheck,
-};
+use crate::checks::{self, CargoCli, Check, Plan, Runner, chain, coverage::CoverageCheck};
 use crate::cli::{Cli, SkipOption};
 use crate::config::{Config, LockpickMetadata};
 use crate::error::{LockpickError, MissingTool};
@@ -44,83 +42,49 @@ pub fn run_with(
     let coverage_active = is_coverage_active(cli);
 
     require_tooling(cli, coverage_active, toolchain)?;
-    if cli.skips(&SkipOption::Test) && !cli.skips(&SkipOption::Coverage) {
-        reporter.note("--skip test implies coverage will be skipped");
-    }
 
-    let run_compile = !cli.skips(&SkipOption::Check);
-    let parallel = checks::build_parallel(cli, coverage_active, toolchain, config, has_lib);
+    let plan = checks::build_plan(cli, coverage_active, toolchain, config, has_lib);
     let coverage_check = coverage_active.then_some(CoverageCheck {
         thresholds: config.coverage,
     });
 
-    // Coverage rides on `test`, which always lives in `parallel`; the
-    // assert pins that invariant for future refactors.
-    if !run_compile && parallel.is_empty() {
+    // Coverage rides on `test`, which is the only path that emits the
+    // profraw files coverage consumes. If `test` did not survive the
+    // CLI, coverage cannot have either — the assert pins that invariant
+    // for future refactors.
+    if plan.is_empty() {
         debug_assert!(
             coverage_check.is_none(),
-            "invariant: empty `parallel` must imply no coverage check"
+            "invariant: empty `plan` must imply no coverage check"
         );
         reporter.note("All checks disabled, nothing to run");
         return Ok(());
     }
 
+    if cli.skips(&SkipOption::Test) && !cli.skips(&SkipOption::Coverage) {
+        reporter.note("--skip test implies coverage will be skipped");
+    }
+
     if reporter.is_verbose {
         print_planned_commands(
             reporter,
-            run_compile,
-            &parallel,
+            &plan,
             coverage_check.as_ref().map(|c| c as &dyn Check),
         );
     }
 
-    let compile = CompileCheck;
-    let compile_pb = run_compile.then(|| reporter.add_spinner(compile.label()));
-    let parallel_pbs: Vec<ProgressBar> = parallel
+    let pbs: Vec<ProgressBar> = plan
         .iter()
-        .map(|c| reporter.add_spinner(c.label()))
+        .map(|(_, c)| reporter.add_spinner(c.label()))
         .collect();
     let coverage_pb = coverage_check
         .as_ref()
         .map(|c| reporter.add_spinner(c.label()));
+    let coverage = coverage_check.as_ref().zip(coverage_pb.as_ref());
 
-    // Phase 1 — compile gate.
-    let compile_outcome = compile_pb.map(|pb| {
-        let outcome = compile.run(runner);
-        reporter.finish_spinner(&pb, compile.label(), outcome.status);
-        outcome
-    });
-    let compile_passed = compile_outcome.as_ref().is_none_or(CheckOutcome::passed);
+    let (outcomes, coverage_outcome) = run_pipeline(&plan, &pbs, coverage, reporter, runner);
 
-    // Phase 2 — parallel checks. Skipped wholesale if compile failed.
-    let parallel_outcomes: Vec<CheckOutcome> = if compile_passed {
-        run_parallel(&parallel, &parallel_pbs, reporter, runner)
-    } else {
-        for (check, pb) in parallel.iter().zip(&parallel_pbs) {
-            reporter.finish_spinner(pb, check.label(), TaskStatus::Skip);
-        }
-        std::iter::repeat_with(CheckOutcome::skipped)
-            .take(parallel.len())
-            .collect()
-    };
-
-    // Phase 3 — coverage gate, only when tests passed.
-    let coverage_outcome = coverage_check.as_ref().zip(coverage_pb).map(|(cov, pb)| {
-        let outcome = if should_run_coverage_phase(compile_passed, &parallel, &parallel_outcomes) {
-            cov.run(runner)
-        } else {
-            CheckOutcome::skipped()
-        };
-        reporter.finish_spinner(&pb, cov.label(), outcome.status);
-        outcome
-    });
-
-    let items = flatten_outcomes(
-        compile_outcome.as_ref(),
-        &parallel,
-        &parallel_outcomes,
-        coverage_outcome.as_ref(),
-    );
+    let items = flatten_outcomes(&plan, &outcomes, coverage_outcome.as_ref());
     let failure_count = report_results(reporter, &items);
 
     if failure_count > 0 {
@@ -170,33 +134,10 @@ fn require_tooling(
     }
 }
 
-/// Coverage runs only when compile and `test` both succeeded, else the
-/// `.profraw` files are absent or stale.
-fn should_run_coverage_phase(
-    compile_passed: bool,
-    parallel: &[Box<dyn Check>],
-    outcomes: &[CheckOutcome],
-) -> bool {
-    compile_passed
-        && parallel
-            .iter()
-            .zip(outcomes)
-            .find(|(c, _)| c.label() == TestCheck::LABEL)
-            .is_some_and(|(_, o)| o.passed())
-}
-
 /// Render one banner line per planned cargo invocation, plus a trailing
 /// blank line. Caller is responsible for the `is_verbose` gate.
-fn print_planned_commands(
-    reporter: &Reporter,
-    run_compile: bool,
-    parallel: &[Box<dyn Check>],
-    coverage: Option<&dyn Check>,
-) {
-    if run_compile {
-        reporter.command(&CompileCheck.cmd());
-    }
-    for c in parallel {
+fn print_planned_commands(reporter: &Reporter, plan: &Plan, coverage: Option<&dyn Check>) {
+    for (_, c) in plan.iter() {
         reporter.command(&c.cmd());
     }
     if let Some(c) = coverage {
@@ -205,51 +146,133 @@ fn print_planned_commands(
     reporter.println("");
 }
 
-/// Run every check on its own scoped thread and collect outcomes in
-/// input order. Each spinner is finished from inside its worker so
-/// PASS/FAIL marks land progressively rather than in one batch.
-///
-/// A panicking check propagates the panic — masking it as a `Fail`
-/// would also drop the user's diagnostics.
-fn run_parallel(
-    checks: &[Box<dyn Check>],
-    pbs: &[ProgressBar],
+/// Run a single check and finish its progress bar from the same thread.
+/// PASS/FAIL marks land as soon as the check ends, regardless of which
+/// cohort it belongs to.
+fn run_one(
+    check: &dyn Check,
+    pb: &ProgressBar,
     reporter: &Reporter,
     runner: &dyn Runner,
-) -> Vec<CheckOutcome> {
-    thread::scope(|s| {
-        checks
-            .iter()
-            .zip(pbs)
-            .map(|(check, pb)| {
-                s.spawn(move || {
-                    let outcome = check.run(runner);
-                    reporter.finish_spinner(pb, check.label(), outcome.status);
-                    outcome
-                })
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .map(|handle| match handle.join() {
-                Ok(outcome) => outcome,
-                Err(payload) => std::panic::resume_unwind(payload),
-            })
-            .collect()
-    })
+) -> CheckOutcome {
+    let outcome = check.run(runner);
+    reporter.finish_spinner(pb, check.label(), outcome.status);
+    outcome
 }
 
-/// Flatten the three phases into `(label, outcome)` pairs for reporting.
+/// Schedule every check under one [`thread::scope`] so the independent
+/// cohort, the serial chain and coverage all overlap whenever Cargo's
+/// per-`target/` lock allows it.
+///
+/// Layout (matches the README's `## Scheduling` diagram):
+///
+/// * Independent cohort — one worker thread per check, all in parallel.
+/// * Serial chain — single worker walking
+///   `compile → test → clippy → doc → doc-test`. Compile failure skips
+///   the rest of the chain, since nothing else can build past it.
+/// * Coverage — forks off the chain after `test` passes and runs in
+///   parallel with the chain tail; skipped when `test` did not pass.
+///
+/// Outcomes are returned in plan-insertion order so the verbose section
+/// listing and the final summary stay deterministic.
+///
+/// A panicking check propagates the panic — masking it as a `Fail` would
+/// also drop the user's diagnostics.
+fn run_pipeline(
+    plan: &Plan,
+    pbs: &[ProgressBar],
+    coverage: Option<(&CoverageCheck, &ProgressBar)>,
+    reporter: &Reporter,
+    runner: &dyn Runner,
+) -> (Vec<CheckOutcome>, Option<CheckOutcome>) {
+    let mut outcomes: Vec<CheckOutcome> =
+        (0..plan.len()).map(|_| CheckOutcome::skipped()).collect();
+
+    let coverage_outcome = thread::scope(|s| {
+        let independent_handles: Vec<_> = plan
+            .independent()
+            .map(|(idx, check)| {
+                let pb = &pbs[idx];
+                s.spawn(move || (idx, run_one(check, pb, reporter, runner)))
+            })
+            .collect();
+
+        let chain_handle = s.spawn(move || {
+            let mut chain_outcomes: Vec<(usize, CheckOutcome)> = Vec::new();
+            let mut coverage_handle = None;
+            let mut compile_failed = false;
+
+            for (idx, check) in plan.serial_chain() {
+                let pb = &pbs[idx];
+                let label = check.label();
+                let position = check.chain_position();
+                let outcome = if compile_failed {
+                    reporter.finish_spinner(pb, label, TaskStatus::Skip);
+                    CheckOutcome::skipped()
+                } else {
+                    run_one(check, pb, reporter, runner)
+                };
+                let passed = outcome.passed();
+
+                if position == Some(chain::COMPILE) && !passed {
+                    compile_failed = true;
+                }
+                if position == Some(chain::TEST)
+                    && passed
+                    && let Some((cov, cov_pb)) = coverage
+                {
+                    coverage_handle = Some(s.spawn(move || run_one(cov, cov_pb, reporter, runner)));
+                }
+                chain_outcomes.push((idx, outcome));
+            }
+
+            // Coverage is only spawned when `test` passes; otherwise
+            // mark its spinner Skip so the user sees the gate did not
+            // fire. `or_else` keeps the two cases in their natural
+            // order — primary first, fallback second.
+            let cov_outcome = coverage_handle
+                .map(|h| {
+                    h.join()
+                        .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+                })
+                .or_else(|| {
+                    coverage.map(|(cov, cov_pb)| {
+                        reporter.finish_spinner(cov_pb, cov.label(), TaskStatus::Skip);
+                        CheckOutcome::skipped()
+                    })
+                });
+
+            (chain_outcomes, cov_outcome)
+        });
+
+        for handle in independent_handles {
+            let (idx, outcome) = handle
+                .join()
+                .unwrap_or_else(|payload| std::panic::resume_unwind(payload));
+            outcomes[idx] = outcome;
+        }
+        let (chain_outcomes, cov_outcome) = chain_handle
+            .join()
+            .unwrap_or_else(|payload| std::panic::resume_unwind(payload));
+        for (idx, outcome) in chain_outcomes {
+            outcomes[idx] = outcome;
+        }
+        cov_outcome
+    });
+
+    (outcomes, coverage_outcome)
+}
+
+/// Flatten plan outcomes plus optional coverage into `(label, outcome)`
+/// pairs for reporting, in display order: plan items (insertion order),
+/// then coverage if it ran.
 fn flatten_outcomes<'a>(
-    compile_outcome: Option<&'a CheckOutcome>,
-    parallel: &'a [Box<dyn Check>],
-    parallel_outcomes: &'a [CheckOutcome],
+    plan: &'a Plan,
+    outcomes: &'a [CheckOutcome],
     coverage_outcome: Option<&'a CheckOutcome>,
 ) -> Vec<(&'a str, &'a CheckOutcome)> {
     let mut items: Vec<(&str, &CheckOutcome)> = Vec::new();
-    if let Some(o) = compile_outcome {
-        items.push((CompileCheck::LABEL, o));
-    }
-    for (c, o) in parallel.iter().zip(parallel_outcomes) {
+    for ((_, c), o) in plan.iter().zip(outcomes) {
         items.push((c.label(), o));
     }
     if let Some(o) = coverage_outcome {
@@ -289,6 +312,7 @@ mod tests {
     use super::*;
     use crate::checks::audit::AuditCheck;
     use crate::checks::clippy::ClippyCheck;
+    use crate::checks::compile::CompileCheck;
     use crate::checks::doc::DocCheck;
     use crate::checks::doctest::DocTestCheck;
     use crate::checks::fmt::FmtCheck;
@@ -317,6 +341,35 @@ mod tests {
             skip: skips.to_vec(),
             verbose: false,
         }
+    }
+
+    /// Test runner that keys its response off the cargo subcommand name
+    /// instead of a FIFO of canned responses. Necessary for parallel
+    /// pipeline tests where the order in which workers reach `spawn` is
+    /// non-deterministic.
+    struct ByCommandRunner {
+        fail: &'static [&'static str],
+    }
+
+    impl Runner for ByCommandRunner {
+        fn spawn(
+            &self,
+            sub: &str,
+            _args: &[&str],
+            _envs: &[(&str, &str)],
+        ) -> std::io::Result<SpawnResult> {
+            Ok(SpawnResult {
+                success: !self.fail.contains(&sub),
+                stdout: sub.as_bytes().to_vec(),
+                stderr: Vec::new(),
+            })
+        }
+    }
+
+    fn pbs_for(plan: &Plan, reporter: &Reporter) -> Vec<ProgressBar> {
+        plan.iter()
+            .map(|(_, c)| reporter.add_spinner(c.label()))
+            .collect()
     }
 
     #[test]
@@ -397,23 +450,22 @@ mod tests {
     }
 
     #[test]
-    fn flatten_outcomes_drops_none_outcomes_and_preserves_parallel_order() {
+    fn flatten_outcomes_preserves_plan_order_and_appends_coverage() {
         let compile = pass("check");
-        let clippy = pass("clippy");
         let fmt = fail("fmt");
         let coverage = pass("coverage");
-        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck), Box::new(FmtCheck)];
-        let outcomes = vec![clippy, fmt];
-        let items = flatten_outcomes(Some(&compile), &parallel, &outcomes, Some(&coverage));
+        let plan = Plan::from_items(vec![Box::new(CompileCheck), Box::new(FmtCheck)]);
+        let outcomes = vec![compile, fmt];
+        let items = flatten_outcomes(&plan, &outcomes, Some(&coverage));
         assert_eq!(
             items.iter().map(|(l, _)| *l).collect::<Vec<_>>(),
-            vec!["check", "clippy", "fmt", "coverage"]
+            vec!["check", "fmt", "coverage"]
         );
 
-        let no_compile = flatten_outcomes(None, &parallel, &outcomes, None);
+        let no_coverage = flatten_outcomes(&plan, &outcomes, None);
         assert_eq!(
-            no_compile.iter().map(|(l, _)| *l).collect::<Vec<_>>(),
-            vec!["clippy", "fmt"]
+            no_coverage.iter().map(|(l, _)| *l).collect::<Vec<_>>(),
+            vec!["check", "fmt"]
         );
     }
 
@@ -492,51 +544,25 @@ mod tests {
     }
 
     #[test]
-    fn should_run_coverage_phase_requires_compile_passed() {
-        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck)];
-        let outcomes = vec![pass("clippy")];
-        assert!(!should_run_coverage_phase(false, &parallel, &outcomes));
-    }
-
-    #[test]
-    fn should_run_coverage_phase_requires_test_outcome_passed() {
-        let parallel: Vec<Box<dyn Check>> = vec![Box::new(crate::checks::test::TestCheck {
-            instrumented: false,
-            nextest: false,
-        })];
-        let outcomes_pass = vec![pass("test")];
-        let outcomes_fail = vec![fail("test")];
-        assert!(should_run_coverage_phase(true, &parallel, &outcomes_pass));
-        assert!(!should_run_coverage_phase(true, &parallel, &outcomes_fail));
-    }
-
-    #[test]
-    fn should_run_coverage_phase_is_false_without_a_test_check() {
-        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck)];
-        let outcomes = vec![pass("clippy")];
-        assert!(!should_run_coverage_phase(true, &parallel, &outcomes));
-    }
-
-    #[test]
-    fn print_planned_commands_prints_compile_parallel_and_coverage() {
+    fn print_planned_commands_prints_every_plan_check_and_coverage() {
         let reporter = Reporter::new(true, false);
-        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck)];
+        let plan = Plan::from_items(vec![Box::new(CompileCheck), Box::new(ClippyCheck)]);
         let coverage = CoverageCheck {
             thresholds: crate::config::CoverageConfig::default(),
         };
-        print_planned_commands(&reporter, true, &parallel, Some(&coverage as &dyn Check));
+        print_planned_commands(&reporter, &plan, Some(&coverage as &dyn Check));
     }
 
     #[test]
-    fn print_planned_commands_skips_compile_banner_when_compile_disabled() {
+    fn print_planned_commands_omits_coverage_banner_when_coverage_inactive() {
         let reporter = Reporter::new(true, false);
-        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck)];
-        print_planned_commands(&reporter, false, &parallel, None);
+        let plan = Plan::from_items(vec![Box::new(ClippyCheck)]);
+        print_planned_commands(&reporter, &plan, None);
     }
 
     #[test]
     #[should_panic = "simulated check panic"]
-    fn run_parallel_re_raises_a_panicking_check_thread() {
+    fn run_pipeline_re_raises_a_panic_from_the_independent_cohort() {
         struct PanickingRunner;
         impl Runner for PanickingRunner {
             fn spawn(
@@ -548,68 +574,346 @@ mod tests {
                 panic!("simulated check panic");
             }
         }
-        // Suppress libtest's backtrace so the expected panic stays quiet.
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));
         let reporter = Reporter::new(false, false);
-        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck)];
-        let pbs: Vec<ProgressBar> = parallel
-            .iter()
-            .map(|c| reporter.add_spinner(c.label()))
-            .collect();
+        // FmtCheck is independent; this exercises the indep-cohort join.
+        let plan = Plan::from_items(vec![Box::new(FmtCheck)]);
+        let pbs = pbs_for(&plan, &reporter);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run_parallel(&parallel, &pbs, &reporter, &PanickingRunner)
+            run_pipeline(&plan, &pbs, None, &reporter, &PanickingRunner)
         }));
         std::panic::set_hook(prev);
         match result {
-            Ok(_) => panic!("expected panic, run_parallel returned Ok"),
+            Ok(_) => panic!("expected panic, run_pipeline returned Ok"),
             Err(payload) => std::panic::resume_unwind(payload),
         }
     }
 
     #[test]
-    fn run_parallel_executes_each_check_and_collects_outcomes() {
+    #[should_panic = "simulated check panic"]
+    fn run_pipeline_re_raises_a_panic_from_the_serial_chain() {
+        struct PanickingRunner;
+        impl Runner for PanickingRunner {
+            fn spawn(
+                &self,
+                _sub: &str,
+                _args: &[&str],
+                _envs: &[(&str, &str)],
+            ) -> std::io::Result<SpawnResult> {
+                panic!("simulated check panic");
+            }
+        }
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
         let reporter = Reporter::new(false, false);
-        let parallel: Vec<Box<dyn Check>> = vec![Box::new(ClippyCheck), Box::new(FmtCheck)];
-        let pbs: Vec<ProgressBar> = parallel
-            .iter()
-            .map(|c| reporter.add_spinner(c.label()))
-            .collect();
-        let fake = FakeRunner::with_responses(vec![
-            Ok(SpawnResult {
-                success: true,
-                stdout: Vec::new(),
-                stderr: Vec::new(),
-            }),
-            Ok(SpawnResult {
-                success: false,
-                stdout: Vec::new(),
-                stderr: Vec::new(),
+        // ClippyCheck is in the chain; this exercises the chain join.
+        let plan = Plan::from_items(vec![Box::new(ClippyCheck)]);
+        let pbs = pbs_for(&plan, &reporter);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_pipeline(&plan, &pbs, None, &reporter, &PanickingRunner)
+        }));
+        std::panic::set_hook(prev);
+        match result {
+            Ok(_) => panic!("expected panic, run_pipeline returned Ok"),
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    #[test]
+    #[should_panic = "simulated coverage panic"]
+    fn run_pipeline_re_raises_a_panic_from_the_coverage_thread() {
+        // Coverage's invocation is `cargo llvm-cov report …`; instrumented
+        // `test` also calls `llvm-cov` (without `report`). Discriminate
+        // on the first arg so only the coverage worker panics — that
+        // exercises the coverage-handle join.
+        struct PanicOnCoverageReportRunner;
+        impl Runner for PanicOnCoverageReportRunner {
+            fn spawn(
+                &self,
+                sub: &str,
+                args: &[&str],
+                _envs: &[(&str, &str)],
+            ) -> std::io::Result<SpawnResult> {
+                assert!(
+                    !(sub == "llvm-cov" && args.first() == Some(&"report")),
+                    "simulated coverage panic",
+                );
+                Ok(SpawnResult {
+                    success: true,
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                })
+            }
+        }
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let reporter = Reporter::new(false, false);
+        let plan = Plan::from_items(vec![
+            Box::new(CompileCheck),
+            Box::new(crate::checks::test::TestCheck {
+                instrumented: true,
+                nextest: false,
             }),
         ]);
-        let outcomes = run_parallel(&parallel, &pbs, &reporter, &fake);
-        assert_eq!(outcomes.len(), 2);
-        assert!(outcomes.iter().any(CheckOutcome::passed));
-        assert!(outcomes.iter().any(CheckOutcome::failed));
+        let pbs = pbs_for(&plan, &reporter);
+        let cov_check = CoverageCheck {
+            thresholds: crate::config::CoverageConfig::default(),
+        };
+        let cov_pb = reporter.add_spinner(cov_check.label());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_pipeline(
+                &plan,
+                &pbs,
+                Some((&cov_check, &cov_pb)),
+                &reporter,
+                &PanicOnCoverageReportRunner,
+            )
+        }));
+        std::panic::set_hook(prev);
+        match result {
+            Ok(_) => panic!("expected panic, run_pipeline returned Ok"),
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    #[test]
+    fn run_pipeline_executes_every_check_and_returns_outcomes_in_plan_order() {
+        let reporter = Reporter::new(false, false);
+        // Mixed plan: chain (clippy, doc, check) interleaved with
+        // independent (fmt, audit). Chain order (`check → clippy → doc`)
+        // is enforced by chain_position and is independent of the plan's
+        // insertion order, which is what the returned outcomes follow.
+        let plan = Plan::from_items(vec![
+            Box::new(ClippyCheck),
+            Box::new(FmtCheck),
+            Box::new(DocCheck),
+            Box::new(AuditCheck),
+            Box::new(CompileCheck),
+        ]);
+        let pbs = pbs_for(&plan, &reporter);
+
+        let runner = ByCommandRunner { fail: &["doc"] };
+        let (outcomes, cov) = run_pipeline(&plan, &pbs, None, &reporter, &runner);
+        assert_eq!(outcomes.len(), 5);
+        assert!(cov.is_none());
+        let labels: Vec<&str> = plan.iter().map(|(_, c)| c.label()).collect();
+        assert_eq!(
+            labels,
+            vec!["clippy", "fmt", "doc", "audit", "check"],
+            "plan iteration order drifted"
+        );
+        assert_eq!(
+            outcomes.iter().map(|o| o.status).collect::<Vec<_>>(),
+            vec![
+                TaskStatus::Pass, // clippy
+                TaskStatus::Pass, // fmt
+                TaskStatus::Fail, // doc
+                TaskStatus::Pass, // audit
+                TaskStatus::Pass, // check
+            ],
+            "outcomes are not in plan order"
+        );
         assert!(pbs.iter().all(ProgressBar::is_finished));
     }
 
-    fn passing_runner() -> FakeRunner {
-        let mut responses = Vec::new();
-        for _ in 0..32 {
-            responses.push(Ok(SpawnResult {
-                success: true,
-                stdout: br#"{ "data": [{ "files": [{}], "totals": {
+    #[test]
+    fn run_pipeline_walks_serial_chain_in_canonical_order() {
+        let reporter = Reporter::new(false, false);
+        // Inserted out of canonical order; serial chain must still drive
+        // them as `check → test → clippy → doc → doc test`.
+        let plan = Plan::from_items(vec![
+            Box::new(DocCheck),
+            Box::new(crate::checks::test::TestCheck {
+                instrumented: false,
+                nextest: false,
+            }),
+            Box::new(ClippyCheck),
+            Box::new(CompileCheck),
+        ]);
+        let pbs = pbs_for(&plan, &reporter);
+        let fake = FakeRunner::with_responses((0..plan.len()).map(|_| Ok(ok_spawn())).collect());
+        let _ = run_pipeline(&plan, &pbs, None, &reporter, &fake);
+        let calls = fake.calls.lock().unwrap().clone();
+        let subs: Vec<&str> = calls.iter().map(|c| c.sub.as_str()).collect();
+        assert_eq!(
+            subs,
+            vec!["check", "test", "clippy", "doc"],
+            "serial chain lost canonical order"
+        );
+    }
+
+    #[test]
+    fn run_pipeline_short_circuits_chain_when_compile_fails_but_independent_still_runs() {
+        let reporter = Reporter::new(false, false);
+        let plan = Plan::from_items(vec![
+            Box::new(CompileCheck),
+            Box::new(ClippyCheck),
+            Box::new(DocCheck),
+            Box::new(crate::checks::test::TestCheck {
+                instrumented: false,
+                nextest: false,
+            }),
+            Box::new(FmtCheck),
+            Box::new(AuditCheck),
+        ]);
+        let pbs = pbs_for(&plan, &reporter);
+        let runner = ByCommandRunner { fail: &["check"] };
+        let (outcomes, cov) = run_pipeline(&plan, &pbs, None, &reporter, &runner);
+        assert!(cov.is_none());
+        let by_label: std::collections::HashMap<&str, TaskStatus> = plan
+            .iter()
+            .zip(outcomes.iter())
+            .map(|((_, c), o)| (c.label(), o.status))
+            .collect();
+        assert_eq!(by_label["check"], TaskStatus::Fail);
+        // Rest of the chain is skipped — nothing else compiles past it.
+        assert_eq!(by_label["clippy"], TaskStatus::Skip);
+        assert_eq!(by_label["doc"], TaskStatus::Skip);
+        assert_eq!(by_label["test"], TaskStatus::Skip);
+        // Independent cohort is unaffected by compile failure.
+        assert_eq!(by_label["fmt"], TaskStatus::Pass);
+        assert_eq!(by_label["audit"], TaskStatus::Pass);
+    }
+
+    #[test]
+    fn run_pipeline_forks_coverage_after_test_passes_and_runs_it_in_parallel_with_chain_tail() {
+        let reporter = Reporter::new(false, false);
+        let plan = Plan::from_items(vec![
+            Box::new(CompileCheck),
+            Box::new(crate::checks::test::TestCheck {
+                instrumented: true,
+                nextest: false,
+            }),
+            Box::new(ClippyCheck),
+        ]);
+        let pbs = pbs_for(&plan, &reporter);
+        let cov_check = CoverageCheck {
+            thresholds: crate::config::CoverageConfig::default(),
+        };
+        let cov_pb = reporter.add_spinner(cov_check.label());
+
+        let runner = CoverageReportRunner;
+        let (outcomes, cov_outcome) =
+            run_pipeline(&plan, &pbs, Some((&cov_check, &cov_pb)), &reporter, &runner);
+
+        let cov = cov_outcome.expect("coverage was forked after test passed");
+        assert!(cov.passed(), "coverage outcome: {}", cov.output);
+        for o in outcomes {
+            assert!(o.passed());
+        }
+        assert!(cov_pb.is_finished());
+    }
+
+    #[test]
+    fn run_pipeline_skips_coverage_when_test_fails_and_marks_its_spinner_skip() {
+        let reporter = Reporter::new(false, false);
+        let plan = Plan::from_items(vec![
+            Box::new(CompileCheck),
+            Box::new(crate::checks::test::TestCheck {
+                instrumented: true,
+                nextest: false,
+            }),
+        ]);
+        let pbs = pbs_for(&plan, &reporter);
+        let cov_check = CoverageCheck {
+            thresholds: crate::config::CoverageConfig::default(),
+        };
+        let cov_pb = reporter.add_spinner(cov_check.label());
+
+        let runner = ByCommandRunner {
+            fail: &["test", "llvm-cov"],
+        };
+        let (_, cov_outcome) =
+            run_pipeline(&plan, &pbs, Some((&cov_check, &cov_pb)), &reporter, &runner);
+
+        let cov = cov_outcome.expect("coverage entry returned even when skipped");
+        assert!(matches!(cov.status, TaskStatus::Skip));
+        assert!(cov_pb.is_finished());
+    }
+
+    #[test]
+    fn run_pipeline_skips_coverage_when_compile_fails_so_test_never_runs() {
+        let reporter = Reporter::new(false, false);
+        let plan = Plan::from_items(vec![
+            Box::new(CompileCheck),
+            Box::new(crate::checks::test::TestCheck {
+                instrumented: true,
+                nextest: false,
+            }),
+        ]);
+        let pbs = pbs_for(&plan, &reporter);
+        let cov_check = CoverageCheck {
+            thresholds: crate::config::CoverageConfig::default(),
+        };
+        let cov_pb = reporter.add_spinner(cov_check.label());
+
+        let runner = ByCommandRunner { fail: &["check"] };
+        let (_, cov_outcome) =
+            run_pipeline(&plan, &pbs, Some((&cov_check, &cov_pb)), &reporter, &runner);
+
+        let cov = cov_outcome.expect("coverage entry returned even when skipped");
+        assert!(matches!(cov.status, TaskStatus::Skip));
+    }
+
+    #[test]
+    fn run_pipeline_short_circuits_cleanly_on_an_empty_plan() {
+        let reporter = Reporter::new(false, false);
+        let plan = Plan::from_items(Vec::new());
+        let pbs: Vec<ProgressBar> = Vec::new();
+        let fake = FakeRunner::with_responses(Vec::new());
+        let (outcomes, cov) = run_pipeline(&plan, &pbs, None, &reporter, &fake);
+        assert!(outcomes.is_empty());
+        assert!(cov.is_none());
+    }
+
+    #[test]
+    fn run_one_finishes_the_spinner_and_returns_the_outcome() {
+        let reporter = Reporter::new(false, false);
+        let pb = reporter.add_spinner("clippy");
+        let fake = FakeRunner::passing();
+        let outcome = run_one(&ClippyCheck, &pb, &reporter, &fake);
+        assert!(outcome.passed());
+        assert!(pb.is_finished());
+    }
+
+    fn ok_spawn() -> SpawnResult {
+        SpawnResult {
+            success: true,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        }
+    }
+
+    /// Production-grade fake runner for the full pipeline: cargo
+    /// subcommands all succeed; `llvm-cov report` returns a 100%
+    /// coverage JSON so the coverage gate also passes.
+    struct CoverageReportRunner;
+
+    impl Runner for CoverageReportRunner {
+        fn spawn(
+            &self,
+            sub: &str,
+            args: &[&str],
+            _envs: &[(&str, &str)],
+        ) -> std::io::Result<SpawnResult> {
+            let stdout = if sub == "llvm-cov" && args.first() == Some(&"report") {
+                br#"{ "data": [{ "files": [{}], "totals": {
                     "functions": { "count": 1, "covered": 1 },
                     "lines": { "count": 1, "covered": 1 },
                     "regions": { "count": 1, "covered": 1 },
                     "branches": { "count": 1, "covered": 1 }
                 } }] }"#
-                    .to_vec(),
+                    .to_vec()
+            } else {
+                Vec::new()
+            };
+            Ok(SpawnResult {
+                success: true,
+                stdout,
                 stderr: Vec::new(),
-            }));
+            })
         }
-        FakeRunner::with_responses(responses)
     }
 
     #[test]
@@ -619,7 +923,6 @@ mod tests {
             skip: vec![SkipOption::Doc, SkipOption::License],
             verbose: true,
         };
-        let runner = passing_runner();
         assert!(
             run_with(
                 &cli,
@@ -627,7 +930,7 @@ mod tests {
                 &Toolchain::all_present(),
                 &Config::default(),
                 true,
-                &runner,
+                &CoverageReportRunner,
             )
             .is_ok()
         );
@@ -645,14 +948,12 @@ mod tests {
                 SkipOption::Machete,
                 SkipOption::Coverage,
                 SkipOption::Test,
+                SkipOption::Clippy,
+                SkipOption::Fmt,
             ],
             verbose: false,
         };
-        let runner = FakeRunner::with_responses(vec![Ok(SpawnResult {
-            success: false,
-            stdout: b"compile error".to_vec(),
-            stderr: Vec::new(),
-        })]);
+        let runner = ByCommandRunner { fail: &["check"] };
         let err = run_with(
             &cli,
             &reporter,
@@ -698,7 +999,6 @@ mod tests {
             ],
             verbose: true,
         };
-        let runner = passing_runner();
         assert!(
             run_with(
                 &cli,
@@ -706,7 +1006,7 @@ mod tests {
                 &Toolchain::all_present(),
                 &Config::default(),
                 false,
-                &runner,
+                &CoverageReportRunner,
             )
             .is_ok()
         );
@@ -728,7 +1028,6 @@ mod tests {
             ],
             verbose: false,
         };
-        let runner = passing_runner();
         assert!(
             run_with(
                 &cli,
@@ -736,7 +1035,7 @@ mod tests {
                 &Toolchain::all_present(),
                 &Config::default(),
                 false,
-                &runner,
+                &CoverageReportRunner,
             )
             .is_ok()
         );
@@ -789,18 +1088,9 @@ mod tests {
             ],
             verbose: false,
         };
-        let runner = FakeRunner::with_responses(vec![
-            Ok(SpawnResult {
-                success: true,
-                stdout: Vec::new(),
-                stderr: Vec::new(),
-            }),
-            Ok(SpawnResult {
-                success: false,
-                stdout: b"tests failed".to_vec(),
-                stderr: Vec::new(),
-            }),
-        ]);
+        let runner = ByCommandRunner {
+            fail: &["test", "llvm-cov"],
+        };
         let err = run_with(
             &cli,
             &reporter,
@@ -814,7 +1104,7 @@ mod tests {
     }
 
     #[test]
-    fn run_with_skips_parallel_when_compile_fails() {
+    fn run_with_skips_chain_tail_when_compile_fails() {
         let reporter = Reporter::new(false, false);
         let cli = Cli {
             skip: vec![
@@ -825,14 +1115,12 @@ mod tests {
                 SkipOption::Machete,
                 SkipOption::Coverage,
                 SkipOption::Test,
+                SkipOption::Clippy,
+                SkipOption::Fmt,
             ],
             verbose: false,
         };
-        let runner = FakeRunner::with_responses(vec![Ok(SpawnResult {
-            success: false,
-            stdout: b"compile error".to_vec(),
-            stderr: Vec::new(),
-        })]);
+        let runner = ByCommandRunner { fail: &["check"] };
         let err = run_with(
             &cli,
             &reporter,

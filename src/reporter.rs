@@ -162,15 +162,14 @@ impl Reporter {
 
         self.println("");
         self.println(header);
+        self.println(divider);
 
         if output.is_empty() {
-            self.println(format!("  {}", "(no output)".dimmed()));
-            return;
-        }
-
-        self.println(divider);
-        for line in output.lines() {
-            self.println(format!(" {pipe} {line}"));
+            self.println(format!(" {pipe} {}", "(no output)".dimmed()));
+        } else {
+            for line in output.lines() {
+                self.println(format!(" {pipe} {line}"));
+            }
         }
 
         self.println("");

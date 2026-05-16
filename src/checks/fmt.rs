@@ -23,6 +23,10 @@ impl Check for FmtCheck {
     fn run(&self, runner: &dyn Runner) -> CheckOutcome {
         cargo_outcome(runner, "fmt", FMT_ARGS)
     }
+
+    fn chain_position(&self) -> Option<u8> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -33,5 +37,10 @@ mod tests {
     #[test]
     fn cmd_runs_cargo_fmt_all_check() {
         assert_eq!(FmtCheck.cmd(), "cargo fmt --all --check");
+    }
+
+    #[test]
+    fn chain_position_is_none_because_rustfmt_only_reads_sources() {
+        assert_eq!(FmtCheck.chain_position(), None);
     }
 }

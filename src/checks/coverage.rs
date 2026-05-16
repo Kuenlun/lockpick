@@ -39,6 +39,15 @@ impl Check for CoverageCheck {
             },
         }
     }
+
+    /// Coverage is never scheduled through [`crate::checks::Plan`] —
+    /// the runner forks it off after the chain's `test` slot succeeds —
+    /// so `None` here is a non-event. It is still correct on its own
+    /// terms: `llvm-cov report` only reads cached profraws and does not
+    /// take Cargo's per-`target/` lock.
+    fn chain_position(&self) -> Option<u8> {
+        None
+    }
 }
 
 fn collect_report(runner: &dyn Runner) -> Result<Report, String> {
@@ -72,17 +81,18 @@ fn evaluate(report: &Report, t: CoverageConfig) -> CheckOutcome {
         let mut any_real = false;
         for (name, metric, threshold) in metric_rows(entry, t) {
             if metric.count == 0 {
-                lines.push(format!("ok   {name}: 0/0 (vacuous)"));
+                lines.push(format!("ok   {name:<METRIC_NAME_WIDTH$}: 0/0 (vacuous)"));
                 continue;
             }
             any_real = true;
             // Integer comparison rather than f64 percentages so the gate
-            // is exact at ULP boundaries. `count * 100` cannot overflow
-            // since `count <= u64::MAX` and `threshold <= 100`.
-            if metric.covered * 100 < metric.count * u64::from(threshold) {
-                let missing = metric.count - metric.covered;
+            // is exact at ULP boundaries. The multiplications run in
+            // u128 so they cannot overflow for any conceivable
+            // count/threshold pair.
+            if u128::from(metric.covered) * 100 < u128::from(metric.count) * u128::from(threshold) {
+                let missing = metric.count.saturating_sub(metric.covered);
                 lines.push(format!(
-                    "FAIL {name}: {covered}/{total} ({pct}) — threshold {threshold}%, missing {missing}",
+                    "FAIL {name:<METRIC_NAME_WIDTH$}: {covered}/{total} ({pct}) — threshold {threshold}%, missing {missing}",
                     covered = metric.covered,
                     total = metric.count,
                     pct = format_pct(metric.covered, metric.count),
@@ -90,7 +100,7 @@ fn evaluate(report: &Report, t: CoverageConfig) -> CheckOutcome {
                 passed = false;
             } else {
                 lines.push(format!(
-                    "ok   {name}: {covered}/{total} ({pct})",
+                    "ok   {name:<METRIC_NAME_WIDTH$}: {covered}/{total} ({pct})",
                     covered = metric.covered,
                     total = metric.count,
                     pct = format_pct(metric.covered, metric.count),
@@ -120,12 +130,16 @@ fn evaluate(report: &Report, t: CoverageConfig) -> CheckOutcome {
     }
 }
 
+/// Right-pad width applied to metric names so the `count/covered`
+/// column lines up. Equal to the longest name (`"functions"`).
+const METRIC_NAME_WIDTH: usize = 9;
+
 const fn metric_rows(entry: &DataEntry, t: CoverageConfig) -> [(&'static str, Metric, u8); 4] {
     [
         ("functions", entry.totals.functions, t.functions),
-        ("lines    ", entry.totals.lines, t.lines),
-        ("regions  ", entry.totals.regions, t.regions),
-        ("branches ", entry.totals.branches, t.branches),
+        ("lines", entry.totals.lines, t.lines),
+        ("regions", entry.totals.regions, t.regions),
+        ("branches", entry.totals.branches, t.branches),
     ]
 }
 
@@ -431,5 +445,13 @@ mod tests {
         let outcome = check.run(&fake);
         assert!(outcome.failed());
         assert!(outcome.output.contains("malformed llvm-cov JSON"));
+    }
+
+    #[test]
+    fn chain_position_is_none_because_coverage_is_runner_scheduled() {
+        let check = CoverageCheck {
+            thresholds: CoverageConfig::default(),
+        };
+        assert_eq!(check.chain_position(), None);
     }
 }

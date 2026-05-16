@@ -2,7 +2,7 @@
 // lockpick - Rust CLI to enforce merge checks and code quality
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
-use super::{Check, Runner, cargo_outcome, fmt_cargo_cmd};
+use super::{Check, Runner, cargo_outcome, chain, fmt_cargo_cmd};
 use crate::reporter::CheckOutcome;
 
 // Strict policy enforced on every consumer crate: enable the three
@@ -38,6 +38,10 @@ impl Check for ClippyCheck {
     fn run(&self, runner: &dyn Runner) -> CheckOutcome {
         cargo_outcome(runner, "clippy", CLIPPY_ARGS)
     }
+
+    fn chain_position(&self) -> Option<u8> {
+        Some(chain::CLIPPY)
+    }
 }
 
 #[cfg(test)]
@@ -56,5 +60,10 @@ mod tests {
         assert!(cmd.contains("-W clippy::nursery"));
         assert!(cmd.contains("-W clippy::cargo"));
         assert!(cmd.contains("-D warnings"));
+    }
+
+    #[test]
+    fn chain_position_is_clippy_so_it_runs_after_test_in_the_chain() {
+        assert_eq!(ClippyCheck.chain_position(), Some(chain::CLIPPY));
     }
 }

@@ -2,7 +2,7 @@
 // lockpick - Rust CLI to enforce merge checks and code quality
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
-use super::{COMMON_ARGS, Check, Runner, cargo_outcome, fmt_cargo_cmd};
+use super::{COMMON_ARGS, Check, Runner, cargo_outcome, chain, fmt_cargo_cmd};
 use crate::reporter::CheckOutcome;
 
 // `--no-tests=pass`: align nextest >= 0.9.85 with `cargo test`'s default
@@ -66,6 +66,10 @@ impl Check for TestCheck {
     fn run(&self, runner: &dyn Runner) -> CheckOutcome {
         let (sub, args) = self.dispatch();
         cargo_outcome(runner, sub, args)
+    }
+
+    fn chain_position(&self) -> Option<u8> {
+        Some(chain::TEST)
     }
 }
 
@@ -143,6 +147,22 @@ mod tests {
             assert!(
                 args.contains(&"--no-tests=pass"),
                 "missing --no-tests=pass for instrumented={instrumented} nextest={nextest}"
+            );
+        }
+    }
+
+    #[test]
+    fn chain_position_is_test_for_every_runner_variant() {
+        for (instrumented, nextest) in [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let c = TestCheck {
+                instrumented,
+                nextest,
+            };
+            assert_eq!(
+                c.chain_position(),
+                Some(chain::TEST),
+                "expected chain TEST slot for instrumented={instrumented} nextest={nextest}"
             );
         }
     }
