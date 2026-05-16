@@ -96,6 +96,19 @@ fn stderr_text(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+fn stdout_text(output: &std::process::Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// Concatenation of stdout and stderr for "must not appear anywhere"
+/// negative assertions, which would otherwise rely on knowing the exact
+/// stream each piece of output lands on.
+fn combined_text(output: &std::process::Output) -> String {
+    let mut out = stdout_text(output);
+    out.push_str(&stderr_text(output));
+    out
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[test]
@@ -140,11 +153,11 @@ fn skip_fmt_ignores_formatting() {
         .output()
         .expect("failed to execute lockpick");
 
-    let stderr = stderr_text(&output);
+    let combined = combined_text(&output);
     output.assert().success();
     assert!(
-        !stderr.contains("fmt"),
-        "expected no mention of 'fmt' in output, got:\n{stderr}"
+        !combined.contains("fmt"),
+        "expected no mention of 'fmt' on any stream, got:\n{combined}"
     );
 }
 
@@ -158,7 +171,7 @@ fn verbose_shows_pass_sections() {
         .output()
         .expect("failed to execute lockpick");
 
-    let stderr = stderr_text(&output);
+    let stdout = stdout_text(&output);
     output.assert().success();
     for section in [
         "CHECK OUTPUT",
@@ -168,8 +181,8 @@ fn verbose_shows_pass_sections() {
         "DOC OUTPUT",
     ] {
         assert!(
-            stderr.contains(section),
-            "expected '{section}' in verbose output, got:\n{stderr}"
+            stdout.contains(section),
+            "expected '{section}' on the report stream, got:\n{stdout}"
         );
     }
 }
@@ -188,15 +201,15 @@ fn verbose_pass_sections_appear_before_fail() {
         .output()
         .expect("failed to execute lockpick");
 
-    let stderr = stderr_text(&output);
+    let stdout = stdout_text(&output);
     output.assert().failure();
     // Match the unicode banner markers so the assertion is not fooled by
     // "OUTPUT"/"ERRORS" appearing inside a captured cargo message.
-    let last_pass = stderr.rfind(" ✔ ").expect("no PASS section found");
-    let first_fail = stderr.find(" ✖ ").expect("no FAIL section found");
+    let last_pass = stdout.rfind(" ✔ ").expect("no PASS section found");
+    let first_fail = stdout.find(" ✖ ").expect("no FAIL section found");
     assert!(
         last_pass < first_fail,
-        "expected all PASS sections before FAIL sections:\n{stderr}"
+        "expected all PASS sections before FAIL sections:\n{stdout}"
     );
 }
 
@@ -232,15 +245,20 @@ fn skip_test_implies_skip_coverage() {
         .expect("failed to execute lockpick");
 
     let stderr = stderr_text(&output);
+    let combined = combined_text(&output);
     output.assert().success();
+    // The inert-skip warning is a diag, so it lives on stderr.
     assert!(
         stderr.contains("--skip test implies coverage will be skipped"),
         "expected note about implicit coverage skip, got:\n{stderr}"
     );
+    // Coverage status lines live on the report stream when they fire.
+    // Assert their absence across both streams so the test cannot pass
+    // just because the line drifted from one stream to the other.
     for tag in ["coverage PASS", "coverage FAIL", "coverage SKIP"] {
         assert!(
-            !stderr.contains(tag),
-            "expected no '{tag}' status line, got:\n{stderr}"
+            !combined.contains(tag),
+            "expected no '{tag}' status line on any stream, got:\n{combined}"
         );
     }
 }
@@ -294,26 +312,26 @@ fn check_failure_skips_chain_tail_but_independent_still_runs() {
         .output()
         .expect("failed to execute lockpick");
 
-    let stderr = stderr_text(&output);
+    let stdout = stdout_text(&output);
     output.assert().failure();
 
     assert!(
-        stderr.contains("FAIL"),
-        "expected check to FAIL, got:\n{stderr}"
+        stdout.contains("FAIL"),
+        "expected check to FAIL, got:\n{stdout}"
     );
     // `10` mirrors `reporter::LABEL_WIDTH`. The chain — everything that
     // would have to compile — is skipped behind a failing `check`.
     for label in ["clippy", "test", "doc"] {
         assert!(
-            stderr.contains(&format!("{label:<10} SKIP")),
-            "expected chain check '{label}' to be SKIP, got:\n{stderr}"
+            stdout.contains(&format!("{label:<10} SKIP")),
+            "expected chain check '{label}' to be SKIP, got:\n{stdout}"
         );
     }
     // `fmt` is independent of the build — it runs in parallel with the
     // chain and must not be dragged down by a compile failure.
     assert!(
-        stderr.contains(&format!("{label:<10} PASS", label = "fmt")),
-        "expected independent 'fmt' to PASS regardless of compile failure, got:\n{stderr}"
+        stdout.contains(&format!("{label:<10} PASS", label = "fmt")),
+        "expected independent 'fmt' to PASS regardless of compile failure, got:\n{stdout}"
     );
 }
 
@@ -359,11 +377,44 @@ fn footer_reports_success_count() {
         .output()
         .expect("failed to execute lockpick");
 
-    let stderr = stderr_text(&output);
+    let stdout = stdout_text(&output);
     output.assert().success();
     assert!(
-        stderr.contains("checks passed"),
-        "expected success footer, got:\n{stderr}"
+        stdout.contains("checks passed"),
+        "expected success footer on the report stream, got:\n{stdout}"
+    );
+}
+
+/// Pins the UNIX stdout/stderr split: the report (per-check status
+/// table + final summary) lands on stdout so `lockpick > report.txt`
+/// captures a useful file, and a quiet successful run leaves stderr
+/// empty so callers can probe it for genuine diagnostics.
+#[test]
+fn report_lands_on_stdout_and_stderr_stays_quiet_on_clean_success() {
+    let project = dummy_cargo_project();
+
+    let output = lockpick()
+        .current_dir(project.path())
+        .output()
+        .expect("failed to execute lockpick");
+
+    let stdout = stdout_text(&output);
+    let stderr = stderr_text(&output);
+    output.assert().success();
+
+    assert!(
+        stdout.contains("checks passed"),
+        "summary missing from stdout, `lockpick > report.txt` would be empty:\n{stdout}"
+    );
+    for label in ["check", "clippy", "fmt", "test", "doc"] {
+        assert!(
+            stdout.contains(&format!("{label:<10} PASS")),
+            "status line for '{label}' missing from stdout:\n{stdout}"
+        );
+    }
+    assert!(
+        stderr.is_empty(),
+        "stderr must stay quiet on a clean non-verbose run, got:\n{stderr}"
     );
 }
 
@@ -380,11 +431,11 @@ fn footer_lists_failed_checks() {
         .output()
         .expect("failed to execute lockpick");
 
-    let stderr = stderr_text(&output);
+    let stdout = stdout_text(&output);
     output.assert().failure();
     assert!(
-        stderr.contains("Failed:") && stderr.contains("fmt"),
-        "expected failure footer mentioning fmt, got:\n{stderr}"
+        stdout.contains("Failed:") && stdout.contains("fmt"),
+        "expected failure footer mentioning fmt on the report stream, got:\n{stdout}"
     );
 }
 
@@ -415,11 +466,11 @@ fn license_header_passes_when_files_match() {
         .output()
         .expect("failed to execute lockpick");
 
-    let stderr = stderr_text(&output);
+    let stdout = stdout_text(&output);
     output.assert().success();
     assert!(
-        stderr.contains("license") && stderr.contains("PASS"),
-        "expected license PASS line, got:\n{stderr}"
+        stdout.contains("license") && stdout.contains("PASS"),
+        "expected license PASS line on the report stream, got:\n{stdout}"
     );
 }
 
@@ -450,15 +501,15 @@ fn license_header_fails_and_names_offenders() {
         .output()
         .expect("failed to execute lockpick");
 
-    let stderr = stderr_text(&output);
+    let stdout = stdout_text(&output);
     output.assert().failure();
     assert!(
-        stderr.contains("license") && stderr.contains("FAIL"),
-        "expected license FAIL line, got:\n{stderr}"
+        stdout.contains("license") && stdout.contains("FAIL"),
+        "expected license FAIL line on the report stream, got:\n{stdout}"
     );
     assert!(
-        stderr.contains("main.rs"),
-        "expected offending file path in output, got:\n{stderr}"
+        stdout.contains("main.rs"),
+        "expected offending file path on the report stream, got:\n{stdout}"
     );
 }
 
@@ -499,11 +550,11 @@ fn coverage_passes_end_to_end_on_fully_covered_lib() {
         .output()
         .expect("failed to execute lockpick");
 
-    let stderr = stderr_text(&output);
+    let stdout = stdout_text(&output);
     output.assert().success();
     assert!(
-        stderr.contains("coverage") && stderr.contains("PASS"),
-        "expected coverage PASS, got:\n{stderr}"
+        stdout.contains("coverage") && stdout.contains("PASS"),
+        "expected coverage PASS on the report stream, got:\n{stdout}"
     );
 }
 
@@ -516,11 +567,11 @@ fn license_header_silently_skipped_when_not_configured() {
         .output()
         .expect("failed to execute lockpick");
 
-    let stderr = stderr_text(&output);
+    let combined = combined_text(&output);
     output.assert().success();
     assert!(
-        !stderr.contains("license"),
-        "expected no license check in output without config, got:\n{stderr}"
+        !combined.contains("license"),
+        "expected no license check on any stream without config, got:\n{combined}"
     );
 }
 
@@ -566,11 +617,11 @@ fn coverage_runs_against_mocked_cargo_llvm_cov() {
         .output()
         .expect("failed to execute lockpick");
 
-    let stderr = stderr_text(&output);
+    let stdout = stdout_text(&output);
     output.assert().success();
     assert!(
-        stderr.contains("coverage") && stderr.contains("PASS"),
-        "expected coverage PASS via shim, got:\n{stderr}"
+        stdout.contains("coverage") && stdout.contains("PASS"),
+        "expected coverage PASS via shim on the report stream, got:\n{stdout}"
     );
 }
 
@@ -589,11 +640,13 @@ fn coverage_fails_when_shim_returns_malformed_json() {
         .output()
         .expect("failed to execute lockpick");
 
-    let stderr = stderr_text(&output);
+    let stdout = stdout_text(&output);
     output.assert().failure();
+    // Both the status line and the FAIL section land on the report
+    // stream, so either signal proves the failure surfaced to the user.
     assert!(
-        stderr.contains("malformed llvm-cov JSON") || stderr.contains("FAIL"),
-        "expected malformed JSON failure, got:\n{stderr}"
+        stdout.contains("malformed llvm-cov JSON") || stdout.contains("FAIL"),
+        "expected malformed JSON failure on the report stream, got:\n{stdout}"
     );
 }
 

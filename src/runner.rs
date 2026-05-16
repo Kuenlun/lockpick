@@ -214,7 +214,7 @@ fn print_planned_commands(reporter: &Reporter, plan: &Plan, coverage: Option<&dy
     if let Some(c) = coverage {
         reporter.command(&c.cmd());
     }
-    reporter.println("");
+    reporter.diagln("");
 }
 
 /// Run a single check and finish its progress bar from the same thread.
@@ -517,7 +517,7 @@ mod tests {
 
     #[test]
     fn report_results_returns_zero_when_everything_passes() {
-        let reporter = Reporter::new(true, false);
+        let reporter = Reporter::new(true, false, false);
         let compile = pass("check");
         let clippy = pass("clippy");
         let coverage = pass("coverage");
@@ -531,7 +531,7 @@ mod tests {
 
     #[test]
     fn report_results_counts_every_failure_and_emits_fail_sections() {
-        let reporter = Reporter::new(false, false);
+        let reporter = Reporter::new(false, false, false);
         let compile = pass("check");
         let fmt_fail = fail("fmt");
         let cov_fail = fail("coverage");
@@ -545,7 +545,7 @@ mod tests {
 
     #[test]
     fn report_results_ignores_skipped_outcomes() {
-        let reporter = Reporter::new(true, false);
+        let reporter = Reporter::new(true, false, false);
         let compile = fail("check");
         let skipped = CheckOutcome::skipped();
         let items = vec![("check", &compile), ("clippy", &skipped)];
@@ -554,7 +554,7 @@ mod tests {
 
     #[test]
     fn report_results_on_empty_items_prints_ok_with_zero_total() {
-        let reporter = Reporter::new(false, false);
+        let reporter = Reporter::new(false, false, false);
         assert_eq!(report_results(&reporter, &[]), 0);
     }
 
@@ -654,7 +654,7 @@ mod tests {
 
     #[test]
     fn print_planned_commands_prints_every_plan_check_and_coverage() {
-        let reporter = Reporter::new(true, false);
+        let reporter = Reporter::new(true, false, false);
         let plan = Plan::from_items(vec![Box::new(CompileCheck), Box::new(ClippyCheck)]);
         let coverage = CoverageCheck {
             thresholds: crate::config::CoverageConfig::default(),
@@ -665,7 +665,7 @@ mod tests {
 
     #[test]
     fn print_planned_commands_omits_coverage_banner_when_coverage_inactive() {
-        let reporter = Reporter::new(true, false);
+        let reporter = Reporter::new(true, false, false);
         let plan = Plan::from_items(vec![Box::new(ClippyCheck)]);
         print_planned_commands(&reporter, &plan, None);
     }
@@ -686,7 +686,7 @@ mod tests {
         }
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));
-        let reporter = Reporter::new(false, false);
+        let reporter = Reporter::new(false, false, false);
         // FmtCheck is independent; this exercises the indep-cohort join.
         let plan = Plan::from_items(vec![Box::new(FmtCheck)]);
         let pbs = pbs_for(&plan, &reporter);
@@ -716,7 +716,7 @@ mod tests {
         }
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));
-        let reporter = Reporter::new(false, false);
+        let reporter = Reporter::new(false, false, false);
         // ClippyCheck is in the chain; this exercises the chain join.
         let plan = Plan::from_items(vec![Box::new(ClippyCheck)]);
         let pbs = pbs_for(&plan, &reporter);
@@ -758,7 +758,7 @@ mod tests {
         }
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));
-        let reporter = Reporter::new(false, false);
+        let reporter = Reporter::new(false, false, false);
         let plan = Plan::from_items(vec![
             Box::new(CompileCheck),
             Box::new(crate::checks::test::TestCheck {
@@ -791,7 +791,7 @@ mod tests {
 
     #[test]
     fn run_pipeline_executes_every_check_and_returns_outcomes_in_plan_order() {
-        let reporter = Reporter::new(false, false);
+        let reporter = Reporter::new(false, false, false);
         // Mixed plan: chain (clippy, doc, check) interleaved with
         // independent (fmt, audit). Chain order (`check → clippy → doc`)
         // is enforced by chain_position and is independent of the plan's
@@ -831,7 +831,7 @@ mod tests {
 
     #[test]
     fn run_pipeline_walks_serial_chain_in_canonical_order() {
-        let reporter = Reporter::new(false, false);
+        let reporter = Reporter::new(false, false, false);
         // Inserted out of canonical order; serial chain must still drive
         // them as `check → test → clippy → doc → doc-test`.
         let plan = Plan::from_items(vec![
@@ -858,7 +858,7 @@ mod tests {
 
     #[test]
     fn run_pipeline_short_circuits_chain_when_compile_fails_but_independent_still_runs() {
-        let reporter = Reporter::new(false, false);
+        let reporter = Reporter::new(false, false, false);
         let plan = Plan::from_items(vec![
             Box::new(CompileCheck),
             Box::new(ClippyCheck),
@@ -892,7 +892,7 @@ mod tests {
 
     #[test]
     fn run_pipeline_forks_coverage_after_test_passes_and_runs_it_in_parallel_with_chain_tail() {
-        let reporter = Reporter::new(false, false);
+        let reporter = Reporter::new(false, false, false);
         let plan = Plan::from_items(vec![
             Box::new(CompileCheck),
             Box::new(crate::checks::test::TestCheck {
@@ -923,7 +923,7 @@ mod tests {
 
     #[test]
     fn run_pipeline_skips_coverage_when_test_fails_and_marks_its_spinner_skip() {
-        let reporter = Reporter::new(false, false);
+        let reporter = Reporter::new(false, false, false);
         let plan = Plan::from_items(vec![
             Box::new(CompileCheck),
             Box::new(crate::checks::test::TestCheck {
@@ -952,7 +952,7 @@ mod tests {
 
     #[test]
     fn run_pipeline_skips_coverage_when_compile_fails_so_test_never_runs() {
-        let reporter = Reporter::new(false, false);
+        let reporter = Reporter::new(false, false, false);
         let plan = Plan::from_items(vec![
             Box::new(CompileCheck),
             Box::new(crate::checks::test::TestCheck {
@@ -978,7 +978,7 @@ mod tests {
 
     #[test]
     fn run_pipeline_short_circuits_cleanly_on_an_empty_plan() {
-        let reporter = Reporter::new(false, false);
+        let reporter = Reporter::new(false, false, false);
         let plan = Plan::from_items(Vec::new());
         let pbs: Vec<ProgressBar> = Vec::new();
         let fake = FakeRunner::with_responses(Vec::new());
@@ -989,7 +989,7 @@ mod tests {
 
     #[test]
     fn run_one_finishes_the_spinner_and_returns_the_outcome() {
-        let reporter = Reporter::new(false, false);
+        let reporter = Reporter::new(false, false, false);
         let pb = reporter.add_spinner("clippy");
         let fake = FakeRunner::passing();
         let outcome = run_one(&ClippyCheck, &pb, &reporter, &fake);
@@ -1038,7 +1038,7 @@ mod tests {
 
     #[test]
     fn run_with_succeeds_when_every_check_passes() {
-        let reporter = Reporter::new(true, false);
+        let reporter = Reporter::new(true, false, false);
         let cli = Cli {
             skip: vec![SkipOption::Doc],
             verbose: true,
@@ -1059,7 +1059,7 @@ mod tests {
 
     #[test]
     fn run_with_returns_checks_failed_when_a_check_fails() {
-        let reporter = Reporter::new(false, false);
+        let reporter = Reporter::new(false, false, false);
         let cli = Cli {
             skip: vec![
                 SkipOption::DocTest,
@@ -1090,7 +1090,7 @@ mod tests {
 
     #[test]
     fn run_with_returns_missing_tool_error() {
-        let reporter = Reporter::new(false, false);
+        let reporter = Reporter::new(false, false, false);
         let cli = Cli {
             skip: vec![],
             verbose: false,
@@ -1111,7 +1111,7 @@ mod tests {
 
     #[test]
     fn run_with_emits_note_when_test_skipped_but_coverage_not_skipped() {
-        let reporter = Reporter::new(true, false);
+        let reporter = Reporter::new(true, false, false);
         let cli = Cli {
             skip: vec![
                 SkipOption::Test,
@@ -1141,7 +1141,7 @@ mod tests {
     /// inert-skip note must fire. Pins the negative branch of both ifs.
     #[test]
     fn run_with_does_not_warn_when_doc_test_and_license_skips_are_effective() {
-        let reporter = Reporter::new(true, false);
+        let reporter = Reporter::new(true, false, false);
         let cli = cli_skipping(&[
             SkipOption::DocTest,
             SkipOption::License,
@@ -1168,7 +1168,7 @@ mod tests {
 
     #[test]
     fn run_with_proceeds_when_only_compile_is_skipped() {
-        let reporter = Reporter::new(false, false);
+        let reporter = Reporter::new(false, false, false);
         let cli = Cli {
             skip: vec![
                 SkipOption::Check,
@@ -1198,7 +1198,7 @@ mod tests {
 
     #[test]
     fn run_with_rejects_a_pipeline_disabled_in_full() {
-        let reporter = Reporter::new(false, false);
+        let reporter = Reporter::new(false, false, false);
         let cli = Cli {
             skip: vec![
                 SkipOption::Check,
@@ -1230,7 +1230,7 @@ mod tests {
 
     #[test]
     fn run_with_skips_coverage_phase_when_test_fails() {
-        let reporter = Reporter::new(false, false);
+        let reporter = Reporter::new(false, false, false);
         let cli = Cli {
             skip: vec![
                 SkipOption::DocTest,
@@ -1261,7 +1261,7 @@ mod tests {
 
     #[test]
     fn run_with_skips_chain_tail_when_compile_fails() {
-        let reporter = Reporter::new(false, false);
+        let reporter = Reporter::new(false, false, false);
         let cli = Cli {
             skip: vec![
                 SkipOption::DocTest,
@@ -1296,7 +1296,7 @@ mod tests {
         // must produce the BranchesRequireNightly variant *before* any
         // check runs. The fake runner is irrelevant here; the gate
         // short-circuits before we ever spawn a cargo subprocess.
-        let reporter = Reporter::new(false, false);
+        let reporter = Reporter::new(false, false, false);
         let cli = Cli {
             skip: vec![
                 SkipOption::Check,
@@ -1332,7 +1332,7 @@ mod tests {
 
     #[test]
     fn run_with_allows_branches_threshold_on_nightly() {
-        let reporter = Reporter::new(false, false);
+        let reporter = Reporter::new(false, false, false);
         let cli = Cli {
             skip: vec![SkipOption::Doc],
             verbose: false,
@@ -1362,7 +1362,7 @@ mod tests {
     fn run_with_allows_default_config_on_stable_because_branches_stays_unset() {
         // Stable + no `branches` in config must run cleanly: the gate
         // only fires when the user explicitly opted into the metric.
-        let reporter = Reporter::new(false, false);
+        let reporter = Reporter::new(false, false, false);
         let cli = Cli {
             skip: vec![SkipOption::Doc],
             verbose: false,
@@ -1386,7 +1386,7 @@ mod tests {
         // Coverage active + stable Rust must surface a visible note so
         // the user does not silently lose the branches metric. Pins the
         // `coverage_active && !is_nightly` arm of the note ladder.
-        let reporter = Reporter::new(true, false);
+        let reporter = Reporter::new(true, false, false);
         let cli = Cli {
             skip: vec![SkipOption::Doc],
             verbose: false,
