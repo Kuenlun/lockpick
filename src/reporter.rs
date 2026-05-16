@@ -44,7 +44,15 @@ pub struct Reporter {
     mp: MultiProgress,
     spin_style: ProgressStyle,
     done_style: ProgressStyle,
+    /// Stderr is a TTY. Drives spinner rendering and routes `diag`
+    /// writes through `MultiProgress` so they interleave cleanly with
+    /// the active spinner block.
     is_tty: bool,
+    /// Stdout is a TTY. When false, the report stream is being captured
+    /// (file, pipe, CI), so the spinner keeps a visible final state on
+    /// stderr instead of clearing. Otherwise the interactive user would
+    /// only see spinners disappear.
+    stdout_is_tty: bool,
     pub is_verbose: bool,
 }
 
@@ -66,17 +74,24 @@ fn parse_template(template: &str) -> ProgressStyle {
 }
 
 impl Reporter {
-    /// Build a [`Reporter`] with `is_tty` probed from stderr.
+    /// Build a [`Reporter`] with the TTY state of stdout and stderr
+    /// probed from the process's own streams.
     #[cfg_attr(test, allow(dead_code))]
     #[must_use]
     pub fn auto(is_verbose: bool) -> Self {
-        Self::new(is_verbose, std::io::stderr().is_terminal())
+        Self::new(
+            is_verbose,
+            std::io::stderr().is_terminal(),
+            std::io::stdout().is_terminal(),
+        )
     }
 
-    /// Build a [`Reporter`]. `is_tty = true` enables progress-bar
-    /// rendering; `false` falls back to plain stderr lines.
+    /// Build a [`Reporter`]. `is_tty` enables progress-bar rendering on
+    /// stderr. `stdout_is_tty` controls whether the per-check spinner
+    /// keeps a visible final state (stdout captured) or clears so the
+    /// report on stdout is the sole record (stdout on-terminal).
     #[must_use]
-    pub fn new(is_verbose: bool, is_tty: bool) -> Self {
+    pub fn new(is_verbose: bool, is_tty: bool, stdout_is_tty: bool) -> Self {
         let spin_style = parse_template(&spin_template()).tick_chars(TICK_CHARS);
         let done_style = parse_template(DONE_TEMPLATE);
 
@@ -91,6 +106,7 @@ impl Reporter {
             spin_style,
             done_style,
             is_tty,
+            stdout_is_tty,
             is_verbose,
         }
     }
@@ -105,22 +121,33 @@ impl Reporter {
         pb
     }
 
+    /// Finish a spinner and emit the matching status line.
+    ///
+    /// Stream routing follows the UNIX split: the report stream (stdout)
+    /// always receives the status line, so `lockpick > report.txt` yields
+    /// a clean machine-readable record. The spinner on stderr only stays
+    /// as the final visible state when stdout is captured. When stdout
+    /// is also a TTY, clearing the spinner avoids printing the same line
+    /// twice on the terminal.
     pub fn finish_spinner(&self, pb: &ProgressBar, label: &str, status: TaskStatus) {
         let tag = match status {
             TaskStatus::Pass => "PASS".green().bold(),
             TaskStatus::Fail => "FAIL".red().bold(),
             TaskStatus::Skip => "SKIP".yellow().bold(),
         };
-        if self.is_tty {
+        if self.is_tty && !self.stdout_is_tty {
             pb.set_style(self.done_style.clone());
             pb.finish_with_message(format!("{label:<LABEL_WIDTH$} {tag}"));
         } else {
             pb.finish_and_clear();
-            eprintln!("  {label:<LABEL_WIDTH$} {tag}");
         }
+        self.reportln(format!("  {label:<LABEL_WIDTH$} {tag}"));
     }
 
-    pub fn println(&self, msg: impl AsRef<str>) {
+    /// Write a line to the diagnostic stream (stderr): banners, notes,
+    /// progress chatter. Routed through `MultiProgress` so it interleaves
+    /// cleanly with active spinners in TTY mode.
+    pub fn diagln(&self, msg: impl AsRef<str>) {
         if self.is_tty {
             self.mp.println(msg).ok();
         } else {
@@ -128,14 +155,22 @@ impl Reporter {
         }
     }
 
+    /// Write a line to the report stream (stdout): status lines, section
+    /// dumps, the final summary. `MultiProgress::suspend` pauses spinner
+    /// drawing for the write so the two streams do not stomp on each
+    /// other when both render to the same terminal.
+    pub fn reportln(&self, msg: impl AsRef<str>) {
+        self.mp.suspend(|| println!("{}", msg.as_ref()));
+    }
+
     /// Render a planned cargo invocation. Caller gates on `is_verbose`.
     pub fn command(&self, cmd: &str) {
-        self.println(format!("  {} {cmd}", "$".dimmed()));
+        self.diagln(format!("  {} {cmd}", "$".dimmed()));
     }
 
     /// Render an always-visible status note.
     pub fn note(&self, msg: &str) {
-        self.println(format!("  {msg}"));
+        self.diagln(format!("  {msg}"));
     }
 
     pub fn print_section(&self, label: &str, output: &str, status: TaskStatus) {
@@ -160,32 +195,32 @@ impl Reporter {
         };
         let output = output.trim();
 
-        self.println("");
-        self.println(header);
-        self.println(divider);
+        self.reportln("");
+        self.reportln(header);
+        self.reportln(divider);
 
         if output.is_empty() {
-            self.println(format!(" {pipe} {}", "(no output)".dimmed()));
+            self.reportln(format!(" {pipe} {}", "(no output)".dimmed()));
         } else {
             for line in output.lines() {
-                self.println(format!(" {pipe} {line}"));
+                self.reportln(format!(" {pipe} {line}"));
             }
         }
 
-        self.println("");
+        self.reportln("");
     }
 
     /// Final footer. Lists failing labels, or reports total on success.
     pub fn summary(&self, total: usize, failures: &[&str]) {
-        self.println("");
+        self.reportln("");
         if failures.is_empty() {
             let msg = format!("OK: {total}/{total} checks passed").green().bold();
-            self.println(format!("  {msg}"));
+            self.reportln(format!("  {msg}"));
         } else {
             let failed = failures.len();
             let list = failures.join(", ");
             let msg = format!("Failed: {failed}/{total} ({list})").red().bold();
-            self.println(format!("  {msg}"));
+            self.reportln(format!("  {msg}"));
         }
     }
 }
@@ -213,14 +248,18 @@ mod tests {
     }
 
     #[test]
-    fn finish_spinner_drives_both_modes_through_every_status() {
+    fn finish_spinner_drives_every_status_across_the_tty_matrix() {
+        // Every combination of (stderr TTY, stdout TTY) hits a different
+        // arm of the spinner-finish branching, so cover all four.
         for is_tty in [true, false] {
-            let r = Reporter::new(false, is_tty);
-            for status in [TaskStatus::Pass, TaskStatus::Fail, TaskStatus::Skip] {
-                let pb = r.add_spinner("clippy");
-                assert!(!pb.is_finished());
-                r.finish_spinner(&pb, "clippy", status);
-                assert!(pb.is_finished());
+            for stdout_is_tty in [true, false] {
+                let r = Reporter::new(false, is_tty, stdout_is_tty);
+                for status in [TaskStatus::Pass, TaskStatus::Fail, TaskStatus::Skip] {
+                    let pb = r.add_spinner("clippy");
+                    assert!(!pb.is_finished());
+                    r.finish_spinner(&pb, "clippy", status);
+                    assert!(pb.is_finished());
+                }
             }
         }
     }
@@ -228,7 +267,7 @@ mod tests {
     #[test]
     fn print_section_covers_every_status_in_both_tty_modes() {
         for is_tty in [true, false] {
-            let r = Reporter::new(false, is_tty);
+            let r = Reporter::new(false, is_tty, false);
             r.print_section("clippy", "fine\nmore\n", TaskStatus::Pass);
             r.print_section("fmt", "bad\n", TaskStatus::Fail);
             r.print_section("test", "anything", TaskStatus::Skip);
@@ -239,8 +278,21 @@ mod tests {
 
     #[test]
     fn summary_handles_ok_and_failure_footers() {
-        let r = Reporter::new(false, false);
+        let r = Reporter::new(false, false, false);
         r.summary(5, &[]);
         r.summary(5, &["fmt", "clippy"]);
+    }
+
+    /// Drives `diagln` (and its public sugar `command`/`note`) through
+    /// both branches: `MultiProgress::println` in TTY mode and `eprintln!`
+    /// in non-TTY mode. Without this, the TTY arm has no coverage because
+    /// every other test that hits a banner or note runs in non-TTY mode.
+    #[test]
+    fn diagln_routes_through_multiprogress_in_tty_mode_and_eprintln_otherwise() {
+        for is_tty in [true, false] {
+            let r = Reporter::new(false, is_tty, false);
+            r.command("cargo check");
+            r.note("--skip foo has no effect");
+        }
     }
 }
