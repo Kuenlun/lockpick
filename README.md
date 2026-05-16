@@ -43,113 +43,55 @@ A nightly toolchain is required for branch coverage (`rustup toolchain install n
 
 ## Quick start
 
-From your crate root:
-
 ```sh
-lockpick           # runs everything, default output
-lockpick -v        # CI mode: command banner + every section shown
-```
-
-Skip a specific check (repeatable):
-
-```sh
-lockpick --skip audit --skip coverage
+lockpick                          # one status line per check, FAIL sections only
+lockpick -v                       # CI mode: cargo banner + every PASS/FAIL section
+lockpick --skip audit --skip doc  # skip checks (repeatable)
 ```
 
 ## Checks
 
-| Label      | Subcommand                                | Notes                                                |
-|------------|-------------------------------------------|------------------------------------------------------|
-| check      | `cargo check --workspace --all-targets --all-features` | Sequential gate; on failure, parallel checks are skipped to surface compile errors cleanly. |
-| clippy     | `cargo clippy --workspace --all-targets --all-features` | Parallel.                                            |
-| fmt        | `cargo fmt --check`                       | Parallel.                                            |
-| test       | `cargo test` / `cargo nextest run` / `cargo llvm-cov [nextest] --branch --no-report` | Parallel. Auto-uses nextest if installed; auto-instruments when coverage is active. |
-| doc        | `RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --workspace --all-features` | Parallel. Catches broken intra-doc links. |
-| doc-test   | `cargo test --doc --workspace --all-features` | Parallel. Skipped on bin-only workspaces.            |
-| machete    | `cargo machete`                           | Parallel. Detects unused dependencies.               |
-| audit      | `cargo audit`                             | Parallel. Scans the lockfile against RustSec.        |
-| license    | byte-equal header check                   | Parallel. Opt-in via `[*.metadata.lockpick]`.        |
-| coverage   | `cargo llvm-cov report --json --summary-only --branch` | Post-test phase. Validates functions, lines, regions, branches against per-metric thresholds. |
+| Check      | What it does                                                                | `--skip`   |
+|------------|-----------------------------------------------------------------------------|------------|
+| `check`    | `cargo check` on every target and feature                                   | `check`    |
+| `clippy`   | `cargo clippy` with `pedantic` + `nursery` + `cargo` and `-D warnings`      | `clippy`   |
+| `fmt`      | `cargo fmt --all --check`                                                   | `fmt`      |
+| `test`     | `cargo test` / `nextest` / `llvm-cov` — auto-routed by what is installed and whether coverage is active | `test`     |
+| `doc`      | `cargo doc --no-deps` with `RUSTDOCFLAGS=-D warnings`                       | `doc`      |
+| `doc-test` | doctests; skipped on bin-only workspaces                                    | `doc-test` |
+| `machete`  | unused-dependency scan (`cargo machete`)                                    | `machete`  |
+| `audit`    | RustSec advisory scan (`cargo audit`, requires network)                     | `audit`    |
+| `license`  | byte-equal license-header scan; opt-in via config                           | `license`  |
+| `coverage` | per-metric `llvm-cov` gate, runs once `test` passes                         | `coverage` |
+
+`--skip test` implies `--skip coverage`. `--skip license` is a no-op when no header is configured. Run `lockpick -v` to see the exact cargo invocation each check fires.
 
 ## Configuration
 
-Drop a `[workspace.metadata.lockpick]` (preferred) or `[package.metadata.lockpick]` block into your `Cargo.toml`. Everything is optional and falls back to sensible defaults.
+Add a `[workspace.metadata.lockpick]` (preferred) or `[package.metadata.lockpick]` block to your `Cargo.toml`. Every field is optional.
 
 ```toml
 [workspace.metadata.lockpick]
 license-header = ".github/license_header.rs"
-# Default globs cover src/, tests/, examples/ and benches/.
-# license-header-globs = ["src/**/*.rs", "tests/**/*.rs"]
+# license-header-globs = ["src/**/*.rs", "tests/**/*.rs"]  # defaults shown below
 
 [workspace.metadata.lockpick.coverage]
-functions = 100
+functions = 100   # every metric defaults to 100
 lines     = 100
 regions   = 100
 branches  = 100
-# Omitted metrics keep their default of 100.
 ```
 
-The license-header check:
-
-- Reads the canonical header file as bytes.
-- Walks the configured globs (default: `src/**/*.rs`, `tests/**/*.rs`, `examples/**/*.rs`, `benches/**/*.rs`).
-- Skips files whose first line contains `@generated` (Buf/Prost convention).
-- Reports every offending path, not just the first one.
-
-The coverage check:
-
-- Runs after `test` finishes successfully.
-- Parses the JSON summary from `cargo llvm-cov report`.
-- Treats `count == 0` on a metric as vacuously satisfied (a crate without conditional branches has 0/0 branches and that is fine).
-- Rejects entries where *every* metric reports `count == 0` — that pattern signals broken instrumentation or no tests collected.
-- On failure, points you at `cargo llvm-cov --branch --html` for the HTML report.
-
-## Skipping checks
-
-| Value      | What it skips                                            |
-|------------|-----------------------------------------------------------|
-| `check`    | `cargo check` gate                                        |
-| `clippy`   | lints                                                     |
-| `fmt`      | formatting                                                |
-| `test`     | tests (implicitly skips `coverage` too)                   |
-| `doc-test` | doc tests                                                 |
-| `doc`      | `cargo doc`                                               |
-| `machete`  | unused-dependency scan                                    |
-| `audit`    | RustSec advisory scan                                     |
-| `license`  | license-header check (silent skip when not configured)    |
-| `coverage` | coverage gate                                             |
-
-`--skip` is repeatable: `lockpick --skip audit --skip machete`.
+The license check reads the header file, walks the globs (default: `src/**/*.rs`, `tests/**/*.rs`, `examples/**/*.rs`, `benches/**/*.rs`), skips files marked `@generated`, and lists every offender. The coverage check parses the JSON from `cargo llvm-cov report`, treats `count == 0` as vacuously satisfied, rejects all-zero entries as broken instrumentation, and points at `cargo llvm-cov --branch --html` on failure.
 
 ## Exit codes
 
-| Code | Meaning                                                            |
-|------|--------------------------------------------------------------------|
-| 0    | All checks passed.                                                 |
-| 1    | One or more checks failed.                                         |
-| 2    | Usage error (unknown flag, unknown `--skip` value, etc.).          |
-| 3    | A required external tool (`cargo-llvm-cov`, `cargo-machete`, `cargo-audit`) is not installed. |
-
-## Output
-
-Default output is one status line per check, plus the FAIL sections only:
-
-```
-  check    PASS
-  clippy   PASS
-  fmt      FAIL
-  test     PASS
-  ...
-
- ✖ FMT ERRORS
- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- │ Diff in src/runner.rs:42 …
- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Failed: 1/N (fmt)
-```
-
-`-v / --verbose` adds a banner listing every cargo invocation up front and shows the PASS sections too (`✔ CHECK OUTPUT`, …). This is the mode to enable in CI logs.
+| Code | Meaning                                                                              |
+|------|--------------------------------------------------------------------------------------|
+| 0    | All checks passed                                                                    |
+| 1    | One or more checks failed                                                            |
+| 2    | Usage error (unknown flag, invalid `--skip` value)                                   |
+| 3    | A required external tool (`cargo-llvm-cov`, `cargo-machete`, `cargo-audit`) is absent|
 
 ## Pre-commit / CI
 
@@ -168,6 +110,23 @@ A minimal GitHub Actions job:
     tool: lockpick,cargo-llvm-cov,cargo-machete,cargo-audit
 - run: lockpick -v
 ```
+
+## How it schedules
+
+Cargo holds an exclusive lock on `target/.cargo-lock` while any subcommand mutates the build directory. lockpick schedules around that constraint:
+
+```text
+  fmt        ┐
+  machete    ├── parallel (no target/ contention)
+  audit      │
+  license    ┘
+
+  check ──► test ──► clippy ──► doc ──► doc-test    serial (share target/.cargo-lock)
+              │
+              └──► coverage                         post-test
+```
+
+The independent cohort runs alongside the serial chain. Coverage forks off the chain as soon as `test` finishes and runs in parallel with the chain tail.
 
 ## License
 

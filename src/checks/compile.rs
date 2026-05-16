@@ -2,7 +2,7 @@
 // lockpick - Rust CLI to enforce merge checks and code quality
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
-use super::{COMMON_ARGS, Check, Runner, cargo_outcome, fmt_cargo_cmd};
+use super::{COMMON_ARGS, Check, Runner, cargo_outcome, chain, fmt_cargo_cmd};
 use crate::reporter::CheckOutcome;
 
 pub struct CompileCheck;
@@ -22,6 +22,10 @@ impl Check for CompileCheck {
 
     fn run(&self, runner: &dyn Runner) -> CheckOutcome {
         cargo_outcome(runner, "check", COMMON_ARGS)
+    }
+
+    fn chain_position(&self) -> Option<u8> {
+        Some(chain::COMPILE)
     }
 }
 
@@ -43,5 +47,10 @@ mod tests {
     fn label_constant_matches_trait_method() {
         assert_eq!(CompileCheck::LABEL, "check");
         assert_eq!(CompileCheck.label(), CompileCheck::LABEL);
+    }
+
+    #[test]
+    fn chain_position_is_compile_so_compile_runs_first_and_gates_the_chain() {
+        assert_eq!(CompileCheck.chain_position(), Some(chain::COMPILE));
     }
 }

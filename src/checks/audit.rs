@@ -21,6 +21,10 @@ impl Check for AuditCheck {
     fn run(&self, runner: &dyn Runner) -> CheckOutcome {
         cargo_outcome(runner, "audit", &[])
     }
+
+    fn chain_position(&self) -> Option<u8> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -31,5 +35,10 @@ mod tests {
     #[test]
     fn cmd_is_cargo_audit() {
         assert_eq!(AuditCheck.cmd(), "cargo audit");
+    }
+
+    #[test]
+    fn chain_position_is_none_because_audit_only_reads_the_lockfile() {
+        assert_eq!(AuditCheck.chain_position(), None);
     }
 }
