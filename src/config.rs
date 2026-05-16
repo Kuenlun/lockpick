@@ -48,12 +48,18 @@ pub struct Config {
 pub struct LockpickMetadata {
     pub config: Config,
     pub has_lib_target: bool,
+    /// Absolute path of the enclosing workspace as reported by
+    /// `cargo metadata`. `None` when the probe failed (no Cargo.toml
+    /// in scope, malformed JSON, …).
+    pub workspace_root: Option<PathBuf>,
 }
 
 #[derive(Deserialize, Default)]
 struct CargoMetadata {
     #[serde(default)]
     workspace_metadata: Value,
+    #[serde(default)]
+    workspace_root: Option<PathBuf>,
     #[serde(default)]
     packages: Vec<CargoPackage>,
 }
@@ -93,6 +99,7 @@ impl LockpickMetadata {
         Self {
             config,
             has_lib_target,
+            workspace_root: metadata.workspace_root,
         }
     }
 }
@@ -163,6 +170,7 @@ mod tests {
     fn meta_with(workspace: Value, packages: Vec<Value>) -> CargoMetadata {
         CargoMetadata {
             workspace_metadata: workspace,
+            workspace_root: None,
             packages: packages
                 .into_iter()
                 .map(|metadata| CargoPackage {
@@ -176,6 +184,7 @@ mod tests {
     fn meta_with_targets(targets: Vec<Vec<&str>>) -> CargoMetadata {
         CargoMetadata {
             workspace_metadata: Value::Null,
+            workspace_root: None,
             packages: vec![CargoPackage {
                 metadata: Value::Null,
                 targets: targets
@@ -348,6 +357,20 @@ mod tests {
         let m = LockpickMetadata::load_from(None);
         assert!(m.config.license_header.is_none());
         assert!(!m.has_lib_target);
+        assert!(m.workspace_root.is_none());
+    }
+
+    #[test]
+    fn load_from_surfaces_workspace_root_when_cargo_metadata_provides_one() {
+        let m = LockpickMetadata::load_from(Some(CargoMetadata {
+            workspace_metadata: Value::Null,
+            workspace_root: Some(PathBuf::from("/some/workspace")),
+            packages: Vec::new(),
+        }));
+        assert_eq!(
+            m.workspace_root.as_deref(),
+            Some(std::path::Path::new("/some/workspace"))
+        );
     }
 
     #[test]
@@ -418,6 +441,12 @@ mod tests {
     fn load_smoke_test_against_real_cargo_metadata() {
         let m = LockpickMetadata::load();
         assert!(!m.has_lib_target);
+        // The smoke test runs inside the lockpick workspace, so the
+        // probe must surface a root for the runner to anchor cwd on.
+        assert!(
+            m.workspace_root.is_some(),
+            "real `cargo metadata` should surface a workspace_root"
+        );
     }
 
     #[test]

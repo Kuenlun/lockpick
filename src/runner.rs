@@ -2,6 +2,7 @@
 // lockpick - Rust CLI to enforce merge checks and code quality
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
+use std::path::Path;
 use std::thread;
 
 use indicatif::ProgressBar;
@@ -19,6 +20,9 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
     let reporter = Reporter::auto(cli.verbose);
     let toolchain = Toolchain::detect();
     let metadata = LockpickMetadata::load();
+    pin_to_workspace_root(metadata.workspace_root.as_deref(), &|p| {
+        std::env::set_current_dir(p)
+    });
     let runner = CargoCli::detect();
     run_with(
         cli,
@@ -28,6 +32,29 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
         metadata.has_lib_target,
         &runner,
     )
+}
+
+/// Pin cwd to the workspace root so every subprocess sees the same
+/// anchor. Required because `cargo audit` only opens `./Cargo.lock` —
+/// unlike build/clippy/fmt/machete, which walk up the manifest tree
+/// on their own — and without this lockpick would silently disagree
+/// with itself across subdirectories. Must precede [`CargoCli::detect`],
+/// whose target-dir-redirect probe is cwd-relative.
+///
+/// `chdir` is injected so unit tests can exercise this without mutating
+/// the test process's cwd (a global shared across the test runner).
+fn pin_to_workspace_root(
+    workspace_root: Option<&Path>,
+    chdir: &dyn Fn(&Path) -> std::io::Result<()>,
+) {
+    if let Some(root) = workspace_root
+        && let Err(e) = chdir(root)
+    {
+        eprintln!(
+            "warning: could not chdir to workspace root {}: {e}",
+            root.display(),
+        );
+    }
 }
 
 /// Orchestrate the full check pipeline with every collaborator injected.
@@ -369,6 +396,41 @@ mod tests {
         plan.iter()
             .map(|(_, c)| reporter.add_spinner(c.label()))
             .collect()
+    }
+
+    #[test]
+    fn pin_to_workspace_root_does_not_chdir_when_metadata_yielded_no_root() {
+        let invoked = std::cell::Cell::new(false);
+        pin_to_workspace_root(None, &|_| {
+            invoked.set(true);
+            Ok(())
+        });
+        assert!(!invoked.get(), "chdir attempted without a root in scope");
+    }
+
+    #[test]
+    fn pin_to_workspace_root_forwards_the_root_path_to_chdir() {
+        // `Cell` over a non-`Copy` `Option<PathBuf>` is enough for a
+        // single-set / single-read capture; `into_inner` reads it back.
+        let captured: std::cell::Cell<Option<std::path::PathBuf>> = std::cell::Cell::new(None);
+        pin_to_workspace_root(Some(std::path::Path::new("/sentinel/root")), &|p| {
+            captured.set(Some(p.to_path_buf()));
+            Ok(())
+        });
+        assert_eq!(
+            captured.into_inner(),
+            Some(std::path::PathBuf::from("/sentinel/root")),
+        );
+    }
+
+    #[test]
+    fn pin_to_workspace_root_swallows_chdir_failure_with_a_warning() {
+        // The `eprintln!` is not directly observable from a test, but
+        // exercising the failure arm proves the error is downgraded to
+        // a warning instead of panicking or propagating.
+        pin_to_workspace_root(Some(std::path::Path::new("/sentinel/root")), &|_| {
+            Err(std::io::Error::other("simulated"))
+        });
     }
 
     #[test]
