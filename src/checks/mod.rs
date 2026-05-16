@@ -199,7 +199,9 @@ impl Plan {
 /// chain is decoupled and lives in [`Check::chain_position`].
 ///
 /// `coverage_active` instruments the `test` check so its `.profraw`
-/// files feed the coverage gate; `has_lib` gates the doc-test check.
+/// files feed the coverage gate; `has_lib` gates the doc-test check;
+/// `branch_coverage` (true on nightly) passes `--branch` to the
+/// instrumented test run.
 #[must_use]
 pub fn build_plan(
     cli: &Cli,
@@ -207,6 +209,7 @@ pub fn build_plan(
     toolchain: &Toolchain,
     config: &Config,
     has_lib: bool,
+    branch_coverage: bool,
 ) -> Plan {
     let mut items: Vec<Box<dyn Check>> = Vec::new();
 
@@ -223,6 +226,7 @@ pub fn build_plan(
         items.push(Box::new(test::TestCheck {
             instrumented: coverage_active,
             nextest: toolchain.has(Tool::Nextest),
+            branch_coverage,
         }));
     }
     if !cli.skips(&SkipOption::Doc) {
@@ -417,6 +421,7 @@ mod tests {
             &Toolchain::all_present(),
             &Config::default(),
             true,
+            false,
         );
         assert!(plan.is_empty());
         assert_eq!(plan.len(), 0);
@@ -433,6 +438,7 @@ mod tests {
             true,
             &Toolchain::all_present(),
             &Config::default(),
+            true,
             true,
         );
         let has = |needle: &str| plan.iter().any(|(_, c)| c.label() == needle);
@@ -460,7 +466,7 @@ mod tests {
             license_header: Some(PathBuf::from("hdr.txt")),
             ..Config::default()
         };
-        let plan = build_plan(&cli, true, &Toolchain::all_present(), &config, true);
+        let plan = build_plan(&cli, true, &Toolchain::all_present(), &config, true, true);
         let labels: Vec<&str> = plan.iter().map(|(_, c)| c.label()).collect();
         assert_eq!(
             labels,
@@ -482,6 +488,7 @@ mod tests {
             &Toolchain::all_present(),
             &Config::default(),
             false,
+            false,
         );
         assert!(plan.iter().all(|(_, c)| c.label() != "check"));
     }
@@ -498,6 +505,7 @@ mod tests {
             &Toolchain::all_present(),
             &Config::default(),
             false,
+            false,
         );
         assert!(plan.iter().all(|(_, c)| c.label() != "doc-test"));
     }
@@ -512,7 +520,14 @@ mod tests {
             license_header: Some(PathBuf::from("hdr.txt")),
             ..Config::default()
         };
-        let plan = build_plan(&cli, false, &Toolchain::all_present(), &config, false);
+        let plan = build_plan(
+            &cli,
+            false,
+            &Toolchain::all_present(),
+            &config,
+            false,
+            false,
+        );
         assert!(plan.iter().any(|(_, c)| c.label() == "license"));
     }
 
@@ -527,8 +542,45 @@ mod tests {
             license_header_globs: Some(vec!["lib/**/*.rs".to_string()]),
             ..Config::default()
         };
-        let plan = build_plan(&cli, false, &Toolchain::all_present(), &config, false);
+        let plan = build_plan(
+            &cli,
+            false,
+            &Toolchain::all_present(),
+            &config,
+            false,
+            false,
+        );
         assert!(plan.iter().any(|(_, c)| c.label() == "license"));
+    }
+
+    #[test]
+    fn build_plan_threads_branch_coverage_into_the_instrumented_test_check() {
+        let cli = Cli {
+            skip: vec![],
+            verbose: false,
+        };
+        // Pin both branches of the new field: nightly→ --branch lives in
+        // the test invocation, stable→ it is gone. Pins the runner→checks
+        // wiring against a future refactor that might drop the flag.
+        for branch_coverage in [false, true] {
+            let plan = build_plan(
+                &cli,
+                true,
+                &Toolchain::all_present(),
+                &Config::default(),
+                false,
+                branch_coverage,
+            );
+            let test_cmd = plan
+                .iter()
+                .find_map(|(_, c)| (c.label() == "test").then(|| c.cmd()))
+                .expect("plan must include a `test` check");
+            assert_eq!(
+                test_cmd.contains("--branch"),
+                branch_coverage,
+                "test cmd `{test_cmd}` did not match branch_coverage={branch_coverage}",
+            );
+        }
     }
 
     #[test]
@@ -541,7 +593,7 @@ mod tests {
             license_header: Some(PathBuf::from("hdr.txt")),
             ..Config::default()
         };
-        let plan = build_plan(&cli, true, &Toolchain::all_present(), &config, true);
+        let plan = build_plan(&cli, true, &Toolchain::all_present(), &config, true, true);
 
         // Independent cohort: only checks that do not touch `target/`.
         let independent: Vec<&str> = plan.independent().map(|(_, c)| c.label()).collect();
@@ -596,6 +648,7 @@ mod tests {
             Box::new(test::TestCheck {
                 instrumented: false,
                 nextest: false,
+                branch_coverage: false,
             }),
             Box::new(compile::CompileCheck),
         ]);

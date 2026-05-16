@@ -13,14 +13,20 @@ use serde_json::Value;
 
 use crate::tooling::cargo_command;
 
-/// Per-metric coverage thresholds. Every metric defaults to 100%.
+/// Per-metric coverage thresholds.
+///
+/// `functions`, `lines`, and `regions` always run and default to 100%.
+/// `branches` is `Option<u8>` because branch coverage requires nightly:
+/// `None` means "unset" and behaves as 100% when nightly is detected and
+/// is silently dropped on stable. `Some(n)` is an explicit user choice
+/// and causes lockpick to refuse to run on stable.
 #[derive(Deserialize, Debug, Clone, Copy)]
 #[serde(default, deny_unknown_fields)]
 pub struct CoverageConfig {
     pub functions: u8,
     pub lines: u8,
     pub regions: u8,
-    pub branches: u8,
+    pub branches: Option<u8>,
 }
 
 impl Default for CoverageConfig {
@@ -29,7 +35,7 @@ impl Default for CoverageConfig {
             functions: 100,
             lines: 100,
             regions: 100,
-            branches: 100,
+            branches: None,
         }
     }
 }
@@ -198,12 +204,14 @@ mod tests {
     }
 
     #[test]
-    fn coverage_config_defaults_to_100_on_every_metric() {
+    fn coverage_config_defaults_to_100_for_always_on_metrics_and_none_for_branches() {
         let c = CoverageConfig::default();
         assert_eq!(c.functions, 100);
         assert_eq!(c.lines, 100);
         assert_eq!(c.regions, 100);
-        assert_eq!(c.branches, 100);
+        // Branches must default to unset so stable Rust users do not
+        // hit the nightly-required gate without opting in.
+        assert!(c.branches.is_none());
     }
 
     #[test]
@@ -212,6 +220,7 @@ mod tests {
         assert!(c.license_header.is_none());
         assert!(c.license_header_globs.is_none());
         assert_eq!(c.coverage.functions, 100);
+        assert!(c.coverage.branches.is_none());
     }
 
     fn extract_with_warnings(meta: &CargoMetadata) -> (Option<Value>, Vec<String>) {
@@ -329,27 +338,30 @@ mod tests {
         assert_eq!(cfg.coverage.functions, 90);
         assert_eq!(cfg.coverage.lines, 95);
         assert_eq!(cfg.coverage.regions, 100);
-        assert_eq!(cfg.coverage.branches, 100);
+        // Section did not mention `branches`; stays unset.
+        assert!(cfg.coverage.branches.is_none());
     }
 
     #[test]
-    fn coverage_defaults_to_100_when_section_is_entirely_omitted() {
+    fn coverage_defaults_to_unset_branches_and_100_elsewhere_when_section_is_omitted() {
         let v = json!({ "license-header": "header.txt" });
         let cfg: Config = serde_json::from_value(v).unwrap();
         assert_eq!(cfg.coverage.functions, 100);
         assert_eq!(cfg.coverage.lines, 100);
         assert_eq!(cfg.coverage.regions, 100);
-        assert_eq!(cfg.coverage.branches, 100);
+        assert!(cfg.coverage.branches.is_none());
     }
 
     #[test]
-    fn coverage_partial_override_keeps_unspecified_fields_at_100() {
+    fn coverage_explicit_branches_zero_is_preserved_as_some_zero() {
         let v = json!({ "coverage": { "branches": 0 } });
         let cfg: Config = serde_json::from_value(v).unwrap();
         assert_eq!(cfg.coverage.functions, 100);
         assert_eq!(cfg.coverage.lines, 100);
         assert_eq!(cfg.coverage.regions, 100);
-        assert_eq!(cfg.coverage.branches, 0);
+        // Some(0) distinguishes "user disabled the gate" from "user did
+        // not configure it" (None); both forms must round-trip cleanly.
+        assert_eq!(cfg.coverage.branches, Some(0));
     }
 
     #[test]
@@ -449,7 +461,7 @@ mod tests {
             json!({ "lockpick": { "coverage": { "branchs": 90 } } }),
             vec![],
         )));
-        assert_eq!(m.config.coverage.branches, 100);
+        assert!(m.config.coverage.branches.is_none());
         assert_eq!(m.config.coverage.functions, 100);
     }
 

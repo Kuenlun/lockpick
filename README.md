@@ -7,7 +7,7 @@
 
 > One invocation, one truth, zero noise. Run every quality gate your Rust crate needs and ship perfect code.
 
-`lockpick` is a single binary that orchestrates the full quality pipeline for a Rust workspace: compilation, lints, formatting, tests, documentation, dependency hygiene, security advisories, license headers and 100% branch coverage — all in one command, with one summary, and one exit code.
+`lockpick` is a single binary that orchestrates the full quality pipeline for a Rust workspace: compilation, lints, formatting, tests, documentation, dependency hygiene, security advisories, license headers and per-metric coverage. All in one command, with one summary, and one exit code.
 
 Use it locally (pre-commit), use it in CI (one job), and get the same answer either place.
 
@@ -34,12 +34,12 @@ cargo install lockpick
 
 External tooling lockpick drives (install whichever checks you enable; missing tools fail-fast with a clear error):
 
-- `cargo install cargo-llvm-cov` — coverage gate (on by default)
-- `cargo install cargo-machete` — unused-dependency detection
-- `cargo install cargo-audit` — RustSec advisory scan
-- `cargo install cargo-nextest --locked` — optional, auto-detected for faster test output
+- `cargo install cargo-llvm-cov`: coverage gate (on by default)
+- `cargo install cargo-machete`: unused-dependency detection
+- `cargo install cargo-audit`: RustSec advisory scan
+- `cargo install cargo-nextest --locked`: optional, auto-detected for faster test output
 
-A nightly toolchain is required for branch coverage (`rustup toolchain install nightly --component llvm-tools-preview`).
+Coverage measures functions, lines and regions on any toolchain. Branch coverage relies on `-Z coverage-options=branch` and only runs on nightly (`rustup toolchain install nightly --component llvm-tools-preview`). On stable the branches metric is dropped with a visible note, and setting `coverage.branches` in config is rejected with exit `4`.
 
 ## Quick start
 
@@ -56,7 +56,7 @@ lockpick --skip audit --skip doc  # skip checks (repeatable)
 | `check`    | `cargo check` on every target and feature                                   | `check`    |
 | `clippy`   | `cargo clippy` with `pedantic` + `nursery` + `cargo` and `-D warnings`      | `clippy`   |
 | `fmt`      | `cargo fmt --all --check`                                                   | `fmt`      |
-| `test`     | `cargo test` / `nextest` / `llvm-cov` — auto-routed by what is installed and whether coverage is active | `test`     |
+| `test`     | `cargo test` / `nextest` / `llvm-cov`, auto-routed by what is installed and whether coverage is active | `test`     |
 | `doc`      | `cargo doc --no-deps` with `RUSTDOCFLAGS=-D warnings`                       | `doc`      |
 | `doc-test` | doctests; skipped on bin-only workspaces                                    | `doc-test` |
 | `machete`  | unused-dependency scan (`cargo machete`)                                    | `machete`  |
@@ -76,13 +76,13 @@ license-header = ".github/license_header.rs"
 # license-header-globs = ["src/**/*.rs", "tests/**/*.rs"]  # defaults shown below
 
 [workspace.metadata.lockpick.coverage]
-functions = 100   # every metric defaults to 100
+functions = 100   # functions, lines and regions default to 100
 lines     = 100
 regions   = 100
-branches  = 100
+# branches = 100  # opt-in, nightly-only (fails on stable with exit 4)
 ```
 
-The license check reads the header file, walks the globs (default: `src/**/*.rs`, `tests/**/*.rs`, `examples/**/*.rs`, `benches/**/*.rs`), skips files marked `@generated`, and lists every offender. The coverage check parses the JSON from `cargo llvm-cov report`, treats `count == 0` as vacuously satisfied, rejects all-zero entries as broken instrumentation, and points at `cargo llvm-cov --branch --html` on failure.
+The license check reads the header file, walks the globs (default: `src/**/*.rs`, `tests/**/*.rs`, `examples/**/*.rs`, `benches/**/*.rs`), skips files marked `@generated`, and lists every offender. The coverage check parses the JSON from `cargo llvm-cov report`, treats `count == 0` as vacuously satisfied, rejects all-zero entries as broken instrumentation, and points at `cargo llvm-cov --html` on failure (with `--branch` on nightly).
 
 ## Exit codes
 
@@ -92,6 +92,7 @@ The license check reads the header file, walks the globs (default: `src/**/*.rs`
 | 1    | One or more checks failed                                                              |
 | 2    | Usage error (unknown flag, invalid `--skip` value, or every check skipped via `--skip`)|
 | 3    | A required external tool (`cargo-llvm-cov`, `cargo-machete`, `cargo-audit`) is absent  |
+| 4    | `coverage.branches` is configured but the active toolchain is stable                   |
 
 ## Pre-commit / CI
 

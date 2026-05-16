@@ -14,7 +14,7 @@ const NEXTEST_PLAIN_ARGS: &[&str] = &[
     "--all-features",
     "--no-tests=pass",
 ];
-const LLVM_COV_ARGS: &[&str] = &[
+const LLVM_COV_BRANCH_ARGS: &[&str] = &[
     "--branch",
     "--no-report",
     "--workspace",
@@ -22,9 +22,25 @@ const LLVM_COV_ARGS: &[&str] = &[
     "--all-features",
     "--no-fail-fast",
 ];
-const LLVM_COV_NEXTEST_ARGS: &[&str] = &[
+const LLVM_COV_PLAIN_ARGS: &[&str] = &[
+    "--no-report",
+    "--workspace",
+    "--all-targets",
+    "--all-features",
+    "--no-fail-fast",
+];
+const LLVM_COV_NEXTEST_BRANCH_ARGS: &[&str] = &[
     "nextest",
     "--branch",
+    "--no-report",
+    "--workspace",
+    "--all-targets",
+    "--all-features",
+    "--no-fail-fast",
+    "--no-tests=pass",
+];
+const LLVM_COV_NEXTEST_PLAIN_ARGS: &[&str] = &[
+    "nextest",
     "--no-report",
     "--workspace",
     "--all-targets",
@@ -38,17 +54,24 @@ pub struct TestCheck {
     pub instrumented: bool,
     /// Prefer `cargo nextest` as the runner.
     pub nextest: bool,
+    /// Whether to pass `--branch` to `cargo llvm-cov`. Off on stable
+    /// because `-Z coverage-options=branch` is nightly-only. Ignored
+    /// when `instrumented` is false (plain `test`/`nextest` never see
+    /// the flag).
+    pub branch_coverage: bool,
 }
 
 impl TestCheck {
     pub const LABEL: &'static str = "test";
 
     const fn dispatch(&self) -> (&'static str, &'static [&'static str]) {
-        match (self.instrumented, self.nextest) {
-            (true, true) => ("llvm-cov", LLVM_COV_NEXTEST_ARGS),
-            (true, false) => ("llvm-cov", LLVM_COV_ARGS),
-            (false, true) => ("nextest", NEXTEST_PLAIN_ARGS),
-            (false, false) => ("test", COMMON_ARGS),
+        match (self.instrumented, self.nextest, self.branch_coverage) {
+            (true, true, true) => ("llvm-cov", LLVM_COV_NEXTEST_BRANCH_ARGS),
+            (true, true, false) => ("llvm-cov", LLVM_COV_NEXTEST_PLAIN_ARGS),
+            (true, false, true) => ("llvm-cov", LLVM_COV_BRANCH_ARGS),
+            (true, false, false) => ("llvm-cov", LLVM_COV_PLAIN_ARGS),
+            (false, true, _) => ("nextest", NEXTEST_PLAIN_ARGS),
+            (false, false, _) => ("test", COMMON_ARGS),
         }
     }
 }
@@ -84,6 +107,7 @@ mod tests {
         let c = TestCheck {
             instrumented: false,
             nextest: false,
+            branch_coverage: false,
         };
         assert_eq!(c.label(), TestCheck::LABEL);
     }
@@ -93,6 +117,7 @@ mod tests {
         let c = TestCheck {
             instrumented: false,
             nextest: false,
+            branch_coverage: false,
         };
         let (sub, _) = c.dispatch();
         assert_eq!(sub, "test");
@@ -104,6 +129,7 @@ mod tests {
         let c = TestCheck {
             instrumented: false,
             nextest: true,
+            branch_coverage: false,
         };
         let (sub, args) = c.dispatch();
         assert_eq!(sub, "nextest");
@@ -112,10 +138,11 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_instrumented_uses_llvm_cov() {
+    fn dispatch_instrumented_with_branch_coverage_emits_branch_flag() {
         let c = TestCheck {
             instrumented: true,
             nextest: false,
+            branch_coverage: true,
         };
         let (sub, args) = c.dispatch();
         assert_eq!(sub, "llvm-cov");
@@ -125,44 +152,109 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_instrumented_without_branch_coverage_drops_branch_flag() {
+        let c = TestCheck {
+            instrumented: true,
+            nextest: false,
+            branch_coverage: false,
+        };
+        let (sub, args) = c.dispatch();
+        assert_eq!(sub, "llvm-cov");
+        // `--branch` requires `-Z coverage-options=branch` (nightly), so
+        // stable runs must invoke `cargo llvm-cov` without it. The rest
+        // of the args (the bulk of the invocation) stay identical.
+        assert!(!args.contains(&"--branch"));
+        assert!(args.contains(&"--no-report"));
+        assert!(!c.cmd().contains("--branch"));
+    }
+
+    #[test]
     fn dispatch_instrumented_with_nextest_uses_llvm_cov_nextest() {
         let c = TestCheck {
             instrumented: true,
             nextest: true,
+            branch_coverage: true,
         };
         let (sub, args) = c.dispatch();
         assert_eq!(sub, "llvm-cov");
         assert_eq!(args[0], "nextest");
+        assert!(args.contains(&"--branch"));
         assert!(c.cmd().contains("llvm-cov nextest"));
     }
 
     #[test]
+    fn dispatch_instrumented_nextest_without_branch_coverage_drops_branch_flag() {
+        let c = TestCheck {
+            instrumented: true,
+            nextest: true,
+            branch_coverage: false,
+        };
+        let (sub, args) = c.dispatch();
+        assert_eq!(sub, "llvm-cov");
+        assert_eq!(args[0], "nextest");
+        assert!(!args.contains(&"--branch"));
+        assert!(!c.cmd().contains("--branch"));
+    }
+
+    #[test]
+    fn dispatch_plain_variants_ignore_branch_coverage_flag() {
+        // `--branch` is only ever an `llvm-cov` flag; the plain runners
+        // never see it regardless of how `branch_coverage` is set.
+        for branch_coverage in [false, true] {
+            for (instrumented, nextest) in [(false, false), (false, true)] {
+                let c = TestCheck {
+                    instrumented,
+                    nextest,
+                    branch_coverage,
+                };
+                let (_, args) = c.dispatch();
+                assert!(
+                    !args.contains(&"--branch"),
+                    "plain variant must never carry --branch (instrumented={instrumented} nextest={nextest} branch_coverage={branch_coverage})",
+                );
+            }
+        }
+    }
+
+    #[test]
     fn every_nextest_path_opts_out_of_no_tests_failure() {
-        for (instrumented, nextest) in [(false, true), (true, true)] {
+        for (instrumented, nextest, branch_coverage) in [
+            (false, true, false),
+            (true, true, true),
+            (true, true, false),
+        ] {
             let c = TestCheck {
                 instrumented,
                 nextest,
+                branch_coverage,
             };
             let (_, args) = c.dispatch();
             assert!(
                 args.contains(&"--no-tests=pass"),
-                "missing --no-tests=pass for instrumented={instrumented} nextest={nextest}"
+                "missing --no-tests=pass for instrumented={instrumented} nextest={nextest} branch_coverage={branch_coverage}"
             );
         }
     }
 
     #[test]
     fn chain_position_is_test_for_every_runner_variant() {
-        for (instrumented, nextest) in [(false, false), (false, true), (true, false), (true, true)]
-        {
+        for (instrumented, nextest, branch_coverage) in [
+            (false, false, false),
+            (false, true, false),
+            (true, false, true),
+            (true, false, false),
+            (true, true, true),
+            (true, true, false),
+        ] {
             let c = TestCheck {
                 instrumented,
                 nextest,
+                branch_coverage,
             };
             assert_eq!(
                 c.chain_position(),
                 Some(chain::TEST),
-                "expected chain TEST slot for instrumented={instrumented} nextest={nextest}"
+                "expected chain TEST slot for instrumented={instrumented} nextest={nextest} branch_coverage={branch_coverage}"
             );
         }
     }

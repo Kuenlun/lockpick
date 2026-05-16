@@ -27,9 +27,10 @@ fn main() -> ExitCode {
 
 /// Map a [`runner::run`] result to a process exit code: `0` on success,
 /// `2` on misconfiguration (empty pipeline), `3` on missing-tool errors,
-/// `1` otherwise. Variants that surface before any check ran echo their
-/// Display to stderr; `ChecksFailed` is silent because the reporter has
-/// already rendered the per-check FAIL sections.
+/// `4` when `coverage.branches` is set on stable, `1` otherwise.
+/// Variants that surface before any check ran echo their Display to
+/// stderr; `ChecksFailed` is silent because the reporter has already
+/// rendered the per-check FAIL sections.
 #[cfg_attr(test, allow(dead_code))]
 fn dispatch(result: Result<(), LockpickError>) -> u8 {
     match result {
@@ -42,6 +43,10 @@ fn dispatch(result: Result<(), LockpickError>) -> u8 {
         Err(e @ LockpickError::MissingTools(_)) => {
             eprintln!("error: {e}");
             3
+        }
+        Err(e @ LockpickError::BranchesRequireNightly) => {
+            eprintln!("error: {e}");
+            4
         }
     }
 }
