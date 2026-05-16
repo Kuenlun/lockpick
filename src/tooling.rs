@@ -7,6 +7,67 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Command;
 
+/// Whether subprocess output captured by lockpick should carry ANSI
+/// colors. Picked once per run from the report stream's state: keep
+/// colors when stdout is an interactive terminal, strip them when it is
+/// a pipe or when the user opted out via `NO_COLOR`
+/// (<https://no-color.org>).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ColorMode {
+    Always,
+    #[default]
+    Never,
+}
+
+impl ColorMode {
+    /// Decide the mode from the report stream's TTY state, picking up
+    /// `NO_COLOR` from the environment.
+    #[cfg_attr(test, allow(dead_code))]
+    #[must_use]
+    pub fn for_stdout(is_tty: bool) -> Self {
+        Self::from_inputs(is_tty, no_color_env())
+    }
+
+    /// Pure half of [`Self::for_stdout`]: a TTY without `NO_COLOR` keeps
+    /// colors; anything else (pipe, file, or explicit opt-out) drops
+    /// them. Split out so tests can pin both branches without mutating
+    /// the process environment, which would race other tests.
+    #[must_use]
+    pub const fn from_inputs(is_tty: bool, no_color: bool) -> Self {
+        if is_tty && !no_color {
+            Self::Always
+        } else {
+            Self::Never
+        }
+    }
+
+    /// Stringification accepted by both `CARGO_TERM_COLOR` and rustfmt's
+    /// `--color`, so the same value can drive cargo and rustfmt in
+    /// lockstep.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Always => "always",
+            Self::Never => "never",
+        }
+    }
+}
+
+/// `NO_COLOR` is honoured when present and non-empty, matching
+/// <https://no-color.org>: unset and empty both mean "color allowed".
+/// `unwrap_or_default` collapses both into the same empty `OsString`,
+/// so the predicate folds to a single `is_empty` check.
+fn no_color_env() -> bool {
+    no_color_value(&std::env::var_os("NO_COLOR").unwrap_or_default())
+}
+
+/// Pure half of [`no_color_env`], factored out so tests can pin both
+/// arms (empty vs non-empty) without mutating the process environment,
+/// which would race other tests.
+fn no_color_value(value: &OsStr) -> bool {
+    !value.is_empty()
+}
+
 /// Check `PATH` for a `cargo-<subcommand>` binary.
 ///
 /// Filesystem-only probe by design: spawning `cargo <name> --version`
@@ -270,5 +331,64 @@ mod tests {
         // smoke test that exercises the spawn path and asserts the
         // call returns *some* boolean, not which one.
         let _ = is_nightly();
+    }
+
+    #[test]
+    fn color_mode_default_is_never_so_capture_stays_safe() {
+        assert_eq!(ColorMode::default(), ColorMode::Never);
+    }
+
+    #[test]
+    fn color_mode_as_str_matches_cargo_term_color_and_rustfmt_vocabulary() {
+        assert_eq!(ColorMode::Always.as_str(), "always");
+        assert_eq!(ColorMode::Never.as_str(), "never");
+    }
+
+    #[test]
+    fn color_mode_from_inputs_returns_always_only_for_tty_without_no_color() {
+        assert_eq!(
+            ColorMode::from_inputs(true, false),
+            ColorMode::Always,
+            "interactive TTY must keep subprocess colors",
+        );
+        assert_eq!(
+            ColorMode::from_inputs(true, true),
+            ColorMode::Never,
+            "NO_COLOR must downgrade a TTY",
+        );
+        assert_eq!(
+            ColorMode::from_inputs(false, false),
+            ColorMode::Never,
+            "pipe must strip subprocess colors",
+        );
+        assert_eq!(ColorMode::from_inputs(false, true), ColorMode::Never);
+    }
+
+    #[test]
+    fn color_mode_for_stdout_on_pipe_is_never_regardless_of_env() {
+        // Pipe short-circuits to `Never`, so this branch is independent
+        // of the ambient `NO_COLOR` and stays race-free across tests.
+        assert_eq!(ColorMode::for_stdout(false), ColorMode::Never);
+    }
+
+    #[test]
+    fn no_color_env_runs_against_the_ambient_value_without_panicking() {
+        // The end-to-end probe (env-dependent) is exercised here; the
+        // value branches are pinned by `no_color_value` below to keep
+        // the assertions deterministic.
+        let _ = no_color_env();
+    }
+
+    #[test]
+    fn no_color_value_treats_empty_as_inactive_per_no_color_org() {
+        // <https://no-color.org>: empty must NOT disable color; any
+        // non-empty value (regardless of contents) does. Both arms must
+        // stay pinned, or a future refactor could silently change which
+        // inputs disable color. `no_color_env` collapses "unset" into
+        // an empty `OsString`, so the unset arm is exercised by the
+        // first case below.
+        assert!(!no_color_value(OsString::new().as_os_str()));
+        assert!(no_color_value(OsString::from("1").as_os_str()));
+        assert!(no_color_value(OsString::from("anything").as_os_str()));
     }
 }

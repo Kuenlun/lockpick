@@ -11,7 +11,7 @@ use std::process::{Command, Stdio};
 use crate::cli::{Cli, SkipOption};
 use crate::config::Config;
 use crate::reporter::{CheckOutcome, TaskStatus};
-use crate::tooling::{Tool, Toolchain, cargo_command};
+use crate::tooling::{ColorMode, Tool, Toolchain, cargo_command};
 
 pub mod audit;
 pub mod clippy;
@@ -56,19 +56,25 @@ pub trait Runner: Send + Sync {
 pub struct CargoCli {
     /// When true, children inherit `CARGO_TARGET_DIR=target/lockpick`.
     redirect_target_dir: bool,
+    /// Color decision propagated to every child as `CARGO_TERM_COLOR`,
+    /// so captured output matches what lockpick will print on its own
+    /// stdout stream.
+    color: ColorMode,
 }
 
 impl CargoCli {
-    /// Decide whether children need `CARGO_TARGET_DIR` redirected.
+    /// Decide whether children need `CARGO_TARGET_DIR` redirected, and
+    /// pin the color mode that will be propagated as `CARGO_TERM_COLOR`.
     #[cfg_attr(test, allow(dead_code))]
     #[must_use]
-    pub fn detect() -> Self {
+    pub fn detect(color: ColorMode) -> Self {
         Self {
             redirect_target_dir: needs_target_dir_redirect(
                 std::env::current_exe().ok().as_deref(),
                 std::env::current_dir().ok().as_deref(),
                 std::env::var_os("CARGO_TARGET_DIR").as_deref(),
             ),
+            color,
         }
     }
 }
@@ -82,6 +88,9 @@ impl Runner for CargoCli {
     ) -> std::io::Result<SpawnResult> {
         let mut cmd = cargo_command();
         cmd.arg(sub).args(args);
+        // Set our color decision first so caller-supplied `envs` still
+        // win if a check ever needs to override it for one invocation.
+        cmd.env("CARGO_TERM_COLOR", self.color.as_str());
         for (k, v) in envs {
             cmd.env(k, v);
         }
@@ -201,7 +210,9 @@ impl Plan {
 /// `coverage_active` instruments the `test` check so its `.profraw`
 /// files feed the coverage gate; `has_lib` gates the doc-test check;
 /// `branch_coverage` (true on nightly) passes `--branch` to the
-/// instrumented test run.
+/// instrumented test run; `color` is forwarded to the fmt check, whose
+/// rustfmt diff renderer is the only subprocess that ignores the
+/// `CARGO_TERM_COLOR` env var.
 #[must_use]
 pub fn build_plan(
     cli: &Cli,
@@ -210,6 +221,7 @@ pub fn build_plan(
     config: &Config,
     has_lib: bool,
     branch_coverage: bool,
+    color: ColorMode,
 ) -> Plan {
     let mut items: Vec<Box<dyn Check>> = Vec::new();
 
@@ -220,7 +232,7 @@ pub fn build_plan(
         items.push(Box::new(clippy::ClippyCheck));
     }
     if !cli.skips(&SkipOption::Fmt) {
-        items.push(Box::new(fmt::FmtCheck));
+        items.push(Box::new(fmt::FmtCheck { color }));
     }
     if !cli.skips(&SkipOption::Test) {
         items.push(Box::new(test::TestCheck {
@@ -422,6 +434,7 @@ mod tests {
             &Config::default(),
             true,
             false,
+            ColorMode::Never,
         );
         assert!(plan.is_empty());
         assert_eq!(plan.len(), 0);
@@ -440,6 +453,7 @@ mod tests {
             &Config::default(),
             true,
             true,
+            ColorMode::Never,
         );
         let has = |needle: &str| plan.iter().any(|(_, c)| c.label() == needle);
         assert!(has("check"));
@@ -466,7 +480,15 @@ mod tests {
             license_header: Some(PathBuf::from("hdr.txt")),
             ..Config::default()
         };
-        let plan = build_plan(&cli, true, &Toolchain::all_present(), &config, true, true);
+        let plan = build_plan(
+            &cli,
+            true,
+            &Toolchain::all_present(),
+            &config,
+            true,
+            true,
+            ColorMode::Never,
+        );
         let labels: Vec<&str> = plan.iter().map(|(_, c)| c.label()).collect();
         assert_eq!(
             labels,
@@ -489,6 +511,7 @@ mod tests {
             &Config::default(),
             false,
             false,
+            ColorMode::Never,
         );
         assert!(plan.iter().all(|(_, c)| c.label() != "check"));
     }
@@ -506,6 +529,7 @@ mod tests {
             &Config::default(),
             false,
             false,
+            ColorMode::Never,
         );
         assert!(plan.iter().all(|(_, c)| c.label() != "doc-test"));
     }
@@ -527,6 +551,7 @@ mod tests {
             &config,
             false,
             false,
+            ColorMode::Never,
         );
         assert!(plan.iter().any(|(_, c)| c.label() == "license"));
     }
@@ -549,6 +574,7 @@ mod tests {
             &config,
             false,
             false,
+            ColorMode::Never,
         );
         assert!(plan.iter().any(|(_, c)| c.label() == "license"));
     }
@@ -570,6 +596,7 @@ mod tests {
                 &Config::default(),
                 false,
                 branch_coverage,
+                ColorMode::Never,
             );
             let test_cmd = plan
                 .iter()
@@ -593,7 +620,15 @@ mod tests {
             license_header: Some(PathBuf::from("hdr.txt")),
             ..Config::default()
         };
-        let plan = build_plan(&cli, true, &Toolchain::all_present(), &config, true, true);
+        let plan = build_plan(
+            &cli,
+            true,
+            &Toolchain::all_present(),
+            &config,
+            true,
+            true,
+            ColorMode::Never,
+        );
 
         // Independent cohort: only checks that do not touch `target/`.
         let independent: Vec<&str> = plan.independent().map(|(_, c)| c.label()).collect();
@@ -609,7 +644,9 @@ mod tests {
     fn plan_iter_preserves_insertion_order_across_both_cohorts() {
         let plan = Plan::from_items(vec![
             Box::new(clippy::ClippyCheck),
-            Box::new(fmt::FmtCheck),
+            Box::new(fmt::FmtCheck {
+                color: ColorMode::Never,
+            }),
             Box::new(audit::AuditCheck),
         ]);
         let labels: Vec<&str> = plan.iter().map(|(_, c)| c.label()).collect();
@@ -622,7 +659,9 @@ mod tests {
     fn plan_independent_and_serial_chain_carry_the_original_index() {
         let plan = Plan::from_items(vec![
             Box::new(clippy::ClippyCheck), // 0, chain (CLIPPY = 2)
-            Box::new(fmt::FmtCheck),       // 1, independent
+            Box::new(fmt::FmtCheck {
+                color: ColorMode::Never,
+            }), // 1, independent
             Box::new(audit::AuditCheck),   // 2, independent
             Box::new(doc::DocCheck),       // 3, chain (DOC = 3)
         ]);
@@ -766,6 +805,7 @@ mod tests {
     fn cargo_cli_spawn_honors_target_dir_redirect() {
         let cli = CargoCli {
             redirect_target_dir: true,
+            color: ColorMode::Never,
         };
         let result = cli.spawn("--version", &[], &[]).expect("spawn succeeds");
         assert!(result.success);
