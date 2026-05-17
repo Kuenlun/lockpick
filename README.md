@@ -72,6 +72,7 @@ Add a `[workspace.metadata.lockpick]` (preferred) or `[package.metadata.lockpick
 
 ```toml
 [workspace.metadata.lockpick]
+skip = ["audit", "machete"]                   # same identifiers as `--skip`
 license-header = ".github/license_header.rs"
 # license-header-globs = ["src/**/*.rs", "tests/**/*.rs"]  # defaults shown below
 
@@ -82,7 +83,7 @@ regions   = 100
 # branches = 100  # opt-in, nightly-only (fails on stable with exit 4)
 ```
 
-The license check reads the header file, walks the globs (default: `src/**/*.rs`, `tests/**/*.rs`, `examples/**/*.rs`, `benches/**/*.rs`), skips files marked `@generated`, and lists every offender. The coverage check parses the JSON from `cargo llvm-cov report`, treats `count == 0` as vacuously satisfied, rejects all-zero entries as broken instrumentation, and points at `cargo llvm-cov --html` on failure (with `--branch` on nightly).
+The `skip` array carries a project-wide baseline of checks to disable. CLI `--skip` is additive on top of it, never a replacement. The license check reads the header file, walks the globs (default: `src/**/*.rs`, `tests/**/*.rs`, `examples/**/*.rs`, `benches/**/*.rs`), skips files marked `@generated`, and lists every offender. The coverage check parses the JSON from `cargo llvm-cov report`, treats `count == 0` as vacuously satisfied, rejects all-zero entries as broken instrumentation, and points at `cargo llvm-cov --html` on failure (with `--branch` on nightly).
 
 ## Exit codes
 
