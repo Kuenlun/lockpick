@@ -140,12 +140,17 @@ pub fn install() {
 /// rustix dependency just to send a single signal. Errors are swallowed
 /// because the child may have already exited between the registry
 /// snapshot and the `kill` call.
+///
+/// The argv is `kill -<signum> <pid>`, the XSI form. GNU kill also
+/// accepts `-s <number>`, but BSD kill on macOS treats `-s` as taking
+/// a signal *name* and silently rejects `-s 2`, so the natural-looking
+/// alternative would leave macOS children unsignalled.
 #[cfg(all(unix, not(test)))]
 fn forward_via_kill(sig: i32, pid: u32) {
     use std::process::{Command, Stdio};
 
     let _ = Command::new("kill")
-        .args(["-s", &sig.to_string(), &pid.to_string()])
+        .args([&format!("-{sig}"), &pid.to_string()])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();

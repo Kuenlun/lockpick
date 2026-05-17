@@ -1055,9 +1055,29 @@ fn sigint_mid_pipeline_exits_with_130_after_forwarding_to_children() {
         .expect("failed to spawn kill");
     assert!(kill_status.success(), "kill -s INT lockpick failed");
 
+    // Poll `try_wait` instead of blocking in `wait_with_output`: a
+    // regression that orphans the stalling shims would otherwise pin
+    // this test to 4 × the shim's `sleep 30` before nextest's slow
+    // timeout terminates it. The 10s ceiling fails the assertion
+    // promptly while still leaving ample headroom for a loaded runner.
     let started = Instant::now();
+    let wait_deadline = started + Duration::from_secs(10);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() > wait_deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!(
+                    "lockpick did not wind down within 10s after SIGINT, \
+                     suggesting children were not signal-forwarded",
+                );
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(e) => panic!("try_wait failed: {e}"),
+        }
+    }
     let output = child.wait_with_output().expect("wait failed");
-    let elapsed = started.elapsed();
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(
@@ -1066,14 +1086,6 @@ fn sigint_mid_pipeline_exits_with_130_after_forwarding_to_children() {
         "expected exit 130 (128 + SIGINT) for a graceful SIGINT shutdown, \
          got code={code:?} stderr=\n{stderr}",
         code = output.status.code(),
-    );
-    // Bound the wait so a regression that orphans the stalling shims
-    // (instead of forwarding the signal) fails loudly here instead of
-    // running out the 30s sleep.
-    assert!(
-        elapsed < Duration::from_secs(10),
-        "lockpick took {elapsed:?} to wind down after SIGINT, \
-         suggesting children were not signal-forwarded",
     );
 }
 
