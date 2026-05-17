@@ -75,12 +75,31 @@ impl<'de> Deserialize<'de> for SkipOption {
              doc-tests, machete, audit, license headers and 100% branch \
              coverage in a single invocation.",
     long_about = None,
-    after_long_help = CONFIGURATION_HELP,
+    after_long_help = LONG_HELP_TAIL,
+    // Cap help width even when stdout is not a TTY (pipes, CI logs). 100 is
+    // wide enough for our longest line and lets clap wrap text that would
+    // otherwise spill past `tput cols` in narrow terminals.
+    max_term_width = 100,
     styles = cli_styles()
 )]
 pub struct Cli {
     /// Skip one or more checks (e.g. --skip clippy --skip fmt)
-    #[arg(long, value_enum)]
+    //
+    // `hide_possible_values` prevents clap from appending the auto-generated
+    // `[possible values: ...]` line, which packed every variant onto a
+    // single 170-char row that no terminal wrapped. The full list lives in
+    // `long_help` (rendered by `--help`), kept in sync with the variants by
+    // `long_help_lists_every_skip_value` further down.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "CHECK",
+        hide_possible_values = true,
+        long_help = "Skip one or more checks. Repeatable, e.g. `--skip clippy --skip fmt`.\n\
+                     \n\
+                     Possible values: check, clippy, test, doc-test, fmt, doc, machete, \
+                     audit, license, coverage."
+    )]
     pub skip: Vec<SkipOption>,
 
     /// Show every command and the full output of all checks (CI mode)
@@ -111,13 +130,33 @@ impl Cli {
     }
 }
 
-/// `--help` schema reference for `[*.metadata.lockpick]`. Mirrors the
-/// keys serde accepts in [`crate::config::Config`]. Add or rename a
-/// field there and this block must follow suit. Two tests guard the
-/// drift: `configuration_help_mentions_skip_array_and_every_known_section`
-/// pins the body, and the integration test
-/// `long_help_exposes_cargo_metadata_schema` pins the rendered output.
-const CONFIGURATION_HELP: &str = "\
+/// Long-form `--help` tail. Three sibling sections, in narrative order:
+///
+/// * `Examples:` copy-paste invocations covering the common knobs.
+/// * `Environment:` runtime levers the CLI surface cannot express
+///   (only `NO_COLOR` today, see [`crate::tooling::ColorMode`]).
+/// * `Configuration:` schema reference for `[*.metadata.lockpick]`,
+///   mirroring the keys serde accepts in [`crate::config::Config`]. Add
+///   or rename a field there and this block must follow suit.
+///
+/// Three tests guard the drift: `long_help_tail_covers_every_section`
+/// (this file) pins the body, and the integration tests
+/// `long_help_exposes_cargo_metadata_schema` and
+/// `long_help_documents_examples_and_no_color_environment` pin what
+/// clap actually renders.
+const LONG_HELP_TAIL: &str = "\
+Examples:
+  lockpick                            # run every check
+  lockpick --skip coverage            # skip the slow coverage gate
+  lockpick --skip clippy --skip fmt   # skip multiple checks (repeatable)
+  lockpick -v                         # CI mode: every cargo banner and section
+  NO_COLOR=1 lockpick                 # plain ASCII output, no ANSI escapes
+
+Environment:
+  NO_COLOR    Set to any non-empty value to strip ANSI colors from lockpick's
+              own output and from every cargo subprocess it spawns. Honoured
+              regardless of TTY detection. See <https://no-color.org>.
+
 Configuration:
   Lockpick reads optional settings from your Cargo.toml under
   `[workspace.metadata.lockpick]` (preferred) or
@@ -152,6 +191,7 @@ const fn cli_styles() -> Styles {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
 
     /// Anchor `skip_flag` to clap's derived name for every variant, so a
     /// rename or kebab-case tweak fails here instead of silently shipping
@@ -243,13 +283,24 @@ mod tests {
         assert_eq!(merged.skip, vec![SkipOption::Fmt]);
     }
 
-    /// Anchor every variant of [`SkipOption`] in the `--help` schema
-    /// block so adding a check forces the configuration example to be
-    /// updated in the same diff.
+    /// Pin the three top-level sections of the long-help tail, the
+    /// schema example, and the `NO_COLOR` mention. Renaming or dropping
+    /// any of them surfaces a fix-it failure right next to the constant
+    /// instead of waiting on the integration tests.
     #[test]
-    fn configuration_help_mentions_skip_array_and_every_known_section() {
+    fn long_help_tail_covers_every_section() {
+        for header in ["Examples:", "Environment:", "Configuration:"] {
+            assert!(
+                LONG_HELP_TAIL.contains(header),
+                "long-help tail must include `{header}`, got:\n{LONG_HELP_TAIL}",
+            );
+        }
         assert!(
-            CONFIGURATION_HELP.contains("skip = ["),
+            LONG_HELP_TAIL.contains("NO_COLOR"),
+            "Environment block must document `NO_COLOR`, got:\n{LONG_HELP_TAIL}",
+        );
+        assert!(
+            LONG_HELP_TAIL.contains("skip = ["),
             "schema block must show the `skip` array form",
         );
         for section in [
@@ -260,8 +311,36 @@ mod tests {
             "branches",
         ] {
             assert!(
-                CONFIGURATION_HELP.contains(section),
-                "schema block must mention `{section}`, got:\n{CONFIGURATION_HELP}",
+                LONG_HELP_TAIL.contains(section),
+                "schema block must mention `{section}`, got:\n{LONG_HELP_TAIL}",
+            );
+        }
+    }
+
+    /// Possible values are hidden from clap's auto-generated suffix; the
+    /// human-readable list lives in the `--skip` `long_help` instead.
+    /// Pin every variant so a rename of [`SkipOption::skip_flag`] fails
+    /// here rather than silently shipping a stale help string.
+    #[test]
+    fn long_help_lists_every_skip_value() {
+        let command = Cli::command();
+        let skip_arg = command
+            .get_arguments()
+            .find(|a| a.get_id() == "skip")
+            .expect("--skip arg must exist");
+        let long_help = skip_arg
+            .get_long_help()
+            .expect("--skip must define long_help so users see the value list")
+            .to_string();
+        assert!(
+            skip_arg.is_hide_possible_values_set(),
+            "clap's auto-listed possible-values block must stay hidden so it cannot reintroduce the 170-char line",
+        );
+        for variant in SkipOption::value_variants() {
+            assert!(
+                long_help.contains(variant.skip_flag()),
+                "--skip long_help must list `{}`, got:\n{long_help}",
+                variant.skip_flag(),
             );
         }
     }
