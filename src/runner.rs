@@ -24,6 +24,10 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
     pin_to_workspace_root(metadata.workspace_root.as_deref(), &|p| {
         std::env::set_current_dir(p)
     });
+    // Fold any `skip = [...]` from Cargo.toml into the CLI's view of
+    // skips once, here, so every downstream consumer keeps reading from
+    // a single source.
+    let effective_cli = cli.with_config_skips(&metadata.config.skip);
     // Subprocess color tracks the report stream: keep ANSI when stdout
     // is an interactive TTY, strip it otherwise so piping into `cat`,
     // CI logs or files never carries stray escape sequences.
@@ -34,7 +38,7 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
     // boolean, so caching is wasted state.
     let is_nightly = tooling::is_nightly();
     run_with(
-        cli,
+        &effective_cli,
         &reporter,
         &toolchain,
         &metadata.config,

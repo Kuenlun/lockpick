@@ -11,6 +11,7 @@ use std::process::{Output, Stdio};
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::cli::SkipOption;
 use crate::tooling::cargo_command;
 
 /// Per-metric coverage thresholds.
@@ -46,6 +47,9 @@ pub struct Config {
     pub license_header: Option<PathBuf>,
     pub license_header_globs: Option<Vec<String>>,
     pub coverage: CoverageConfig,
+    /// Project-wide skip list. Same kebab-case identifiers `--skip`
+    /// accepts on the CLI, merged with (not replaced by) any CLI flags.
+    pub skip: Vec<SkipOption>,
 }
 
 /// Lockpick config and workspace facts derived from a single
@@ -371,6 +375,36 @@ mod tests {
         assert!(
             err.to_string().contains("licens-header"),
             "error should name the offending key, got: {err}"
+        );
+    }
+
+    #[test]
+    fn config_skip_defaults_to_empty() {
+        assert!(Config::default().skip.is_empty());
+    }
+
+    #[test]
+    fn config_deserializes_skip_array_with_kebab_case_identifiers() {
+        let v = json!({ "skip": ["fmt", "doc-test", "audit"] });
+        let cfg: Config = serde_json::from_value(v).unwrap();
+        assert_eq!(
+            cfg.skip,
+            vec![SkipOption::Fmt, SkipOption::DocTest, SkipOption::Audit],
+        );
+    }
+
+    #[test]
+    fn config_skip_rejects_unknown_identifier() {
+        let v = json!({ "skip": ["klippy"] });
+        let err = serde_json::from_value::<Config>(v).expect_err("typo must fail");
+        // The custom Deserialize impl echoes the bad value and lists
+        // the legal ones, so the failure is actionable instead of just
+        // saying "expected a string".
+        let msg = err.to_string();
+        assert!(msg.contains("klippy"), "error should echo bad value: {msg}");
+        assert!(
+            msg.contains("clippy"),
+            "error should list known values: {msg}"
         );
     }
 

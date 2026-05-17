@@ -223,6 +223,94 @@ fn help_flag_exits_successfully() {
         .success();
 }
 
+/// Long help must document the Cargo.toml schema so users discover the
+/// `[*.metadata.lockpick]` knobs without leaving the terminal.
+#[test]
+fn long_help_exposes_cargo_metadata_schema() {
+    let output = lockpick_raw()
+        .arg("--help")
+        .output()
+        .expect("failed to execute lockpick");
+
+    let stdout = stdout_text(&output);
+    output.assert().success();
+    for needle in [
+        "Configuration:",
+        "[workspace.metadata.lockpick]",
+        "skip = [",
+        "license-header",
+        "[workspace.metadata.lockpick.coverage]",
+    ] {
+        assert!(
+            stdout.contains(needle),
+            "expected `{needle}` in --help, got:\n{stdout}"
+        );
+    }
+}
+
+#[test]
+fn skip_from_cargo_metadata_disables_a_check_without_a_cli_flag() {
+    let project = TempDir::new().unwrap();
+    project
+        .child("Cargo.toml")
+        .write_str(&cargo_toml_strict(
+            "skip_from_meta",
+            "\n[package.metadata.lockpick]\nskip = [\"fmt\", \"coverage\", \"machete\", \"audit\"]\n",
+        ))
+        .unwrap();
+    project.child("README.md").write_str("").unwrap();
+    // Unformatted body would normally fail the run; the metadata skip
+    // must disable `fmt` so the pipeline still passes.
+    project
+        .child("src/main.rs")
+        .write_str(UNFORMATTED_MAIN_RS)
+        .unwrap();
+
+    let output = lockpick_raw()
+        .current_dir(project.path())
+        .output()
+        .expect("failed to execute lockpick");
+
+    let combined = combined_text(&output);
+    output.assert().success();
+    assert!(
+        !combined.contains("fmt"),
+        "expected no mention of 'fmt' once it is skipped via metadata, got:\n{combined}"
+    );
+}
+
+#[test]
+fn skip_from_cargo_metadata_rejects_an_unknown_identifier() {
+    let project = TempDir::new().unwrap();
+    project
+        .child("Cargo.toml")
+        .write_str(&cargo_toml_strict(
+            "skip_bad",
+            "\n[package.metadata.lockpick]\nskip = [\"klippy\"]\n",
+        ))
+        .unwrap();
+    project.child("README.md").write_str("").unwrap();
+    project
+        .child("src/main.rs")
+        .write_str(FORMATTED_MAIN_RS)
+        .unwrap();
+
+    // A bad value in `skip = [...]` makes the whole config fall back to
+    // defaults with a warning, instead of aborting. The run keeps going,
+    // but the warning must echo the offending value so the user can
+    // pinpoint what to fix in their Cargo.toml.
+    let output = lockpick()
+        .current_dir(project.path())
+        .output()
+        .expect("failed to execute lockpick");
+
+    let stderr = stderr_text(&output);
+    assert!(
+        stderr.contains("klippy"),
+        "expected the bad value in the warning, got:\n{stderr}"
+    );
+}
+
 #[test]
 fn removed_coverage_flag_is_rejected() {
     lockpick_raw()
