@@ -29,6 +29,12 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 thiserror = "2.0.18"
 
+# Unix-only: SIGINT/SIGTERM capture so a Ctrl-C (or `kill -INT`) mid-pipeline
+# yields the canonical `128 + signum` exit code instead of being misread as
+# a check failure. Children get the same signal forwarded via `kill(1)`.
+[target.'cfg(unix)'.dependencies]
+signal-hook = { version = "0.3.18", default-features = false, features = ["iterator"] }
+
 [dev-dependencies]
 assert_cmd = "2.2.2"
 assert_fs = "1.1.3"
