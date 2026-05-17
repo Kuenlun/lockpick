@@ -248,6 +248,60 @@ fn long_help_exposes_cargo_metadata_schema() {
     }
 }
 
+/// Long help must surface a copy-paste recipe and the only environment
+/// lever the CLI surface cannot express. Pinned together because they
+/// landed in the same QA pass (I-3) and share the `after_long_help`
+/// block in `cli.rs`.
+#[test]
+fn long_help_documents_examples_and_no_color_environment() {
+    let output = lockpick_raw()
+        .arg("--help")
+        .output()
+        .expect("failed to execute lockpick");
+
+    let stdout = stdout_text(&output);
+    output.assert().success();
+    for needle in [
+        "Examples:",
+        "lockpick --skip coverage",
+        "NO_COLOR=1 lockpick",
+        "Environment:",
+        "NO_COLOR",
+        "no-color.org",
+    ] {
+        assert!(
+            stdout.contains(needle),
+            "expected `{needle}` in --help, got:\n{stdout}"
+        );
+    }
+}
+
+/// Pin clap's wrapping (I-2). Before `wrap_help` was enabled and the
+/// auto-`[possible values: ...]` block was hidden, the `--skip` row
+/// rendered at 170 chars and spilled past every reasonable terminal.
+/// 100 mirrors clap's no-TTY default plus our `max_term_width(100)` cap,
+/// so a regression here would have to land in both `Cargo.toml` and
+/// `cli.rs` to slip past.
+#[test]
+fn help_lines_stay_within_a_sane_width_when_piped() {
+    for flag in ["-h", "--help"] {
+        let output = lockpick_raw()
+            .arg(flag)
+            .output()
+            .expect("failed to execute lockpick");
+
+        let stdout = stdout_text(&output);
+        let widest = stdout.lines().map(|l| l.chars().count()).max().unwrap_or(0);
+        output.assert().success();
+
+        assert!(
+            widest <= 100,
+            "`lockpick {flag}` emitted a line {widest} chars wide (> 100); \
+             a regression in clap wrapping would break narrow terminals:\n{stdout}",
+        );
+    }
+}
+
 #[test]
 fn skip_from_cargo_metadata_disables_a_check_without_a_cli_flag() {
     let project = TempDir::new().unwrap();
