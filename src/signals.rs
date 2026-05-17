@@ -102,6 +102,7 @@ pub fn exit_code(captured: Option<i32>, default: u8) -> u8 {
 /// Pure orchestrator: the signal source, the state and the forwarder are
 /// all injected so tests can exercise both branches without installing
 /// real handlers or spawning subprocesses.
+#[cfg(any(unix, test))]
 pub fn process_signals(
     signals: impl IntoIterator<Item = i32>,
     state: &State,
