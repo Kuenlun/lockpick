@@ -954,6 +954,129 @@ fn coverage_branches_on_stable_exits_with_four_and_actionable_hint() {
     );
 }
 
+/// Install a `cargo` shim at `shim_dir` that passes through the few
+/// read-only subcommands lockpick needs at startup (`metadata`, version
+/// banner, `locate-project`) and stalls on every other invocation so
+/// the test has time to deliver a signal mid-pipeline. Each stalling
+/// invocation `touch`es `$LOCKPICK_TEST_SHIM_READY` before sleeping so
+/// the test can wait for the first shim to be in flight instead of
+/// sleeping a fixed amount. Returns a `PATH` with `shim_dir` prepended.
+#[cfg(unix)]
+fn install_stalling_cargo_shim(shim_dir: &TempDir) -> String {
+    use std::os::unix::fs::PermissionsExt;
+
+    // `exec` swaps the shell out for `sleep` so the PID lockpick
+    // registered receives SIGINT directly. Without it, POSIX sh defers
+    // signals until the foreground child returns, so the shim would
+    // outlive the signal and the assertion on shutdown time would
+    // measure shell semantics, not lockpick's signal forwarding.
+    let shim_src = indoc! {r#"#!/bin/sh
+        case "$1" in
+            metadata|locate-project|--version|-V)
+                exec "$LOCKPICK_TEST_REAL_CARGO" "$@"
+                ;;
+            *)
+                : > "$LOCKPICK_TEST_SHIM_READY"
+                exec sleep 30
+                ;;
+        esac
+    "#};
+    let shim_path = shim_dir.child("cargo");
+    shim_path.write_str(shim_src).unwrap();
+    let mut perms = std::fs::metadata(shim_path.path()).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(shim_path.path(), perms).unwrap();
+
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    format!("{}:{}", shim_dir.path().display(), original_path)
+}
+
+/// P-7 regression. Before, `kill -INT $lockpick_pid` killed the cargo
+/// children (via the terminal's foreground process group) and lockpick
+/// interpreted their non-zero exits as ordinary check failures, leaving
+/// the user with exit `1` instead of the canonical `128 + SIGINT = 130`.
+/// The test stalls every cargo subprocess in a shim, waits for the
+/// first stall to begin via a readiness sentinel (no fixed sleep, so
+/// the test does not flake on loaded CI runners), sends SIGINT to the
+/// lockpick PID only (so any propagation must come from lockpick
+/// itself, not from terminal-level group delivery), and asserts both
+/// pieces: the exit code is 130 and the run winds down promptly because
+/// the handler forwarded the signal to the stalling children.
+#[cfg(unix)]
+#[test]
+fn sigint_mid_pipeline_exits_with_130_after_forwarding_to_children() {
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let real_cargo = Command::new("which")
+        .arg("cargo")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .expect("real cargo must be on PATH for the shim passthrough");
+
+    let shim_dir = TempDir::new().unwrap();
+    let ready_file = shim_dir.child("shim_ready");
+    let new_path = install_stalling_cargo_shim(&shim_dir);
+    let project = dummy_cargo_project();
+
+    let mut child = lockpick_raw()
+        .current_dir(project.path())
+        .env("PATH", &new_path)
+        .env("LOCKPICK_TEST_REAL_CARGO", &real_cargo)
+        .env("LOCKPICK_TEST_SHIM_READY", ready_file.path())
+        .args(["--skip", "coverage", "--skip", "machete", "--skip", "audit"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn lockpick");
+
+    // Wait for the first stalling shim to announce itself. Polling beats
+    // a fixed sleep on slow runners, and the 15s ceiling sits well below
+    // the 30s shim sleep so a stuck startup fails loudly here instead of
+    // running out the shim's timeout.
+    let ready_deadline = Instant::now() + Duration::from_secs(15);
+    while !ready_file.path().exists() {
+        if Instant::now() > ready_deadline {
+            let _ = child.kill();
+            panic!(
+                "stalling shim never created the readiness sentinel at {:?}",
+                ready_file.path(),
+            );
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let kill_status = Command::new("kill")
+        .args(["-s", "INT", &child.id().to_string()])
+        .status()
+        .expect("failed to spawn kill");
+    assert!(kill_status.success(), "kill -s INT lockpick failed");
+
+    let started = Instant::now();
+    let output = child.wait_with_output().expect("wait failed");
+    let elapsed = started.elapsed();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(130),
+        "expected exit 130 (128 + SIGINT) for a graceful SIGINT shutdown, \
+         got code={code:?} stderr=\n{stderr}",
+        code = output.status.code(),
+    );
+    // Bound the wait so a regression that orphans the stalling shims
+    // (instead of forwarding the signal) fails loudly here instead of
+    // running out the 30s sleep.
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "lockpick took {elapsed:?} to wind down after SIGINT, \
+         suggesting children were not signal-forwarded",
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn audit_runs_from_workspace_root_when_lockpick_invoked_in_a_subdirectory() {

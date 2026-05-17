@@ -101,10 +101,23 @@ impl Runner for CargoCli {
     }
 }
 
-/// Run a [`Command`] capturing both streams; lower into a [`SpawnResult`].
+/// Spawn the [`Command`], record its PID so the SIGINT/SIGTERM handler
+/// can forward signals to it, and capture both streams. The guard
+/// returned by [`crate::signals::State::register_child`] removes the
+/// PID on every exit path, including the early return from `?` and
+/// unwind through the explicit `drop` site.
+///
+/// The guard is dropped immediately after `wait_with_output` reaps the
+/// child, so the window in which a recycled PID could receive a
+/// forwarded signal is bounded to a few instructions. A fully race-free
+/// fix would need `pidfd_send_signal` (Linux 5.3+) or its BSD equivalent
+/// to address the process by handle instead of by PID.
 fn execute(mut cmd: Command) -> std::io::Result<SpawnResult> {
-    let out = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).output()?;
-    Ok(SpawnResult {
+    let child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let guard = crate::signals::state().register_child(child.id());
+    let output = child.wait_with_output();
+    drop(guard);
+    output.map(|out| SpawnResult {
         success: out.status.success(),
         stdout: out.stdout,
         stderr: out.stderr,

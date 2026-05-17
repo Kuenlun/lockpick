@@ -10,6 +10,7 @@ mod config;
 mod error;
 mod reporter;
 mod runner;
+mod signals;
 mod tooling;
 
 use crate::error::LockpickError;
@@ -22,7 +23,12 @@ use {clap::Parser, std::process::ExitCode};
 
 #[cfg(not(test))]
 fn main() -> ExitCode {
-    ExitCode::from(dispatch(runner::run(&cli::Cli::parse())))
+    signals::install();
+    let result = runner::run(&cli::Cli::parse());
+    ExitCode::from(signals::exit_code(
+        signals::state().captured(),
+        dispatch(result),
+    ))
 }
 
 /// Map a [`runner::run`] result to a process exit code: `0` on success,
