@@ -2,8 +2,6 @@
 // lockpick - Rust CLI to enforce merge checks and code quality
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
-#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-
 mod checks;
 mod cli;
 mod config;
@@ -29,7 +27,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let result = runner::run(&cli);
+    let result = runner::run(cli);
     ExitCode::from(signals::exit_code(
         signals::state().captured(),
         dispatch(result),

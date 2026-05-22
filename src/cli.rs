@@ -9,7 +9,7 @@ use serde::{Deserialize, Deserializer, de};
 use crate::tooling::ColorMode;
 
 /// Check identifier for `--skip`.
-#[derive(ValueEnum, Clone, Debug, PartialEq, Eq)]
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SkipOption {
     Check,
     Clippy,
@@ -26,9 +26,9 @@ pub enum SkipOption {
 impl SkipOption {
     /// Kebab-case identifier this variant accepts as `--skip <value>`.
     /// Single source of truth so hints in error messages cannot drift
-    /// from what clap actually parses (locked by a test below).
+    /// from what clap actually parses.
     #[must_use]
-    pub const fn skip_flag(&self) -> &'static str {
+    pub const fn skip_flag(self) -> &'static str {
         match self {
             Self::Check => "check",
             Self::Clippy => "clippy",
@@ -47,7 +47,7 @@ impl SkipOption {
         Self::value_variants()
             .iter()
             .find(|v| v.skip_flag() == s)
-            .cloned()
+            .copied()
     }
 }
 
@@ -59,7 +59,11 @@ impl<'de> Deserialize<'de> for SkipOption {
         // walks a `Value` tree and cannot hand out borrowed strings.
         let raw = String::deserialize(deserializer)?;
         Self::from_flag(&raw).ok_or_else(|| {
-            let known: Vec<&str> = Self::value_variants().iter().map(Self::skip_flag).collect();
+            let known: Vec<&str> = Self::value_variants()
+                .iter()
+                .copied()
+                .map(Self::skip_flag)
+                .collect();
             de::Error::custom(format!(
                 "unknown skip value `{raw}`; expected one of: {}",
                 known.join(", "),
@@ -68,7 +72,7 @@ impl<'de> Deserialize<'de> for SkipOption {
     }
 }
 
-#[derive(Parser, Debug, Clone, Default)]
+#[derive(Parser, Debug, Clone)]
 #[command(
     version,
     about = "Rust merge-check CLI. Runs compile, clippy, fmt, tests, doc, \
@@ -88,8 +92,7 @@ pub struct Cli {
     // `hide_possible_values` prevents clap from appending the auto-generated
     // `[possible values: ...]` line, which packed every variant onto a
     // single 170-char row that no terminal wrapped. The full list lives in
-    // `long_help` (rendered by `--help`), kept in sync with the variants by
-    // `long_help_lists_every_skip_value` further down.
+    // `long_help` (rendered by `--help`).
     #[arg(
         long,
         value_enum,
@@ -139,8 +142,8 @@ pub enum Cmd {
 
 impl Cli {
     #[must_use]
-    pub fn skips(&self, option: &SkipOption) -> bool {
-        self.skip.contains(option)
+    pub fn skips(&self, option: SkipOption) -> bool {
+        self.skip.contains(&option)
     }
 
     /// Flatten the user's `--color` choice into the binary [`ColorMode`]
@@ -165,20 +168,15 @@ impl Cli {
         generate(shell, &mut cmd, name, writer);
     }
 
-    /// Return a [`Cli`] whose `skip` list also includes every entry from
-    /// `config_skips`, appended after the CLI-supplied skips and
-    /// deduplicated. CLI order wins so error and diagnostic messages
-    /// echo back what the user actually typed, with config entries as a
-    /// stable tail.
-    #[must_use]
-    pub fn with_config_skips(&self, config_skips: &[SkipOption]) -> Self {
-        let mut merged = self.clone();
+    /// Merge `config_skips` into `self.skip` in place. CLI order wins so
+    /// error and diagnostic messages echo back what the user actually
+    /// typed, with config entries as a stable, deduplicated tail.
+    pub fn merge_config_skips(&mut self, config_skips: &[SkipOption]) {
         for s in config_skips {
-            if !merged.skip.contains(s) {
-                merged.skip.push(s.clone());
+            if !self.skip.contains(s) {
+                self.skip.push(*s);
             }
         }
-        merged
     }
 }
 
@@ -190,12 +188,6 @@ impl Cli {
 /// * `Configuration:` schema reference for `[*.metadata.lockpick]`,
 ///   mirroring the keys serde accepts in [`crate::config::Config`]. Add
 ///   or rename a field there and this block must follow suit.
-///
-/// Three tests guard the drift: `long_help_tail_covers_every_section`
-/// (this file) pins the body, and the integration tests
-/// `long_help_exposes_cargo_metadata_schema` and
-/// `long_help_documents_examples_and_no_color_environment` pin what
-/// clap actually renders.
 const LONG_HELP_TAIL: &str = "\
 Examples:
   lockpick                            # run every check
