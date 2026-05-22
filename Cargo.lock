@@ -81,6 +81,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "clap-cargo"
+version = "0.18.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "936551935c8258754bb8216aec040957d261f977303754b9bf1a213518388006"
+dependencies = [
+ "anstyle",
+ "clap",
+]
+
+[[package]]
 name = "clap_builder"
 version = "4.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -227,6 +237,7 @@ name = "lockpick"
 version = "0.6.0"
 dependencies = [
  "clap",
+ "clap-cargo",
  "clap_complete",
  "colored",
  "glob",
