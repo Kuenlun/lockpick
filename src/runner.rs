@@ -15,18 +15,17 @@ use crate::error::{LockpickError, MissingTool};
 use crate::reporter::{CheckOutcome, Reporter, TaskStatus};
 use crate::tooling::{self, ColorMode, Tool, Toolchain};
 
-/// Resolve runtime dependencies and delegate to [`run_with`].
-pub fn run(cli: &Cli) -> Result<(), LockpickError> {
+/// Run the full check pipeline. Loads tooling, config and workspace
+/// metadata, then orchestrates the independent cohort, the serial chain
+/// and coverage.
+pub fn run(mut cli: Cli) -> Result<(), LockpickError> {
     let reporter = Reporter::auto(cli.verbose);
     let toolchain = Toolchain::detect();
     let metadata = LockpickMetadata::load();
-    pin_to_workspace_root(metadata.workspace_root.as_deref(), &|p| {
-        std::env::set_current_dir(p)
-    });
+    pin_to_workspace_root(metadata.workspace_root.as_deref());
     // Fold any `skip = [...]` from Cargo.toml into the CLI's view of
-    // skips once, here, so every downstream consumer keeps reading from
-    // a single source.
-    let effective_cli = cli.with_config_skips(&metadata.config.skip);
+    // skips so every downstream consumer reads from a single source.
+    cli.merge_config_skips(&metadata.config.skip);
     // Color decision drives both the subprocess vocabulary
     // (`CARGO_TERM_COLOR`, rustfmt's `--color`) and the global `colored`
     // override, so the user's `--color`/`NO_COLOR`/TTY signals land
@@ -38,62 +37,12 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
     // stable gate and the per-check `--branch` argv key off this single
     // boolean, so caching is wasted state.
     let is_nightly = tooling::is_nightly();
-    run_with(
-        &effective_cli,
-        &reporter,
-        &toolchain,
-        &metadata.config,
-        metadata.has_lib_target,
-        &runner,
-        is_nightly,
-        color,
-    )
-}
+    let config = &metadata.config;
+    let has_lib = metadata.has_lib_target;
 
-/// Pin cwd to the workspace root so every subprocess sees the same
-/// anchor. Required because `cargo audit` only opens `./Cargo.lock` —
-/// unlike build/clippy/fmt/machete, which walk up the manifest tree
-/// on their own — and without this lockpick would silently disagree
-/// with itself across subdirectories. Must precede [`CargoCli::detect`],
-/// whose target-dir-redirect probe is cwd-relative.
-///
-/// `chdir` is injected so unit tests can exercise this without mutating
-/// the test process's cwd (a global shared across the test runner).
-fn pin_to_workspace_root(
-    workspace_root: Option<&Path>,
-    chdir: &dyn Fn(&Path) -> std::io::Result<()>,
-) {
-    if let Some(root) = workspace_root
-        && let Err(e) = chdir(root)
-    {
-        eprintln!(
-            "warning: could not chdir to workspace root {}: {e}",
-            root.display(),
-        );
-    }
-}
+    let coverage_active = is_coverage_active(&cli);
 
-/// Orchestrate the full check pipeline with every collaborator injected.
-///
-/// This is the testable seam: every dependency is passed in, so unit
-/// tests can substitute a fake [`Runner`], a captive [`Reporter`], a
-/// hand-rolled [`Toolchain`], and so on. Each parameter names a
-/// distinct collaborator, so bundling them just to satisfy
-/// `clippy::too_many_arguments` would obscure that, not clarify it.
-#[allow(clippy::too_many_arguments)]
-pub fn run_with(
-    cli: &Cli,
-    reporter: &Reporter,
-    toolchain: &Toolchain,
-    config: &Config,
-    has_lib: bool,
-    runner: &dyn Runner,
-    is_nightly: bool,
-    color: ColorMode,
-) -> Result<(), LockpickError> {
-    let coverage_active = is_coverage_active(cli);
-
-    require_tooling(cli, coverage_active, toolchain)?;
+    require_tooling(&cli, coverage_active, &toolchain)?;
     require_nightly_for_branches(coverage_active, config, is_nightly)?;
 
     // Branch coverage measurement is gated on nightly because
@@ -102,9 +51,9 @@ pub fn run_with(
     let branch_coverage = is_nightly;
 
     let plan = checks::build_plan(
-        cli,
+        &cli,
         coverage_active,
-        toolchain,
+        &toolchain,
         config,
         has_lib,
         branch_coverage,
@@ -127,13 +76,13 @@ pub fn run_with(
         return Err(LockpickError::NoChecksToRun);
     }
 
-    if cli.skips(&SkipOption::Test) && !cli.skips(&SkipOption::Coverage) {
+    if cli.skips(SkipOption::Test) && !cli.skips(SkipOption::Coverage) {
         reporter.note("--skip test implies coverage will be skipped");
     }
-    if cli.skips(&SkipOption::DocTest) && !has_lib {
+    if cli.skips(SkipOption::DocTest) && !has_lib {
         reporter.note("--skip doc-test has no effect: workspace has no lib target");
     }
-    if cli.skips(&SkipOption::License) && config.license_header.is_none() {
+    if cli.skips(SkipOption::License) && config.license_header.is_none() {
         reporter.note("--skip license has no effect: no license_header configured");
     }
     if coverage_active && !is_nightly {
@@ -142,7 +91,7 @@ pub fn run_with(
 
     if reporter.is_verbose {
         print_planned_commands(
-            reporter,
+            &reporter,
             &plan,
             coverage_check.as_ref().map(|c| c as &dyn Check),
         );
@@ -157,10 +106,10 @@ pub fn run_with(
         .map(|c| reporter.add_spinner(c.label()));
     let coverage = coverage_check.as_ref().zip(coverage_pb.as_ref());
 
-    let (outcomes, coverage_outcome) = run_pipeline(&plan, &pbs, coverage, reporter, runner);
+    let (outcomes, coverage_outcome) = run_pipeline(&plan, &pbs, coverage, &reporter, &runner);
 
     let items = flatten_outcomes(&plan, &outcomes, coverage_outcome.as_ref());
-    let failure_count = report_results(reporter, &items);
+    let failure_count = report_results(&reporter, &items);
 
     if failure_count > 0 {
         return Err(LockpickError::ChecksFailed(failure_count));
@@ -169,10 +118,27 @@ pub fn run_with(
     Ok(())
 }
 
+/// Pin cwd to the workspace root so every subprocess sees the same
+/// anchor. Required because `cargo audit` only opens `./Cargo.lock` —
+/// unlike build/clippy/fmt/machete, which walk up the manifest tree
+/// on their own — and without this lockpick would silently disagree
+/// with itself across subdirectories. Must precede [`CargoCli::detect`],
+/// whose target-dir-redirect probe is cwd-relative.
+fn pin_to_workspace_root(workspace_root: Option<&Path>) {
+    if let Some(root) = workspace_root
+        && let Err(e) = std::env::set_current_dir(root)
+    {
+        eprintln!(
+            "warning: could not chdir to workspace root {}: {e}",
+            root.display(),
+        );
+    }
+}
+
 /// Whether the coverage gate runs. Disabled by `--skip coverage` or by
 /// `--skip test` (no instrumentation, no coverage).
 fn is_coverage_active(cli: &Cli) -> bool {
-    !cli.skips(&SkipOption::Coverage) && !cli.skips(&SkipOption::Test)
+    !cli.skips(SkipOption::Coverage) && !cli.skips(SkipOption::Test)
 }
 
 /// Refuse to run when the user configured `coverage.branches` but the
@@ -206,13 +172,13 @@ fn require_tooling(
             skip_flag: SkipOption::Coverage.skip_flag(),
         });
     }
-    if !cli.skips(&SkipOption::Machete) && !toolchain.has(Tool::Machete) {
+    if !cli.skips(SkipOption::Machete) && !toolchain.has(Tool::Machete) {
         missing.push(MissingTool {
             binary: "cargo-machete",
             skip_flag: SkipOption::Machete.skip_flag(),
         });
     }
-    if !cli.skips(&SkipOption::Audit) && !toolchain.has(Tool::Audit) {
+    if !cli.skips(SkipOption::Audit) && !toolchain.has(Tool::Audit) {
         missing.push(MissingTool {
             binary: "cargo-audit",
             skip_flag: SkipOption::Audit.skip_flag(),
@@ -378,13 +344,13 @@ fn report_results(reporter: &Reporter, items: &[(&str, &CheckOutcome)]) -> usize
     if reporter.is_verbose {
         for (label, outcome) in items {
             if outcome.passed() {
-                reporter.print_section(label, &outcome.output, TaskStatus::Pass);
+                reporter.print_section(label, &outcome.output, true);
             }
         }
     }
     for (label, outcome) in items {
         if outcome.failed() {
-            reporter.print_section(label, &outcome.output, TaskStatus::Fail);
+            reporter.print_section(label, &outcome.output, false);
         }
     }
 

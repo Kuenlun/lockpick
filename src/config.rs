@@ -6,7 +6,7 @@
 //! (preferred) or `[package.metadata.lockpick]` via `cargo metadata`.
 
 use std::path::PathBuf;
-use std::process::{Output, Stdio};
+use std::process::Stdio;
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -92,11 +92,7 @@ impl LockpickMetadata {
     /// Probe `cargo metadata` and fall back to defaults on any failure.
     #[must_use]
     pub fn load() -> Self {
-        Self::load_from(run_cargo_metadata())
-    }
-
-    fn load_from(metadata: Option<CargoMetadata>) -> Self {
-        let Some(metadata) = metadata else {
+        let Some(metadata) = run_cargo_metadata() else {
             return Self::default();
         };
         let has_lib_target = metadata
@@ -104,8 +100,7 @@ impl LockpickMetadata {
             .iter()
             .flat_map(|p| &p.targets)
             .any(|t| t.kind.iter().any(|k| k == "lib"));
-        let config = extract_lockpick(&metadata, &mut |msg| eprintln!("warning: {msg}"))
-            .map_or_else(Config::default, deserialize_or_warn);
+        let config = extract_lockpick(&metadata).map_or_else(Config::default, deserialize_or_warn);
         Self {
             config,
             has_lib_target,
@@ -121,19 +116,14 @@ fn deserialize_or_warn(section: Value) -> Config {
     })
 }
 
+/// Spawn `cargo metadata` and parse its JSON. Returns `None` on any
+/// failure (spawn error, non-zero exit, or malformed JSON).
 fn run_cargo_metadata() -> Option<CargoMetadata> {
-    parse_cargo_metadata(
-        cargo_command()
-            .args(["metadata", "--format-version", "1", "--no-deps"])
-            .stderr(Stdio::null())
-            .output(),
-    )
-}
-
-/// Parse a `cargo metadata` spawn result; returns `None` on any failure
-/// (spawn error, non-zero exit, or malformed JSON).
-fn parse_cargo_metadata(result: std::io::Result<Output>) -> Option<CargoMetadata> {
-    let output = result.ok()?;
+    let output = cargo_command()
+        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -148,7 +138,7 @@ fn parse_cargo_metadata(result: std::io::Result<Output>) -> Option<CargoMetadata
 /// Multi-package workspaces that set `[package.metadata.lockpick]` without
 /// the workspace-scoped section get a warning — there is no safe winner to
 /// pick workspace-wide, so the configuration is dropped.
-fn extract_lockpick(metadata: &CargoMetadata, warn: &mut dyn FnMut(&str)) -> Option<Value> {
+fn extract_lockpick(metadata: &CargoMetadata) -> Option<Value> {
     fn lockpick_in(value: &Value) -> Option<Value> {
         value.as_object().and_then(|m| m.get("lockpick")).cloned()
     }
@@ -164,9 +154,9 @@ fn extract_lockpick(metadata: &CargoMetadata, warn: &mut dyn FnMut(&str)) -> Opt
         .filter(|p| lockpick_in(&p.metadata).is_some())
         .count();
     if stray > 0 {
-        warn(&format!(
-            "found `[package.metadata.lockpick]` in {stray} package(s) of a multi-crate workspace — use `[workspace.metadata.lockpick]` to apply it workspace-wide"
-        ));
+        eprintln!(
+            "warning: found `[package.metadata.lockpick]` in {stray} package(s) of a multi-crate workspace — use `[workspace.metadata.lockpick]` to apply it workspace-wide"
+        );
     }
     None
 }

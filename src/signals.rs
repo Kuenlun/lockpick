@@ -96,38 +96,32 @@ pub fn exit_code(captured: Option<i32>, default: u8) -> u8 {
     }
 }
 
-/// Drain a stream of signal numbers, capturing the first one in `state`
-/// and forwarding every signal to all registered child PIDs.
-#[cfg(unix)]
-pub fn process_signals(
-    signals: impl IntoIterator<Item = i32>,
-    state: &State,
-    mut forward: impl FnMut(i32, u32),
-) {
-    for sig in signals {
-        let _ = state
-            .received
-            .compare_exchange(0, sig, Ordering::SeqCst, Ordering::SeqCst);
-        let pids: Vec<u32> = state.lock_children().iter().copied().collect();
-        for pid in pids {
-            forward(sig, pid);
-        }
-    }
-}
-
 /// Install the SIGINT/SIGTERM handler. On non-Unix targets, a no-op.
 ///
-/// The owned `Signals` value is moved into a closure that produces one
-/// `i32` per call to `next()`, keeping the signal source `'static`
-/// without a hand-rolled iterator wrapper.
+/// Spawns a background thread that drains signals forever, captures the
+/// first one into `state`, and forwards every signal to all registered
+/// child PIDs via `kill(1)`. A setup failure (rare, typically OS
+/// resource exhaustion) silently leaves the process unhandled.
 #[cfg(unix)]
 pub fn install() {
-    let signals = signal_hook::iterator::Signals::new([
+    let Ok(mut signals) = signal_hook::iterator::Signals::new([
         signal_hook::consts::SIGINT,
         signal_hook::consts::SIGTERM,
-    ])
-    .map(|mut s| std::iter::from_fn(move || s.forever().next()));
-    let _ = spawn_handler(state(), signals, forward_via_kill);
+    ]) else {
+        return;
+    };
+    let state = state();
+    std::thread::spawn(move || {
+        for sig in signals.forever() {
+            let _ = state
+                .received
+                .compare_exchange(0, sig, Ordering::SeqCst, Ordering::SeqCst);
+            let pids: Vec<u32> = state.lock_children().iter().copied().collect();
+            for pid in pids {
+                forward_via_kill(sig, pid);
+            }
+        }
+    });
 }
 
 /// Forward `sig` to `pid` by shelling out to `kill(1)`. The binary is
@@ -153,23 +147,3 @@ fn forward_via_kill(sig: i32, pid: u32) {
 
 #[cfg(not(unix))]
 pub const fn install() {}
-
-/// Spawn the signal-handler thread for an already-constructed source.
-/// Returns `Some(handle)` when the source was `Ok` and the thread was
-/// launched; `None` when the source failed (signal-hook setup denied
-/// by the OS, typically on resource exhaustion).
-#[cfg(unix)]
-fn spawn_handler<I, F>(
-    state: &'static State,
-    signals: std::io::Result<I>,
-    forward: F,
-) -> Option<std::thread::JoinHandle<()>>
-where
-    I: IntoIterator<Item = i32> + Send + 'static,
-    F: FnMut(i32, u32) + Send + 'static,
-{
-    let iter = signals.ok()?;
-    Some(std::thread::spawn(move || {
-        process_signals(iter, state, forward);
-    }))
-}
