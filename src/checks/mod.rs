@@ -439,6 +439,7 @@ mod tests {
                 SkipOption::License,
             ],
             verbose: false,
+            ..Cli::default()
         };
         let plan = build_plan(
             &cli,
@@ -458,6 +459,7 @@ mod tests {
         let cli = Cli {
             skip: vec![],
             verbose: false,
+            ..Cli::default()
         };
         let plan = build_plan(
             &cli,
@@ -488,6 +490,7 @@ mod tests {
         let cli = Cli {
             skip: vec![],
             verbose: false,
+            ..Cli::default()
         };
         let config = Config {
             license_header: Some(PathBuf::from("hdr.txt")),
@@ -516,6 +519,7 @@ mod tests {
         let cli = Cli {
             skip: vec![SkipOption::Check],
             verbose: false,
+            ..Cli::default()
         };
         let plan = build_plan(
             &cli,
@@ -534,6 +538,7 @@ mod tests {
         let cli = Cli {
             skip: vec![],
             verbose: false,
+            ..Cli::default()
         };
         let plan = build_plan(
             &cli,
@@ -552,6 +557,7 @@ mod tests {
         let cli = Cli {
             skip: vec![],
             verbose: false,
+            ..Cli::default()
         };
         let config = Config {
             license_header: Some(PathBuf::from("hdr.txt")),
@@ -574,6 +580,7 @@ mod tests {
         let cli = Cli {
             skip: vec![],
             verbose: false,
+            ..Cli::default()
         };
         let config = Config {
             license_header: Some(PathBuf::from("hdr.txt")),
@@ -597,6 +604,7 @@ mod tests {
         let cli = Cli {
             skip: vec![],
             verbose: false,
+            ..Cli::default()
         };
         // Pin both branches of the new field: nightly→ --branch lives in
         // the test invocation, stable→ it is gone. Pins the runner→checks
@@ -628,6 +636,7 @@ mod tests {
         let cli = Cli {
             skip: vec![],
             verbose: false,
+            ..Cli::default()
         };
         let config = Config {
             license_header: Some(PathBuf::from("hdr.txt")),

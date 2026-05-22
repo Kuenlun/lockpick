@@ -3,10 +3,12 @@
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
 use clap::{
-    Parser, ValueEnum,
+    ColorChoice, Parser, ValueEnum,
     builder::styling::{AnsiColor, Effects, Styles},
 };
 use serde::{Deserialize, Deserializer, de};
+
+use crate::tooling::ColorMode;
 
 /// Check identifier for `--skip`.
 #[derive(ValueEnum, Clone, Debug, PartialEq, Eq)]
@@ -68,7 +70,7 @@ impl<'de> Deserialize<'de> for SkipOption {
     }
 }
 
-#[derive(Parser, Debug, Clone)]
+#[derive(Parser, Debug, Clone, Default)]
 #[command(
     version,
     about = "Rust merge-check CLI. Runs compile, clippy, fmt, tests, doc, \
@@ -105,12 +107,36 @@ pub struct Cli {
     /// Show every command and the full output of all checks (CI mode)
     #[arg(short = 'v', long = "verbose")]
     pub verbose: bool,
+
+    /// Coloured output policy. `auto` (the default) follows TTY detection
+    /// and the `NO_COLOR` env var; `always`/`never` are explicit overrides
+    /// that win over both signals.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "WHEN",
+        default_value_t = ColorChoice::Auto,
+    )]
+    pub color: ColorChoice,
 }
 
 impl Cli {
     #[must_use]
     pub fn skips(&self, option: &SkipOption) -> bool {
         self.skip.contains(option)
+    }
+
+    /// Flatten the user's `--color` choice into the binary [`ColorMode`]
+    /// every downstream consumer (subprocesses, `colored` override)
+    /// expects. `Auto` defers to the TTY+`NO_COLOR` heuristic; explicit
+    /// `always`/`never` wins outright.
+    #[must_use]
+    pub fn color_mode(&self, is_tty: bool) -> ColorMode {
+        match self.color {
+            ColorChoice::Always => ColorMode::Always,
+            ColorChoice::Never => ColorMode::Never,
+            ColorChoice::Auto => ColorMode::for_stdout(is_tty),
+        }
     }
 
     /// Return a [`Cli`] whose `skip` list also includes every entry from
@@ -150,12 +176,14 @@ Examples:
   lockpick --skip coverage            # skip the slow coverage gate
   lockpick --skip clippy --skip fmt   # skip multiple checks (repeatable)
   lockpick -v                         # CI mode: every cargo banner and section
+  lockpick --color=never              # force plain output (overrides NO_COLOR)
   NO_COLOR=1 lockpick                 # plain ASCII output, no ANSI escapes
 
 Environment:
   NO_COLOR    Set to any non-empty value to strip ANSI colors from lockpick's
               own output and from every cargo subprocess it spawns. Honoured
-              regardless of TTY detection. See <https://no-color.org>.
+              when `--color` is `auto` (the default); explicit `--color
+              always|never` wins. See <https://no-color.org>.
 
 Configuration:
   Lockpick reads optional settings from your Cargo.toml under
@@ -250,7 +278,7 @@ mod tests {
     fn cli_with_skips(skips: &[SkipOption]) -> Cli {
         Cli {
             skip: skips.to_vec(),
-            verbose: false,
+            ..Cli::default()
         }
     }
 
@@ -315,6 +343,28 @@ mod tests {
                 "schema block must mention `{section}`, got:\n{LONG_HELP_TAIL}",
             );
         }
+    }
+
+    /// Pin every branch of [`Cli::color_mode`]: `Always`/`Never` must
+    /// override the TTY heuristic outright, `Auto` must defer to it.
+    /// The pipe path of `Auto` is the only one independent of `NO_COLOR`,
+    /// so it stays race-free across the test runner.
+    #[test]
+    fn color_mode_resolves_each_choice_into_the_expected_color_mode() {
+        let always = Cli {
+            color: ColorChoice::Always,
+            ..Cli::default()
+        };
+        assert_eq!(always.color_mode(false), ColorMode::Always);
+
+        let never = Cli {
+            color: ColorChoice::Never,
+            ..Cli::default()
+        };
+        assert_eq!(never.color_mode(true), ColorMode::Never);
+
+        let auto = Cli::default();
+        assert_eq!(auto.color_mode(false), ColorMode::Never);
     }
 
     /// Possible values are hidden from clap's auto-generated suffix; the
