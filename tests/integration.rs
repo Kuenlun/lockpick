@@ -332,6 +332,43 @@ fn color_flag_is_advertised_in_help_and_rejects_unknown_values() {
         .failure();
 }
 
+/// `lockpick completions <SHELL>` must emit a non-empty script that
+/// references the binary name to stdout and exit cleanly. Pinned for
+/// fish (the canonical user path documented in the example) and bash
+/// (the most common CI/system shell) so a future shell-listing
+/// regression in `clap_complete` cannot silently break either.
+#[test]
+fn completions_subcommand_emits_a_script_for_each_supported_shell() {
+    for shell in ["fish", "bash"] {
+        let output = lockpick_raw()
+            .args(["completions", shell])
+            .output()
+            .expect("failed to execute lockpick");
+
+        let stdout = stdout_text(&output);
+        output.assert().success();
+        assert!(
+            stdout.contains("lockpick"),
+            "{shell} completions must reference the binary name, got:\n{stdout}",
+        );
+        assert!(
+            !stdout.trim().is_empty(),
+            "{shell} completions must not be empty",
+        );
+    }
+}
+
+/// An unknown shell must be a hard error, not a silently empty script.
+#[test]
+fn completions_subcommand_rejects_unknown_shells() {
+    lockpick_raw()
+        .args(["completions", "banana"])
+        .output()
+        .expect("failed to execute lockpick")
+        .assert()
+        .failure();
+}
+
 #[test]
 fn skip_from_cargo_metadata_disables_a_check_without_a_cli_flag() {
     let project = TempDir::new().unwrap();

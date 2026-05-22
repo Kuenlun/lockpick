@@ -3,9 +3,10 @@
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
 use clap::{
-    ColorChoice, Parser, ValueEnum,
+    ColorChoice, CommandFactory, Parser, Subcommand, ValueEnum,
     builder::styling::{AnsiColor, Effects, Styles},
 };
+use clap_complete::{Shell, generate};
 use serde::{Deserialize, Deserializer, de};
 
 use crate::tooling::ColorMode;
@@ -118,6 +119,25 @@ pub struct Cli {
         default_value_t = ColorChoice::Auto,
     )]
     pub color: ColorChoice,
+
+    /// Optional meta subcommand. `None` runs the default check pipeline.
+    #[command(subcommand)]
+    pub command: Option<Cmd>,
+}
+
+/// Meta operations that bypass the check pipeline. Reserved for one-shot
+/// utilities (completion scripts today, manpages tomorrow) whose output
+/// is consumed by the shell or a packager, not the human running checks.
+#[derive(Subcommand, Debug, Clone)]
+pub enum Cmd {
+    /// Emit a shell completion script for SHELL to stdout.
+    ///
+    /// Example (fish):
+    ///   lockpick completions fish > ~/.config/fish/completions/lockpick.fish
+    Completions {
+        /// Target shell (bash, zsh, fish, powershell, elvish).
+        shell: Shell,
+    },
 }
 
 impl Cli {
@@ -137,6 +157,15 @@ impl Cli {
             ColorChoice::Never => ColorMode::Never,
             ColorChoice::Auto => ColorMode::for_stdout(is_tty),
         }
+    }
+
+    /// Render the completion script for `shell` to `writer`. Sourced
+    /// from the same `clap::Command` the parser uses, so the script can
+    /// never describe a flag the binary does not accept.
+    pub fn write_completions<W: std::io::Write>(shell: Shell, writer: &mut W) {
+        let mut cmd = Self::command();
+        let name = cmd.get_name().to_string();
+        generate(shell, &mut cmd, name, writer);
     }
 
     /// Return a [`Cli`] whose `skip` list also includes every entry from
@@ -219,7 +248,6 @@ const fn cli_styles() -> Styles {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use clap::CommandFactory;
 
     /// Anchor `skip_flag` to clap's derived name for every variant, so a
     /// rename or kebab-case tweak fails here instead of silently shipping
@@ -365,6 +393,45 @@ mod tests {
 
         let auto = Cli::default();
         assert_eq!(auto.color_mode(false), ColorMode::Never);
+    }
+
+    /// Cover the thin wrapper around `clap_complete::generate` for every
+    /// shell `clap_complete` knows about. The generated script must
+    /// mention the binary name; any shell that fails this check means
+    /// the bridge is producing a stub instead of a real completion file.
+    #[test]
+    fn write_completions_emits_script_referencing_binary_for_every_shell() {
+        for shell in Shell::value_variants() {
+            let mut out = Vec::new();
+            Cli::write_completions(*shell, &mut out);
+            let script = String::from_utf8(out).unwrap_or_else(|e| {
+                panic!("{shell:?} script must be UTF-8: {e}");
+            });
+            assert!(
+                script.contains("lockpick"),
+                "{shell:?} script must reference the binary name, got:\n{script}",
+            );
+        }
+    }
+
+    /// Pin the parsing surface of the new subcommand: `completions fish`
+    /// must populate `command` so `main` can dispatch to the writer.
+    #[test]
+    fn completions_subcommand_parses_into_command_field() {
+        let cli = Cli::try_parse_from(["lockpick", "completions", "fish"])
+            .expect("`completions fish` must parse");
+        assert!(matches!(
+            cli.command,
+            Some(Cmd::Completions { shell: Shell::Fish }),
+        ));
+    }
+
+    /// Default invocation must leave `command` empty so the runner keeps
+    /// receiving the unchanged check-pipeline shape.
+    #[test]
+    fn default_invocation_leaves_command_field_empty() {
+        let cli = Cli::try_parse_from(["lockpick"]).expect("bare invocation must parse");
+        assert!(cli.command.is_none());
     }
 
     /// Possible values are hidden from clap's auto-generated suffix; the

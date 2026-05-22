@@ -24,7 +24,17 @@ use {clap::Parser, std::process::ExitCode};
 #[cfg(not(test))]
 fn main() -> ExitCode {
     signals::install();
-    let result = runner::run(&cli::Cli::parse());
+    let cli = cli::Cli::parse();
+
+    // Meta subcommands (currently only `completions <SHELL>`) bypass the
+    // pipeline: emit their artifact to stdout and exit cleanly, no
+    // signal-aware exit-code dance needed because nothing was spawned.
+    if let Some(cli::Cmd::Completions { shell }) = &cli.command {
+        cli::Cli::write_completions(*shell, &mut std::io::stdout());
+        return ExitCode::SUCCESS;
+    }
+
+    let result = runner::run(&cli);
     ExitCode::from(signals::exit_code(
         signals::state().captured(),
         dispatch(result),
