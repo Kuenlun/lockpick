@@ -2,10 +2,7 @@
 // lockpick - Rust CLI to enforce merge checks and code quality
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
-use clap::{
-    ColorChoice, CommandFactory, Parser, Subcommand, ValueEnum,
-    builder::styling::{AnsiColor, Effects, Styles},
-};
+use clap::{ColorChoice, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
 use serde::{Deserialize, Deserializer, de};
 
@@ -83,7 +80,7 @@ impl<'de> Deserialize<'de> for SkipOption {
     // wide enough for our longest line and lets clap wrap text that would
     // otherwise spill past `tput cols` in narrow terminals.
     max_term_width = 100,
-    styles = cli_styles()
+    styles = clap_cargo::style::CLAP_STYLING
 )]
 pub struct Cli {
     /// Skip one or more checks (e.g. --skip clippy --skip fmt)
@@ -232,14 +229,3 @@ Configuration:
 
   CLI `--skip` is additive on top of the `skip = [...]` array.
 ";
-
-const fn cli_styles() -> Styles {
-    Styles::styled()
-        .header(AnsiColor::Green.on_default().effects(Effects::BOLD))
-        .usage(AnsiColor::Green.on_default().effects(Effects::BOLD))
-        .literal(AnsiColor::Cyan.on_default().effects(Effects::BOLD))
-        .placeholder(AnsiColor::Blue.on_default())
-        .error(AnsiColor::Red.on_default().effects(Effects::BOLD))
-        .valid(AnsiColor::Green.on_default().effects(Effects::BOLD))
-        .invalid(AnsiColor::Yellow.on_default().effects(Effects::BOLD))
-}
