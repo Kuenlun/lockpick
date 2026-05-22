@@ -28,10 +28,12 @@ pub fn run(cli: &Cli) -> Result<(), LockpickError> {
     // skips once, here, so every downstream consumer keeps reading from
     // a single source.
     let effective_cli = cli.with_config_skips(&metadata.config.skip);
-    // Subprocess color tracks the report stream: keep ANSI when stdout
-    // is an interactive TTY, strip it otherwise so piping into `cat`,
-    // CI logs or files never carries stray escape sequences.
-    let color = ColorMode::for_stdout(std::io::stdout().is_terminal());
+    // Color decision drives both the subprocess vocabulary
+    // (`CARGO_TERM_COLOR`, rustfmt's `--color`) and the global `colored`
+    // override, so the user's `--color`/`NO_COLOR`/TTY signals land
+    // coherently across our own output and every cargo child.
+    let color = cli.color_mode(std::io::stdout().is_terminal());
+    colored::control::set_override(color == ColorMode::Always);
     let runner = CargoCli::detect(color);
     // Probe the toolchain once at startup. Both the early `branches`-on-
     // stable gate and the per-check `--branch` argv key off this single
@@ -431,6 +433,7 @@ mod tests {
         Cli {
             skip: skips.to_vec(),
             verbose: false,
+            ..Cli::default()
         }
     }
 
@@ -1075,6 +1078,7 @@ mod tests {
         let cli = Cli {
             skip: vec![SkipOption::Doc],
             verbose: true,
+            ..Cli::default()
         };
         assert!(
             run_with(
@@ -1107,6 +1111,7 @@ mod tests {
                 SkipOption::Fmt,
             ],
             verbose: false,
+            ..Cli::default()
         };
         let runner = ByCommandRunner { fail: &["check"] };
         let err = run_with(
@@ -1129,6 +1134,7 @@ mod tests {
         let cli = Cli {
             skip: vec![],
             verbose: false,
+            ..Cli::default()
         };
         let runner = FakeRunner::passing();
         let err = run_with(
@@ -1157,6 +1163,7 @@ mod tests {
                 SkipOption::License,
             ],
             verbose: true,
+            ..Cli::default()
         };
         assert!(
             run_with(
@@ -1219,6 +1226,7 @@ mod tests {
                 SkipOption::Test,
             ],
             verbose: false,
+            ..Cli::default()
         };
         assert!(
             run_with(
@@ -1252,6 +1260,7 @@ mod tests {
                 SkipOption::Coverage,
             ],
             verbose: false,
+            ..Cli::default()
         };
         let runner = FakeRunner::passing();
         let err = run_with(
@@ -1282,6 +1291,7 @@ mod tests {
                 SkipOption::Fmt,
             ],
             verbose: false,
+            ..Cli::default()
         };
         let runner = ByCommandRunner {
             fail: &["test", "llvm-cov"],
@@ -1316,6 +1326,7 @@ mod tests {
                 SkipOption::Fmt,
             ],
             verbose: false,
+            ..Cli::default()
         };
         let runner = ByCommandRunner { fail: &["check"] };
         let err = run_with(
@@ -1351,6 +1362,7 @@ mod tests {
                 SkipOption::License,
             ],
             verbose: false,
+            ..Cli::default()
         };
         let config = Config {
             coverage: crate::config::CoverageConfig {
@@ -1379,6 +1391,7 @@ mod tests {
         let cli = Cli {
             skip: vec![SkipOption::Doc],
             verbose: false,
+            ..Cli::default()
         };
         let config = Config {
             coverage: crate::config::CoverageConfig {
@@ -1410,6 +1423,7 @@ mod tests {
         let cli = Cli {
             skip: vec![SkipOption::Doc],
             verbose: false,
+            ..Cli::default()
         };
         assert!(
             run_with(
@@ -1435,6 +1449,7 @@ mod tests {
         let cli = Cli {
             skip: vec![SkipOption::Doc],
             verbose: false,
+            ..Cli::default()
         };
         assert!(
             run_with(

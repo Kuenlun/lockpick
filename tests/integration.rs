@@ -302,6 +302,36 @@ fn help_lines_stay_within_a_sane_width_when_piped() {
     }
 }
 
+/// `--color` must surface in `--help` with the canonical three-way
+/// vocabulary and reject anything else. Before this flag landed
+/// `lockpick --color=never` died with `error: unexpected argument`.
+#[test]
+fn color_flag_is_advertised_in_help_and_rejects_unknown_values() {
+    let help = lockpick_raw()
+        .arg("--help")
+        .output()
+        .expect("failed to execute lockpick");
+    let stdout = stdout_text(&help);
+    help.assert().success();
+    assert!(
+        stdout.contains("--color"),
+        "expected --color row:\n{stdout}"
+    );
+    for choice in ["auto", "always", "never"] {
+        assert!(
+            stdout.contains(choice),
+            "expected `{choice}` in --color row:\n{stdout}"
+        );
+    }
+
+    lockpick_raw()
+        .args(["--color", "banana"])
+        .output()
+        .expect("failed to execute lockpick")
+        .assert()
+        .failure();
+}
+
 #[test]
 fn skip_from_cargo_metadata_disables_a_check_without_a_cli_flag() {
     let project = TempDir::new().unwrap();
