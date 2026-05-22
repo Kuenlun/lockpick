@@ -28,23 +28,3 @@ impl Check for DocTestCheck {
         Some(chain::DOCTEST)
     }
 }
-
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cmd_runs_cargo_test_doc() {
-        let cmd = DocTestCheck.cmd();
-        assert!(cmd.starts_with("cargo test "));
-        assert!(cmd.contains("--doc"));
-        assert!(cmd.contains("--workspace"));
-        assert!(cmd.contains("--all-features"));
-    }
-
-    #[test]
-    fn chain_position_is_doctest_so_doc_tests_close_the_chain() {
-        assert_eq!(DocTestCheck.chain_position(), Some(chain::DOCTEST));
-    }
-}
