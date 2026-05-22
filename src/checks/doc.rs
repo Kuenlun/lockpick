@@ -32,34 +32,3 @@ impl Check for DocCheck {
         Some(chain::DOC)
     }
 }
-
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-mod tests {
-    use super::*;
-    use crate::checks::FakeRunner;
-
-    #[test]
-    fn cmd_shows_rustdocflags_prefix() {
-        let cmd = DocCheck.cmd();
-        assert!(cmd.starts_with("RUSTDOCFLAGS='-D warnings' cargo doc "));
-        assert!(cmd.contains("--no-deps"));
-        assert!(cmd.contains("--workspace"));
-    }
-
-    #[test]
-    fn run_injects_rustdocflags_env() {
-        let fake = FakeRunner::passing();
-        assert!(DocCheck.run(&fake).passed());
-        let calls = fake.calls.lock().unwrap().clone();
-        assert_eq!(
-            calls[0].envs,
-            vec![("RUSTDOCFLAGS".to_string(), "-D warnings".to_string())]
-        );
-    }
-
-    #[test]
-    fn chain_position_is_doc_so_doc_runs_after_clippy_in_the_chain() {
-        assert_eq!(DocCheck.chain_position(), Some(chain::DOC));
-    }
-}

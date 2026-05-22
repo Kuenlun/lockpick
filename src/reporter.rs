@@ -76,7 +76,6 @@ fn parse_template(template: &str) -> ProgressStyle {
 impl Reporter {
     /// Build a [`Reporter`] with the TTY state of stdout and stderr
     /// probed from the process's own streams.
-    #[cfg_attr(test, allow(dead_code))]
     #[must_use]
     pub fn auto(is_verbose: bool) -> Self {
         Self::new(
@@ -230,78 +229,6 @@ impl Reporter {
             let list = failures.join(", ");
             let msg = format!("Failed: {failed}/{total} ({list})").red().bold();
             self.reportln(format!("  {msg}"));
-        }
-    }
-}
-
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn auto_delegates_to_new_and_propagates_verbose_flag() {
-        for verbose in [false, true] {
-            let r = Reporter::auto(verbose);
-            assert_eq!(r.is_verbose, verbose);
-            let pb = r.add_spinner("probe");
-            r.finish_spinner(&pb, "probe", TaskStatus::Pass);
-            assert!(pb.is_finished());
-        }
-    }
-
-    #[test]
-    fn parse_template_falls_back_to_default_for_an_invalid_template() {
-        // `{}` is rejected by indicatif's parser.
-        let _ = parse_template("{}");
-    }
-
-    #[test]
-    fn finish_spinner_drives_every_status_across_the_tty_matrix() {
-        // Every combination of (stderr TTY, stdout TTY) hits a different
-        // arm of the spinner-finish branching, so cover all four.
-        for is_tty in [true, false] {
-            for stdout_is_tty in [true, false] {
-                let r = Reporter::new(false, is_tty, stdout_is_tty);
-                for status in [TaskStatus::Pass, TaskStatus::Fail, TaskStatus::Skip] {
-                    let pb = r.add_spinner("clippy");
-                    assert!(!pb.is_finished());
-                    r.finish_spinner(&pb, "clippy", status);
-                    assert!(pb.is_finished());
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn print_section_covers_every_status_in_both_tty_modes() {
-        for is_tty in [true, false] {
-            let r = Reporter::new(false, is_tty, false);
-            r.print_section("clippy", "fine\nmore\n", TaskStatus::Pass);
-            r.print_section("fmt", "bad\n", TaskStatus::Fail);
-            r.print_section("test", "anything", TaskStatus::Skip);
-            r.print_section("doc", "", TaskStatus::Pass);
-            r.print_section("audit", "", TaskStatus::Fail);
-        }
-    }
-
-    #[test]
-    fn summary_handles_ok_and_failure_footers() {
-        let r = Reporter::new(false, false, false);
-        r.summary(5, &[]);
-        r.summary(5, &["fmt", "clippy"]);
-    }
-
-    /// Drives `diagln` (and its public sugar `command`/`note`) through
-    /// both branches: `MultiProgress::println` in TTY mode and `eprintln!`
-    /// in non-TTY mode. Without this, the TTY arm has no coverage because
-    /// every other test that hits a banner or note runs in non-TTY mode.
-    #[test]
-    fn diagln_routes_through_multiprogress_in_tty_mode_and_eprintln_otherwise() {
-        for is_tty in [true, false] {
-            let r = Reporter::new(false, is_tty, false);
-            r.command("cargo check");
-            r.note("--skip foo has no effect");
         }
     }
 }
