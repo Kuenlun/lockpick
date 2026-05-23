@@ -214,6 +214,13 @@ fn run_one(
 ) -> CheckOutcome {
     let outcome = check.run(runner);
     reporter.finish_spinner(pb, check.label(), outcome.status);
+    // A check that downgrades itself to `Skip` carries a short reason
+    // in `output`; surface it inline so the user sees why instead of an
+    // unexplained SKIP. `Pass`/`Fail` use `output` for section dumps,
+    // not notes, so this branch never fires for them.
+    if outcome.status == TaskStatus::Skip && !outcome.output.is_empty() {
+        reporter.note(&format!("{}: {}", check.label(), outcome.output));
+    }
     outcome
 }
 
