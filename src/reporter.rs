@@ -150,10 +150,12 @@ impl Reporter {
         }
     }
 
-    /// Write a line to the report stream (stdout): status lines, section
-    /// dumps, the final summary. `MultiProgress::suspend` pauses spinner
-    /// drawing for the write so the two streams do not stomp on each
-    /// other when both render to the same terminal.
+    /// Write a line to the report stream (stdout): status lines and the
+    /// final summary. `MultiProgress::suspend` pauses spinner drawing for
+    /// the write so the two streams do not stomp on each other when both
+    /// render to the same terminal. Multi-line blocks should batch their
+    /// writes inside a single `mp.suspend` (see [`Self::print_section`])
+    /// to avoid one pause/redraw cycle per line.
     pub fn reportln(&self, msg: impl AsRef<str>) {
         self.mp.suspend(|| println!("{}", msg.as_ref()));
     }
@@ -190,19 +192,21 @@ impl Reporter {
         };
         let output = output.trim();
 
-        self.reportln("");
-        self.reportln(header);
-        self.reportln(divider);
-
-        if output.is_empty() {
-            self.reportln(format!(" {pipe} {}", "(no output)".dimmed()));
-        } else {
-            for line in output.lines() {
-                self.reportln(format!(" {pipe} {line}"));
+        // Batch the whole section under one `suspend` so a long dump does
+        // not trigger N pause/redraw cycles of the spinner block.
+        self.mp.suspend(|| {
+            println!();
+            println!("{header}");
+            println!("{divider}");
+            if output.is_empty() {
+                println!(" {pipe} {}", "(no output)".dimmed());
+            } else {
+                for line in output.lines() {
+                    println!(" {pipe} {line}");
+                }
             }
-        }
-
-        self.reportln("");
+            println!();
+        });
     }
 
     /// Final footer. Lists failing labels, or reports total on success.
