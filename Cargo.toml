@@ -36,6 +36,9 @@ thiserror = "2"
 [target.'cfg(unix)'.dependencies]
 signal-hook = { version = "0.4", default-features = false, features = ["iterator"] }
 
+[dev-dependencies]
+tempfile = "3"
+
 [lints.rust]
 unsafe_code = "forbid"
 warnings = "deny"

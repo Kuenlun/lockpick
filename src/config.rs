@@ -64,7 +64,8 @@ pub struct LockpickMetadata {
 
 #[derive(Deserialize, Default)]
 struct CargoMetadata {
-    #[serde(default)]
+    // Cargo emits this key as plain `metadata`, not `workspace_metadata`.
+    #[serde(default, rename = "metadata")]
     workspace_metadata: Value,
     #[serde(default)]
     workspace_root: Option<PathBuf>,
