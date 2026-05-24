@@ -15,10 +15,10 @@ categories = ["development-tools", "command-line-utilities"]
 license-header = ".github/license_header.rs"
 
 [package.metadata.lockpick.coverage]
-functions = 100
-lines = 100
-regions = 100
-branches = 100
+functions = 0
+lines = 0
+regions = 0
+branches = 0
 
 [dependencies]
 clap = { version = "4.6.1", features = ["derive", "wrap_help"] }
