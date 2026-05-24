@@ -13,10 +13,9 @@
 
 mod common;
 
-use common::{
-    BROKEN_MAIN_RS, FORMATTED_MAIN_RS, TestResult, dummy_cargo_project, run_lockpick,
-    scratch_crate, stderr, stdout,
-};
+use common::{BROKEN_MAIN_RS, TestResult, run_lockpick, scratch_crate, stdout};
+#[cfg(unix)]
+use common::{FORMATTED_MAIN_RS, dummy_cargo_project, stderr};
 
 #[test]
 fn failing_check_returns_one_and_lists_label() -> TestResult {
