@@ -3,7 +3,6 @@
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
 use std::io::IsTerminal;
-use std::path::Path;
 use std::thread;
 
 use indicatif::ProgressBar;
@@ -22,7 +21,6 @@ pub fn run(mut cli: Cli) -> Result<(), LockpickError> {
     let reporter = Reporter::auto(cli.verbose);
     let toolchain = Toolchain::detect();
     let metadata = LockpickMetadata::load();
-    pin_to_workspace_root(metadata.workspace_root.as_deref());
     // Fold any `skip = [...]` from Cargo.toml into the CLI's view of
     // skips so every downstream consumer reads from a single source.
     cli.merge_config_skips(&metadata.config.skip);
@@ -33,7 +31,7 @@ pub fn run(mut cli: Cli) -> Result<(), LockpickError> {
     let color = cli.color_mode(std::io::stdout().is_terminal());
     // Process-wide override: every other crate linked into this process inherits it too.
     colored::control::set_override(color == ColorMode::Always);
-    let runner = CargoCli::detect(color);
+    let runner = CargoCli::detect(color, metadata.workspace_root.clone());
     // Probe the toolchain once at startup. Both the early `branches`-on-
     // stable gate and the per-check `--branch` argv key off this single
     // boolean, so caching is wasted state.
@@ -117,23 +115,6 @@ pub fn run(mut cli: Cli) -> Result<(), LockpickError> {
     }
 
     Ok(())
-}
-
-/// Pin cwd to the workspace root so every subprocess sees the same
-/// anchor. Required because `cargo audit` only opens `./Cargo.lock` —
-/// unlike build/clippy/fmt/machete, which walk up the manifest tree
-/// on their own — and without this lockpick would silently disagree
-/// with itself across subdirectories. Must precede [`CargoCli::detect`],
-/// whose target-dir-redirect probe is cwd-relative.
-fn pin_to_workspace_root(workspace_root: Option<&Path>) {
-    if let Some(root) = workspace_root
-        && let Err(e) = std::env::set_current_dir(root)
-    {
-        eprintln!(
-            "warning: could not chdir to workspace root {}: {e}",
-            root.display(),
-        );
-    }
 }
 
 /// Whether the coverage gate runs. Disabled by `--skip coverage` or by

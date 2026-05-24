@@ -6,6 +6,7 @@
 //! [`CargoCli`] is the production [`Runner`]; alternative implementations
 //! plug into the same trait without touching the check catalogue.
 
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::tooling::{ColorMode, cargo_command};
@@ -35,7 +36,13 @@ pub trait Runner: Send + Sync {
 /// Production [`Runner`]: shells out to the host `cargo`, scrubs
 /// package-scoped env vars, and optionally redirects child builds away
 /// from the parent's target directory.
-#[derive(Debug, Clone, Copy, Default)]
+///
+/// Each spawn is anchored at `workspace_root` (when known) via
+/// [`Command::current_dir`]. `cargo audit` only opens `./Cargo.lock`,
+/// so without this anchor lockpick would disagree with itself when
+/// invoked from a subdirectory. Build/clippy/fmt/machete walk up the
+/// manifest tree on their own and are unaffected.
+#[derive(Debug, Clone, Default)]
 pub struct CargoCli {
     /// When true, children inherit `CARGO_TARGET_DIR=target/lockpick`.
     redirect_target_dir: bool,
@@ -43,16 +50,21 @@ pub struct CargoCli {
     /// so captured output matches what lockpick will print on its own
     /// stdout stream.
     color: ColorMode,
+    /// Workspace root used as each child's working directory. `None`
+    /// leaves children inheriting the process cwd.
+    workspace_root: Option<PathBuf>,
 }
 
 impl CargoCli {
-    /// Decide whether children need `CARGO_TARGET_DIR` redirected, and
-    /// pin the color mode that will be propagated as `CARGO_TERM_COLOR`.
+    /// Decide whether children need `CARGO_TARGET_DIR` redirected, pin
+    /// the color mode propagated as `CARGO_TERM_COLOR`, and record the
+    /// workspace root that anchors every spawn.
     #[must_use]
-    pub fn detect(color: ColorMode) -> Self {
+    pub fn detect(color: ColorMode, workspace_root: Option<PathBuf>) -> Self {
         Self {
-            redirect_target_dir: needs_target_dir_redirect(),
+            redirect_target_dir: needs_target_dir_redirect(workspace_root.as_deref()),
             color,
+            workspace_root,
         }
     }
 }
@@ -65,6 +77,9 @@ impl Runner for CargoCli {
         envs: &[(&str, &str)],
     ) -> std::io::Result<SpawnResult> {
         let mut cmd = cargo_command();
+        if let Some(root) = &self.workspace_root {
+            cmd.current_dir(root);
+        }
         cmd.arg(sub).args(args);
         // Set our color decision first so caller-supplied `envs` still
         // win if a check ever needs to override it for one invocation.
@@ -104,14 +119,22 @@ fn execute(mut cmd: Command) -> std::io::Result<SpawnResult> {
 
 /// Whether child cargo invocations should redirect their target dir.
 ///
-/// Redirects only when the running binary lives under `cwd/target/` and
-/// `CARGO_TARGET_DIR` is unset.
-fn needs_target_dir_redirect() -> bool {
+/// Redirects only when the running binary lives under `<anchor>/target/`
+/// and `CARGO_TARGET_DIR` is unset. The anchor is the workspace root
+/// when known, falling back to the process cwd for non-workspace runs.
+fn needs_target_dir_redirect(workspace_root: Option<&Path>) -> bool {
+    if std::env::var_os("CARGO_TARGET_DIR").is_some() {
+        return false;
+    }
     let Ok(exe) = std::env::current_exe() else {
         return false;
     };
-    let Ok(cwd) = std::env::current_dir() else {
-        return false;
+    let anchor = match workspace_root {
+        Some(root) => root.to_path_buf(),
+        None => match std::env::current_dir() {
+            Ok(cwd) => cwd,
+            Err(_) => return false,
+        },
     };
-    std::env::var_os("CARGO_TARGET_DIR").is_none() && exe.starts_with(cwd.join("target"))
+    exe.starts_with(anchor.join("target"))
 }
