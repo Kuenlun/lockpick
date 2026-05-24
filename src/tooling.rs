@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// lockpick - Rust CLI to enforce merge checks and code quality
+// lockpick - Run every Rust quality gate in one command
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
 use std::collections::HashSet;
@@ -7,11 +7,9 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Command;
 
-/// Whether subprocess output captured by lockpick should carry ANSI
-/// colors. Picked once per run from the report stream's state: keep
-/// colors when stdout is an interactive terminal, strip them when it is
-/// a pipe or when the user opted out via `NO_COLOR`
-/// (<https://no-color.org>).
+/// Whether captured subprocess output should carry ANSI colors. Keep
+/// them when stdout is an interactive terminal, strip them on a pipe or
+/// when `NO_COLOR` is set (<https://no-color.org>).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ColorMode {
     Always,
@@ -20,9 +18,8 @@ pub enum ColorMode {
 }
 
 impl ColorMode {
-    /// Decide the mode from the report stream's TTY state, picking up
-    /// `NO_COLOR` from the environment. A TTY without `NO_COLOR` keeps
-    /// colors; anything else (pipe, file, or explicit opt-out) drops them.
+    /// Decide the mode from the report stream's TTY state and the
+    /// `NO_COLOR` env var.
     #[must_use]
     pub fn for_stdout(is_tty: bool) -> Self {
         if is_tty && !no_color_env() {
@@ -32,9 +29,8 @@ impl ColorMode {
         }
     }
 
-    /// Stringification accepted by both `CARGO_TERM_COLOR` and rustfmt's
-    /// `--color`, so the same value can drive cargo and rustfmt in
-    /// lockstep.
+    /// Form accepted by both `CARGO_TERM_COLOR` and rustfmt's `--color`,
+    /// so cargo and rustfmt stay in lockstep.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -52,9 +48,9 @@ fn no_color_env() -> bool {
 
 /// Check `PATH` for a `cargo-<subcommand>` binary.
 ///
-/// Filesystem-only probe by design: spawning `cargo <name> --version`
-/// would flip cargo-machete's argv parser into positional-paths mode
-/// under `CARGO_PKG_NAME` (i.e. when invoked from `cargo run`) and
+/// Filesystem-only by design: spawning `cargo <name> --version` would
+/// flip cargo-machete's argv parser into positional-paths mode under a
+/// leaked `CARGO_PKG_NAME` (i.e. when invoked from `cargo run`) and
 /// report itself as missing.
 fn has_cargo_subcommand_in(path_env: Option<&OsStr>, subcommand: &str) -> bool {
     path_env.is_some_and(|path| {
@@ -104,10 +100,8 @@ pub fn cargo_command() -> Command {
 }
 
 /// Whether the active `rustc` advertises itself as a nightly build.
-///
-/// Nightly is what unlocks `-Z coverage-options=branch`, so this is the
-/// gating signal for branch-coverage measurement. A spawn failure or
-/// non-zero exit reads as "not nightly": stable is the safe fallback.
+/// Used to gate `-Z coverage-options=branch`. Spawn failure or non-zero
+/// exit reads as "not nightly": stable is the safe fallback.
 #[must_use]
 pub fn is_nightly() -> bool {
     Command::new("rustc")

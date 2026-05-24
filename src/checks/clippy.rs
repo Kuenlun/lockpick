@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// lockpick - Rust CLI to enforce merge checks and code quality
+// lockpick - Run every Rust quality gate in one command
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
 use super::{COMMON_ARGS, Check, Runner, cargo_outcome, chain, fmt_cargo_cmd};
 use crate::reporter::CheckOutcome;
 
-// Strict policy enforced on every consumer crate: enable the three
-// opt-in groups (pedantic, nursery, cargo) and escalate every warning
-// to an error. `restriction` is excluded: its lints contradict each
-// other and are meant to be picked à-la-carte.
+// Strict policy: enable the three opt-in groups (pedantic, nursery,
+// cargo) and escalate every warning to an error. `restriction` is
+// excluded because its lints contradict each other by design.
 //
 // Split from the workspace prefix so `--fix` can reuse the exact same
-// lint tail without `--` getting in the way.
+// lint tail without `--` in the middle.
 pub const CLIPPY_LINT_ARGS: &[&str] = &[
     "-W",
     "clippy::pedantic",
@@ -23,9 +22,9 @@ pub const CLIPPY_LINT_ARGS: &[&str] = &[
     "warnings",
 ];
 
-/// Argv handed to `cargo clippy` for the check: workspace prefix, `--`,
-/// then the shared lint tail. Materialised at compile time so `cmd()`
-/// and `run()` see a stable `&'static [&'static str]`.
+/// Argv for `cargo clippy`: workspace prefix, `--`, then the shared
+/// lint tail. Materialised at compile time so `cmd()` and `run()` see
+/// a stable `&'static [&'static str]`.
 const CLIPPY_ARGS: &[&str] = &concat_clippy_args();
 
 const fn concat_clippy_args() -> [&'static str; COMMON_ARGS.len() + 1 + CLIPPY_LINT_ARGS.len()] {

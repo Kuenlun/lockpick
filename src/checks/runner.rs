@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// lockpick - Rust CLI to enforce merge checks and code quality
+// lockpick - Run every Rust quality gate in one command
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
 //! Strategy for spawning cargo subcommands and capturing their output.
-//! [`CargoCli`] is the production [`Runner`]; alternative implementations
-//! plug into the same trait without touching the check catalogue.
+//! [`CargoCli`] is the production [`Runner`]. Alternative
+//! implementations plug into the same trait without touching the
+//! check catalogue.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -23,7 +24,7 @@ pub struct SpawnResult {
 pub trait Runner: Send + Sync {
     /// Spawn the subcommand and capture its raw output.
     ///
-    /// [`Err`] signals an OS-level launch failure; non-zero exits come
+    /// [`Err`] signals an OS-level launch failure. Non-zero exits come
     /// back as `Ok(SpawnResult { success: false, … })`.
     fn spawn(
         &self,
@@ -38,27 +39,23 @@ pub trait Runner: Send + Sync {
 /// from the parent's target directory.
 ///
 /// Each spawn is anchored at `workspace_root` (when known) via
-/// [`Command::current_dir`]. `cargo audit` only opens `./Cargo.lock`,
-/// so without this anchor lockpick would disagree with itself when
-/// invoked from a subdirectory. Build/clippy/fmt/machete walk up the
-/// manifest tree on their own and are unaffected.
+/// [`Command::current_dir`] so `cargo audit`, which only opens
+/// `./Cargo.lock`, agrees with lockpick from any subdirectory. Other
+/// checks walk up the manifest tree on their own and are unaffected.
 #[derive(Debug, Clone, Default)]
 pub struct CargoCli {
     /// When true, children inherit `CARGO_TARGET_DIR=target/lockpick`.
     redirect_target_dir: bool,
-    /// Color decision propagated to every child as `CARGO_TERM_COLOR`,
-    /// so captured output matches what lockpick will print on its own
-    /// stdout stream.
+    /// Propagated to every child as `CARGO_TERM_COLOR` so captured
+    /// output matches lockpick's own stream.
     color: ColorMode,
-    /// Workspace root used as each child's working directory. `None`
-    /// leaves children inheriting the process cwd.
+    /// Working directory for every child. `None` inherits process cwd.
     workspace_root: Option<PathBuf>,
 }
 
 impl CargoCli {
     /// Decide whether children need `CARGO_TARGET_DIR` redirected, pin
-    /// the color mode propagated as `CARGO_TERM_COLOR`, and record the
-    /// workspace root that anchors every spawn.
+    /// the propagated color mode, and record the workspace root.
     #[must_use]
     pub fn detect(color: ColorMode, workspace_root: Option<PathBuf>) -> Self {
         Self {
@@ -68,11 +65,9 @@ impl CargoCli {
         }
     }
 
-    /// Spawn `cargo <sub> <args…>` with both streams inherited from the
-    /// parent, returning whether the child exited successfully. Mirrors
-    /// [`Runner::spawn`]'s anchoring, env scrubbing and signal forwarding
-    /// but streams output live so interactive fix sessions surface their
-    /// progress as it happens.
+    /// Spawn `cargo <sub> <args…>` with both streams inherited so the
+    /// user sees live output. Same anchoring, env scrubbing and signal
+    /// forwarding as [`Runner::spawn`], minus the capture.
     pub fn spawn_inherited(&self, sub: &str, args: &[&str]) -> std::io::Result<bool> {
         let mut cmd = cargo_command();
         if let Some(root) = &self.workspace_root {
@@ -104,8 +99,8 @@ impl Runner for CargoCli {
             cmd.current_dir(root);
         }
         cmd.arg(sub).args(args);
-        // Set our color decision first so caller-supplied `envs` still
-        // win if a check ever needs to override it for one invocation.
+        // Set color first so caller-supplied `envs` can still override
+        // it per-invocation.
         cmd.env("CARGO_TERM_COLOR", self.color.as_str());
         for (k, v) in envs {
             cmd.env(k, v);
@@ -117,17 +112,12 @@ impl Runner for CargoCli {
     }
 }
 
-/// Spawn the [`Command`], record its PID so the SIGINT/SIGTERM handler
-/// can forward signals to it, and capture both streams. The guard
-/// returned by [`crate::signals::State::register_child`] removes the
-/// PID on every exit path, including the early return from `?` and
-/// unwind through the explicit `drop` site.
-///
-/// The guard is dropped immediately after `wait_with_output` reaps the
-/// child, so the window in which a recycled PID could receive a
-/// forwarded signal is bounded to a few instructions. A fully race-free
-/// fix would need `pidfd_send_signal` (Linux 5.3+) or its BSD equivalent
-/// to address the process by handle instead of by PID.
+/// Spawn the [`Command`], register its PID so the SIGINT/SIGTERM
+/// handler can forward signals to it, and capture both streams. The
+/// guard is dropped after `wait_with_output` reaps the child, so the
+/// PID-recycling race window is bounded to a handful of instructions
+/// (a fully race-free fix would need `pidfd_send_signal` or BSD's
+/// equivalent).
 fn execute(mut cmd: Command) -> std::io::Result<SpawnResult> {
     let child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
     let guard = crate::signals::state().register_child(child.id());
@@ -141,10 +131,9 @@ fn execute(mut cmd: Command) -> std::io::Result<SpawnResult> {
 }
 
 /// Whether child cargo invocations should redirect their target dir.
-///
-/// Redirects only when the running binary lives under `<anchor>/target/`
-/// and `CARGO_TARGET_DIR` is unset. The anchor is the workspace root
-/// when known, falling back to the process cwd for non-workspace runs.
+/// Redirects when the running binary lives under `<anchor>/target/`
+/// and `CARGO_TARGET_DIR` is unset. The anchor is `workspace_root`
+/// when known, otherwise the process cwd.
 fn needs_target_dir_redirect(workspace_root: Option<&Path>) -> bool {
     if std::env::var_os("CARGO_TARGET_DIR").is_some() {
         return false;

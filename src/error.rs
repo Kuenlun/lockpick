@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// lockpick - Rust CLI to enforce merge checks and code quality
+// lockpick - Run every Rust quality gate in one command
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
 use std::fmt::Write;
@@ -13,22 +13,19 @@ pub enum LockpickError {
     ChecksFailed(usize),
 
     /// One or more required cargo subcommands are absent from `PATH`.
-    /// The Display impl bundles every entry into a single message with
-    /// a unified `cargo install …` line so the user only hits this
-    /// error once per pipeline run.
+    /// Bundled into a single message with a unified `cargo install …`
+    /// line so the user only hits this error once per run.
     #[error("{}", render_missing(.0))]
     MissingTools(Vec<MissingTool>),
 
-    /// Every check was disabled via `--skip`, leaving the pipeline
-    /// empty. Reported as a misconfiguration rather than success so a
-    /// merge gate that ran nothing never reads as green in CI.
+    /// Every check was skipped, leaving the pipeline empty. Reported
+    /// as a misconfiguration so a merge gate that ran nothing never
+    /// reads as green.
     #[error("all checks skipped; nothing to verify")]
     NoChecksToRun,
 
-    /// The user configured `coverage.branches` but the active toolchain
-    /// is stable. Branch coverage relies on `-Z coverage-options=branch`,
-    /// which only nightly accepts, so refusing up front beats handing
-    /// back a raw `rustc` error mid-pipeline.
+    /// `coverage.branches` configured on a stable toolchain. Refusing
+    /// up front beats handing back a raw `rustc` error mid-pipeline.
     #[error("{}", render_branches_nightly())]
     BranchesRequireNightly,
 }
@@ -99,9 +96,8 @@ fn render_missing(missing: &[MissingTool]) -> String {
 }
 
 /// Render the actionable hint for [`LockpickError::BranchesRequireNightly`].
-///
-/// Mirrors the layout of [`render_missing`] so users see a familiar
-/// "what is wrong / how to fix" structure across error variants.
+/// Mirrors the layout of [`render_missing`] for a familiar
+/// "what is wrong / how to fix" shape.
 fn render_branches_nightly() -> String {
     let mut out = String::new();
     let _ = writeln!(

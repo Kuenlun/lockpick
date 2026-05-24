@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// lockpick - Rust CLI to enforce merge checks and code quality
+// lockpick - Run every Rust quality gate in one command
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
 use clap::{ColorChoice, CommandFactory, Parser, Subcommand, ValueEnum};
@@ -75,9 +75,8 @@ impl<'de> Deserialize<'de> for SkipOption {
 #[derive(Parser, Debug, Clone)]
 #[command(
     version,
-    about = "Rust merge-check CLI. Runs compile, clippy, fmt, tests, doc, \
-             doc-tests, machete, audit, license headers and 100% branch \
-             coverage in a single invocation.",
+    about = "Run every Rust quality gate in one command: compile, clippy, fmt, tests, doc, \
+             doc-tests, machete, audit, license headers and coverage. One summary, one exit code.",
     long_about = None,
     after_long_help = LONG_HELP_TAIL,
     // Cap help width even when stdout is not a TTY (pipes, CI logs). 100 is
@@ -111,14 +110,14 @@ pub struct Cli {
     #[arg(short = 'v', long = "verbose")]
     pub verbose: bool,
 
-    /// Auto-apply fmt + clippy --fix + machete --fix before running the
-    /// checks. Honours `--skip` on the same axes (skipping clippy also
-    /// skips its fix). Aborts before the pipeline if any fix step fails.
+    /// Auto-apply fmt, clippy --fix and machete --fix before the checks.
+    /// Honours `--skip` (skipping clippy also skips its fix) and aborts
+    /// the pipeline if any fix step fails.
     #[arg(long)]
     pub fix: bool,
 
     /// Coloured output policy. `auto` (the default) follows TTY detection
-    /// and the `NO_COLOR` env var; `always`/`never` are explicit overrides
+    /// and the `NO_COLOR` env var. `always`/`never` are explicit overrides
     /// that win over both signals.
     #[arg(
         long,
@@ -154,7 +153,7 @@ impl Cli {
 
     /// Flatten the user's `--color` choice into the binary [`ColorMode`]
     /// every downstream consumer (subprocesses, `colored` override)
-    /// expects. `Auto` defers to the TTY+`NO_COLOR` heuristic; explicit
+    /// expects. `Auto` defers to the TTY+`NO_COLOR` heuristic, explicit
     /// `always`/`never` wins outright.
     #[must_use]
     pub fn color_mode(&self, is_tty: bool) -> ColorMode {
@@ -192,35 +191,31 @@ impl Cli {
 /// [`crate::config::Config`].
 const LONG_HELP_TAIL: &str = "\
 Examples:
-  lockpick                            # run every check
-  lockpick --skip coverage            # skip the slow coverage gate
-  lockpick --skip clippy --skip fmt   # skip multiple checks (repeatable)
-  lockpick --fix                      # auto-apply fmt + clippy --fix + machete --fix before checks
-  lockpick -v                         # CI mode: every cargo banner and section
-  lockpick --color=never              # force plain output (overrides NO_COLOR)
-  NO_COLOR=1 lockpick                 # plain ASCII output, no ANSI escapes
+  lockpick                          # run every check
+  lockpick --skip clippy,fmt        # skip multiple checks (comma or repeated)
+  lockpick --fix                    # auto-fix fmt, clippy and machete first
+  lockpick -v                       # CI mode: every cargo banner and section
+  lockpick --color=never            # force plain output (overrides NO_COLOR)
 
 Environment:
-  NO_COLOR    Set to any non-empty value to strip ANSI colors from lockpick's
-              own output and from every cargo subprocess it spawns. Honoured
-              when `--color` is `auto` (the default); explicit `--color
-              always|never` wins. See <https://no-color.org>.
+  NO_COLOR    Non-empty value strips ANSI colors from lockpick and from every
+              cargo subprocess it spawns. Honoured when `--color` is `auto`
+              (the default). See <https://no-color.org>.
 
 Configuration:
-  Lockpick reads optional settings from your Cargo.toml under
+  Optional settings read from Cargo.toml under
   `[workspace.metadata.lockpick]` (preferred) or
-  `[package.metadata.lockpick]`. Every field is optional.
+  `[package.metadata.lockpick]`. Every field is optional. CLI `--skip`
+  is additive on top of the `skip = [...]` array.
 
       [workspace.metadata.lockpick]
-      skip = [\"audit\", \"machete\"]                   # same identifiers as --skip
+      skip = [\"audit\", \"machete\"]
       license-header = \".github/license_header.rs\"
       license-header-globs = [\"src/**/*.rs\", \"tests/**/*.rs\"]
 
       [workspace.metadata.lockpick.coverage]
-      functions = 100   # functions, lines and regions default to 100
+      functions = 100
       lines     = 100
       regions   = 100
       # branches = 100  # opt-in, nightly-only (exit 4 on stable)
-
-  CLI `--skip` is additive on top of the `skip = [...]` array.
 ";
