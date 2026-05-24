@@ -76,7 +76,7 @@ impl<'de> Deserialize<'de> for SkipOption {
 #[command(
     version,
     about = "Run every Rust quality gate in one command: compile, clippy, fmt, tests, doc, \
-             doc-tests, machete, audit, license headers and coverage. One summary, one exit code.",
+             doc-tests, machete, audit, licenses and coverage. One summary, one exit code.",
     long_about = None,
     after_long_help = LONG_HELP_TAIL,
     // Cap help width even when stdout is not a TTY (pipes, CI logs). 100 is
@@ -106,24 +106,28 @@ pub struct Cli {
     )]
     pub skip: Vec<SkipOption>,
 
-    /// Show every command and the full output of all checks (CI mode)
+    /// Show every command and the full output of all checks
     #[arg(short = 'v', long = "verbose")]
     pub verbose: bool,
 
-    /// Auto-apply fmt, clippy --fix and machete --fix before the checks.
-    /// Honours `--skip` (skipping clippy also skips its fix) and aborts
-    /// the pipeline if any fix step fails.
-    #[arg(long)]
+    /// Auto-apply fmt, clippy --fix and machete --fix before the checks
+    #[arg(
+        long,
+        long_help = "Auto-apply fmt, clippy --fix and machete --fix before the checks. \
+                     Honours `--skip` (skipping clippy also skips its fix) and aborts \
+                     the pipeline if any fix step fails."
+    )]
     pub fix: bool,
 
-    /// Coloured output policy. `auto` (the default) follows TTY detection
-    /// and the `NO_COLOR` env var. `always`/`never` are explicit overrides
-    /// that win over both signals.
+    /// Color policy. Honours `NO_COLOR` and TTY detection when `auto`
     #[arg(
         long,
         value_enum,
         value_name = "WHEN",
         default_value_t = ColorChoice::Auto,
+        long_help = "Coloured output policy. `auto` (the default) follows TTY detection \
+                     and the `NO_COLOR` env var. `always`/`never` are explicit overrides \
+                     that win over both signals."
     )]
     pub color: ColorChoice,
 
@@ -194,7 +198,7 @@ Examples:
   lockpick                          # run every check
   lockpick --skip clippy,fmt        # skip multiple checks (comma or repeated)
   lockpick --fix                    # auto-fix fmt, clippy and machete first
-  lockpick -v                       # CI mode: every cargo banner and section
+  lockpick -v                       # show every cargo command and its full output
   lockpick --color=never            # force plain output (overrides NO_COLOR)
 
 Environment:
