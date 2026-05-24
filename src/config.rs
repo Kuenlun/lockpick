@@ -116,7 +116,7 @@ impl LockpickMetadata {
 
 fn deserialize_or_warn(section: Value) -> Config {
     serde_json::from_value(section).unwrap_or_else(|e| {
-        eprintln!("warning: invalid [*.metadata.lockpick] section: {e} — using defaults");
+        eprintln!("warning: invalid [*.metadata.lockpick] section: {e}, using defaults");
         Config::default()
     })
 }
@@ -141,7 +141,7 @@ fn run_cargo_metadata() -> Option<CargoMetadata> {
 /// 2. `[package.metadata.lockpick]` of a single-package workspace.
 ///
 /// Multi-package workspaces that set `[package.metadata.lockpick]` without
-/// the workspace-scoped section get a warning — there is no safe winner to
+/// the workspace-scoped section get a warning: there is no safe winner to
 /// pick workspace-wide, so the configuration is dropped.
 fn extract_lockpick(metadata: &CargoMetadata) -> Option<Value> {
     fn lockpick_in(value: &Value) -> Option<Value> {
@@ -160,7 +160,7 @@ fn extract_lockpick(metadata: &CargoMetadata) -> Option<Value> {
         .count();
     if stray > 0 {
         eprintln!(
-            "warning: found `[package.metadata.lockpick]` in {stray} package(s) of a multi-crate workspace — use `[workspace.metadata.lockpick]` to apply it workspace-wide"
+            "warning: found `[package.metadata.lockpick]` in {stray} package(s) of a multi-crate workspace. Use `[workspace.metadata.lockpick]` to apply it workspace-wide"
         );
     }
     None

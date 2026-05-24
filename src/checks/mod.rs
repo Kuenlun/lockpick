@@ -6,9 +6,9 @@
 //! struct, keeping the runner agnostic of the cargo invocation details.
 //!
 //! Cross-cutting machinery lives in:
-//! - [`runner`] — spawning strategy ([`Runner`], [`CargoCli`]).
-//! - [`plan`]   — [`Check`] trait, [`Plan`] and the serial [`chain`].
-//! - [`util`]   — shared helpers ([`cargo_outcome`], [`fmt_cargo_cmd`],
+//! - [`runner`]: spawning strategy ([`Runner`], [`CargoCli`]).
+//! - [`plan`]: [`Check`] trait, [`Plan`] and the serial [`chain`].
+//! - [`util`]: shared helpers ([`cargo_outcome`], [`fmt_cargo_cmd`],
 //!   [`combine_streams`], [`COMMON_ARGS`]).
 
 pub mod audit;
