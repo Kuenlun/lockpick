@@ -5,7 +5,6 @@
 //! Individual checks. Each module implements [`Check`] over its own
 //! struct, keeping the runner agnostic of the cargo invocation details.
 
-use std::path::Path;
 use std::process::{Command, Stdio};
 
 use crate::cli::{Cli, SkipOption};
@@ -26,8 +25,7 @@ pub mod test;
 
 pub const COMMON_ARGS: &[&str] = &["--workspace", "--all-targets", "--all-features"];
 
-/// Captured output of a finished cargo invocation. Synthesizable from
-/// fakes, since [`std::process::ExitStatus`] has no public constructor.
+/// Captured output of a finished cargo invocation.
 #[derive(Debug, Clone)]
 pub struct SpawnResult {
     pub success: bool,
@@ -68,11 +66,7 @@ impl CargoCli {
     #[must_use]
     pub fn detect(color: ColorMode) -> Self {
         Self {
-            redirect_target_dir: needs_target_dir_redirect(
-                std::env::current_exe().ok().as_deref(),
-                std::env::current_dir().ok().as_deref(),
-                std::env::var_os("CARGO_TARGET_DIR").as_deref(),
-            ),
+            redirect_target_dir: needs_target_dir_redirect(),
             color,
         }
     }
@@ -227,35 +221,35 @@ pub fn build_plan(
 ) -> Plan {
     let mut items: Vec<Box<dyn Check>> = Vec::new();
 
-    if !cli.skips(&SkipOption::Check) {
+    if !cli.skips(SkipOption::Check) {
         items.push(Box::new(compile::CompileCheck));
     }
-    if !cli.skips(&SkipOption::Clippy) {
+    if !cli.skips(SkipOption::Clippy) {
         items.push(Box::new(clippy::ClippyCheck));
     }
-    if !cli.skips(&SkipOption::Fmt) {
+    if !cli.skips(SkipOption::Fmt) {
         items.push(Box::new(fmt::FmtCheck { color }));
     }
-    if !cli.skips(&SkipOption::Test) {
+    if !cli.skips(SkipOption::Test) {
         items.push(Box::new(test::TestCheck {
             instrumented: coverage_active,
             nextest: toolchain.has(Tool::Nextest),
             branch_coverage,
         }));
     }
-    if !cli.skips(&SkipOption::Doc) {
+    if !cli.skips(SkipOption::Doc) {
         items.push(Box::new(doc::DocCheck));
     }
-    if !cli.skips(&SkipOption::DocTest) && has_lib {
+    if !cli.skips(SkipOption::DocTest) && has_lib {
         items.push(Box::new(doctest::DocTestCheck));
     }
-    if !cli.skips(&SkipOption::Machete) {
+    if !cli.skips(SkipOption::Machete) {
         items.push(Box::new(machete::MacheteCheck));
     }
-    if !cli.skips(&SkipOption::Audit) {
+    if !cli.skips(SkipOption::Audit) {
         items.push(Box::new(audit::AuditCheck));
     }
-    if !cli.skips(&SkipOption::License)
+    if !cli.skips(SkipOption::License)
         && let Some(header_path) = config.license_header.clone()
     {
         let globs = config
@@ -330,13 +324,12 @@ pub fn fmt_cargo_cmd(subcommand: &str, args: &[&str]) -> String {
 ///
 /// Redirects only when the running binary lives under `cwd/target/` and
 /// `CARGO_TARGET_DIR` is unset.
-pub fn needs_target_dir_redirect(
-    exe: Option<&Path>,
-    cwd: Option<&Path>,
-    target_dir_env: Option<&std::ffi::OsStr>,
-) -> bool {
-    let (Some(exe), Some(cwd)) = (exe, cwd) else {
+fn needs_target_dir_redirect() -> bool {
+    let Ok(exe) = std::env::current_exe() else {
         return false;
     };
-    target_dir_env.is_none() && exe.starts_with(cwd.join("target"))
+    let Ok(cwd) = std::env::current_dir() else {
+        return false;
+    };
+    std::env::var_os("CARGO_TARGET_DIR").is_none() && exe.starts_with(cwd.join("target"))
 }

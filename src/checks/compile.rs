@@ -7,13 +7,9 @@ use crate::reporter::CheckOutcome;
 
 pub struct CompileCheck;
 
-impl CompileCheck {
-    pub const LABEL: &'static str = "check";
-}
-
 impl Check for CompileCheck {
     fn label(&self) -> &'static str {
-        Self::LABEL
+        "check"
     }
 
     fn cmd(&self) -> String {

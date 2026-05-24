@@ -21,19 +21,11 @@ pub enum ColorMode {
 
 impl ColorMode {
     /// Decide the mode from the report stream's TTY state, picking up
-    /// `NO_COLOR` from the environment.
+    /// `NO_COLOR` from the environment. A TTY without `NO_COLOR` keeps
+    /// colors; anything else (pipe, file, or explicit opt-out) drops them.
     #[must_use]
     pub fn for_stdout(is_tty: bool) -> Self {
-        Self::from_inputs(is_tty, no_color_env())
-    }
-
-    /// Pure half of [`Self::for_stdout`]: a TTY without `NO_COLOR` keeps
-    /// colors; anything else (pipe, file, or explicit opt-out) drops
-    /// them. Split out so tests can pin both branches without mutating
-    /// the process environment, which would race other tests.
-    #[must_use]
-    pub const fn from_inputs(is_tty: bool, no_color: bool) -> Self {
-        if is_tty && !no_color {
+        if is_tty && !no_color_env() {
             Self::Always
         } else {
             Self::Never
@@ -54,17 +46,8 @@ impl ColorMode {
 
 /// `NO_COLOR` is honoured when present and non-empty, matching
 /// <https://no-color.org>: unset and empty both mean "color allowed".
-/// `unwrap_or_default` collapses both into the same empty `OsString`,
-/// so the predicate folds to a single `is_empty` check.
 fn no_color_env() -> bool {
-    no_color_value(&std::env::var_os("NO_COLOR").unwrap_or_default())
-}
-
-/// Pure half of [`no_color_env`], factored out so tests can pin both
-/// arms (empty vs non-empty) without mutating the process environment,
-/// which would race other tests.
-fn no_color_value(value: &OsStr) -> bool {
-    !value.is_empty()
+    !std::env::var_os("NO_COLOR").unwrap_or_default().is_empty()
 }
 
 /// Check `PATH` for a `cargo-<subcommand>` binary.
@@ -132,14 +115,7 @@ pub fn is_nightly() -> bool {
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .is_some_and(|o| version_string_is_nightly(&String::from_utf8_lossy(&o.stdout)))
-}
-
-/// Pure parse half of [`is_nightly`], factored out so tests can pin the
-/// matching rule against synthetic version strings without spawning a
-/// real `rustc`.
-fn version_string_is_nightly(version: &str) -> bool {
-    version.contains("nightly")
+        .is_some_and(|o| String::from_utf8_lossy(&o.stdout).contains("nightly"))
 }
 
 /// Optional cargo subcommand lockpick can drive. Each variant resolves

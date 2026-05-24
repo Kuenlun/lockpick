@@ -62,8 +62,6 @@ pub struct TestCheck {
 }
 
 impl TestCheck {
-    pub const LABEL: &'static str = "test";
-
     const fn dispatch(&self) -> (&'static str, &'static [&'static str]) {
         match (self.instrumented, self.nextest, self.branch_coverage) {
             (true, true, true) => ("llvm-cov", LLVM_COV_NEXTEST_BRANCH_ARGS),
@@ -78,7 +76,7 @@ impl TestCheck {
 
 impl Check for TestCheck {
     fn label(&self) -> &'static str {
-        Self::LABEL
+        "test"
     }
 
     fn cmd(&self) -> String {

@@ -57,7 +57,7 @@ pub struct Reporter {
 }
 
 /// Column width used to align check labels in spinners and status lines.
-/// Pinned against the longest known label by a test in `runner`.
+/// Must accommodate the longest concrete `Check::label()`.
 pub const LABEL_WIDTH: usize = 10;
 
 const DONE_TEMPLATE: &str = "  {msg}";
@@ -78,28 +78,15 @@ impl Reporter {
     /// probed from the process's own streams.
     #[must_use]
     pub fn auto(is_verbose: bool) -> Self {
-        Self::new(
-            is_verbose,
-            std::io::stderr().is_terminal(),
-            std::io::stdout().is_terminal(),
-        )
-    }
-
-    /// Build a [`Reporter`]. `is_tty` enables progress-bar rendering on
-    /// stderr. `stdout_is_tty` controls whether the per-check spinner
-    /// keeps a visible final state (stdout captured) or clears so the
-    /// report on stdout is the sole record (stdout on-terminal).
-    #[must_use]
-    pub fn new(is_verbose: bool, is_tty: bool, stdout_is_tty: bool) -> Self {
+        let is_tty = std::io::stderr().is_terminal();
+        let stdout_is_tty = std::io::stdout().is_terminal();
         let spin_style = parse_template(&spin_template()).tick_chars(TICK_CHARS);
         let done_style = parse_template(DONE_TEMPLATE);
-
         let mp = if is_tty {
             MultiProgress::new()
         } else {
             MultiProgress::with_draw_target(ProgressDrawTarget::hidden())
         };
-
         Self {
             mp,
             spin_style,
@@ -181,25 +168,25 @@ impl Reporter {
         self.diagln(format!("  {msg}"));
     }
 
-    pub fn print_section(&self, label: &str, output: &str, status: TaskStatus) {
-        let (header, divider, pipe) = match status {
-            TaskStatus::Pass => (
+    pub fn print_section(&self, label: &str, output: &str, passed: bool) {
+        let (header, divider, pipe) = if passed {
+            (
                 format!(" ✔ {} OUTPUT ", label.to_uppercase())
                     .green()
                     .bold()
                     .to_string(),
                 "━".repeat(40).green().dimmed().to_string(),
                 "│".green().dimmed().to_string(),
-            ),
-            TaskStatus::Fail => (
+            )
+        } else {
+            (
                 format!(" ✖ {} ERRORS ", label.to_uppercase())
                     .red()
                     .bold()
                     .to_string(),
                 "━".repeat(40).red().dimmed().to_string(),
                 "│".red().dimmed().to_string(),
-            ),
-            TaskStatus::Skip => return,
+            )
         };
         let output = output.trim();
 
