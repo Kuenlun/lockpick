@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Build matrix only — skip release-plz, skip crates.io, skip asset upload"
+        description: "Build matrix only: skip release-plz, skip crates.io, skip asset upload"
         type: boolean
         default: false
 

@@ -133,9 +133,7 @@ pub struct Cli {
     pub command: Option<Cmd>,
 }
 
-/// Meta operations that bypass the check pipeline. Reserved for one-shot
-/// utilities (completion scripts today, manpages tomorrow) whose output
-/// is consumed by the shell or a packager, not the human running checks.
+/// Meta operations that bypass the check pipeline.
 #[derive(Subcommand, Debug, Clone)]
 pub enum Cmd {
     /// Emit a shell completion script for SHELL to stdout.
@@ -188,14 +186,10 @@ impl Cli {
     }
 }
 
-/// Long-form `--help` tail. Three sibling sections, in narrative order:
-///
-/// * `Examples:` copy-paste invocations covering the common knobs.
-/// * `Environment:` runtime levers the CLI surface cannot express
-///   (only `NO_COLOR` today, see [`crate::tooling::ColorMode`]).
-/// * `Configuration:` schema reference for `[*.metadata.lockpick]`,
-///   mirroring the keys serde accepts in [`crate::config::Config`]. Add
-///   or rename a field there and this block must follow suit.
+/// Long-form `--help` tail: examples, environment variables, and the
+/// `[*.metadata.lockpick]` schema reference. The Configuration section
+/// must stay in sync with the keys serde accepts in
+/// [`crate::config::Config`].
 const LONG_HELP_TAIL: &str = "\
 Examples:
   lockpick                            # run every check

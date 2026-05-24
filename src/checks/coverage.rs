@@ -56,9 +56,9 @@ impl Check for CoverageCheck {
         }
     }
 
-    /// Coverage is never scheduled through [`crate::checks::Plan`] —
-    /// the runner forks it off after the chain's `test` slot succeeds —
-    /// so `None` here is a non-event. It is still correct on its own
+    /// Coverage is never scheduled through [`crate::checks::Plan`]: the
+    /// runner forks it off after the chain's `test` slot succeeds, so
+    /// `None` here is a non-event. It is still correct on its own
     /// terms: `llvm-cov report` only reads cached profraws and does not
     /// take Cargo's per-`target/` lock.
     fn chain_position(&self) -> Option<u8> {
@@ -108,7 +108,7 @@ fn evaluate(report: &Report, t: CoverageConfig, branch_coverage: bool) -> CheckO
             if u128::from(metric.covered) * 100 < u128::from(metric.count) * u128::from(threshold) {
                 let missing = metric.count.saturating_sub(metric.covered);
                 lines.push(format!(
-                    "FAIL {name:<METRIC_NAME_WIDTH$}: {covered}/{total} ({pct}) — threshold {threshold}%, missing {missing}",
+                    "FAIL {name:<METRIC_NAME_WIDTH$}: {covered}/{total} ({pct}), threshold {threshold}%, missing {missing}",
                     covered = metric.covered,
                     total = metric.count,
                     pct = format_pct(metric.covered, metric.count),
