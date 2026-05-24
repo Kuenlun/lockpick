@@ -88,6 +88,11 @@ struct CargoTarget {
     kind: Vec<String>,
 }
 
+/// Crate types Cargo treats as library targets, all of which can carry
+/// doctests. A plain `kind == "lib"` check misses `cdylib`, `proc-macro`,
+/// etc., and silently skips the doc-test gate on those workspaces.
+const LIB_KINDS: &[&str] = &["lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"];
+
 impl LockpickMetadata {
     /// Probe `cargo metadata` and fall back to defaults on any failure.
     #[must_use]
@@ -99,7 +104,7 @@ impl LockpickMetadata {
             .packages
             .iter()
             .flat_map(|p| &p.targets)
-            .any(|t| t.kind.iter().any(|k| k == "lib"));
+            .any(|t| t.kind.iter().any(|k| LIB_KINDS.contains(&k.as_str())));
         let config = extract_lockpick(&metadata).map_or_else(Config::default, deserialize_or_warn);
         Self {
             config,
