@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// lockpick - Rust CLI to enforce merge checks and code quality
+// lockpick - Run every Rust quality gate in one command
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
 use std::io::IsTerminal;
@@ -44,14 +44,12 @@ pub struct Reporter {
     mp: MultiProgress,
     spin_style: ProgressStyle,
     done_style: ProgressStyle,
-    /// Stderr is a TTY. Drives spinner rendering and routes `diag`
-    /// writes through `MultiProgress` so they interleave cleanly with
-    /// the active spinner block.
+    /// Stderr is a TTY: drives spinner rendering and routes `diag`
+    /// writes through `MultiProgress` so they interleave cleanly.
     is_tty: bool,
-    /// Stdout is a TTY. When false, the report stream is being captured
+    /// Stdout is a TTY. When false, the report stream is captured
     /// (file, pipe, CI), so the spinner keeps a visible final state on
-    /// stderr instead of clearing. Otherwise the interactive user would
-    /// only see spinners disappear.
+    /// stderr instead of clearing.
     stdout_is_tty: bool,
     pub is_verbose: bool,
 }
@@ -67,8 +65,8 @@ fn spin_template() -> String {
     format!("  {{msg:<{LABEL_WIDTH}}} {{spinner:.cyan}}")
 }
 
-/// Parse an indicatif template, falling back to the default spinner so
-/// the caller stays infallible under `clippy::expect_used`.
+/// Parse an indicatif template, falling back to the default spinner.
+/// Keeps the caller infallible under `clippy::expect_used`.
 fn parse_template(template: &str) -> ProgressStyle {
     ProgressStyle::with_template(template).unwrap_or_else(|_| ProgressStyle::default_spinner())
 }
@@ -107,21 +105,15 @@ impl Reporter {
         pb
     }
 
-    /// Finish a spinner and emit the matching status line.
+    /// Finish a spinner and emit the matching status line. Routing
+    /// depends on which streams are TTYs:
     ///
-    /// Three TTY cases, each with a different routing:
-    ///
-    /// * Stderr TTY, stdout TTY (pure interactive). Anchor the spinner
-    ///   in place with `finish_with_message`, so siblings still running
-    ///   in the `MultiProgress` band do not shift up to fill its row.
-    ///   Skip the `reportln`: the report stream is the same terminal as
-    ///   the spinner, and a `mp.suspend` write would clear-and-redraw
-    ///   the active band plus duplicate the line above it.
-    /// * Stderr TTY, stdout captured (`lockpick > report.txt`). Anchor
-    ///   the spinner so the user keeps a visible final state on stderr,
-    ///   and emit the line on stdout for the capture.
-    /// * Stderr not a TTY. The spinner draw target is hidden, so the
-    ///   clear is a no-op. Emit the line on stdout as the sole record.
+    /// * stderr TTY + stdout TTY: anchor the spinner in place so
+    ///   siblings do not shift up. Skip `reportln` (would duplicate
+    ///   the anchored line in the same terminal).
+    /// * stderr TTY + stdout captured: anchor on stderr, also emit on
+    ///   stdout for the capture.
+    /// * stderr non-TTY: spinner is hidden, only emit on stdout.
     pub fn finish_spinner(&self, pb: &ProgressBar, label: &str, status: TaskStatus) {
         let tag = match status {
             TaskStatus::Pass => "PASS".green().bold(),
@@ -151,11 +143,10 @@ impl Reporter {
     }
 
     /// Write a line to the report stream (stdout): status lines and the
-    /// final summary. `MultiProgress::suspend` pauses spinner drawing for
-    /// the write so the two streams do not stomp on each other when both
-    /// render to the same terminal. Multi-line blocks should batch their
-    /// writes inside a single `mp.suspend` (see [`Self::print_section`])
-    /// to avoid one pause/redraw cycle per line.
+    /// final summary. `MultiProgress::suspend` pauses spinner drawing
+    /// for the write so the two streams do not stomp on each other.
+    /// Multi-line blocks should batch under one `suspend` (see
+    /// [`Self::print_section`]) to avoid one redraw cycle per line.
     pub fn reportln(&self, msg: impl AsRef<str>) {
         self.mp.suspend(|| println!("{}", msg.as_ref()));
     }

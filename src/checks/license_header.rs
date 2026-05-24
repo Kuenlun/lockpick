@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// lockpick - Rust CLI to enforce merge checks and code quality
+// lockpick - Run every Rust quality gate in one command
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
 //! License-header byte-equality check. Opt-in via
@@ -54,8 +54,8 @@ impl Check for LicenseHeaderCheck {
     }
 
     fn cmd(&self) -> String {
-        // `(in-process)` flags this as not a shell-runnable command, in
-        // contrast to every other check whose `cmd` is a cargo line.
+        // `(in-process)` flags this as not a shell-runnable command,
+        // unlike every other check whose `cmd` is a cargo line.
         format!(
             "(in-process) license-header against `{}`",
             self.header_path.display()
@@ -99,8 +99,8 @@ impl Check for LicenseHeaderCheck {
             }
         };
 
-        // Canonicalize so `./header.txt` and `header.txt` collide, and
-        // the header file does not flag itself when matched by a glob.
+        // Canonicalize so the header file does not flag itself when a
+        // glob picks it up under a different path spelling.
         let header_key = normalize(&self.header_path);
 
         let mut offenders: Vec<PathBuf> = Vec::new();
@@ -161,15 +161,15 @@ fn collect_files(patterns: &[String]) -> Result<Vec<PathBuf>, glob::PatternError
             }
         }
     }
-    // Dedup so overlapping globs do not scan the same file twice, and
-    // the FAIL listing of offenders stays deterministic.
+    // Dedup so overlapping globs do not scan twice and the offender
+    // list stays deterministic.
     files.sort();
     files.dedup();
     Ok(files)
 }
 
 /// Leading-line window for the `@generated` marker. Five is enough to
-/// catch generators that prepend a banner or modeline above the marker.
+/// catch banners or modelines above the marker.
 const GENERATED_HEADER_SCAN_LINES: usize = 5;
 
 fn is_generated(contents: &[u8]) -> bool {

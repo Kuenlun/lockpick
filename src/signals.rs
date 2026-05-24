@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// lockpick - Rust CLI to enforce merge checks and code quality
+// lockpick - Run every Rust quality gate in one command
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
 //! SIGINT/SIGTERM capture and child-process signal forwarding.
 //!
-//! Without this, a `kill -INT` mid-pipeline kills the cargo subprocesses
-//! (via the terminal's foreground process group) and lockpick interprets
-//! their non-zero exits as ordinary check failures, returning `1` instead
-//! of the canonical `128 + signum`. The handler also forwards the signal
-//! to every live child so the explicit `kill -INT $lockpick_pid` case,
-//! where the terminal does not broadcast, no longer leaves cargo running
-//! detached after lockpick winds down.
+//! Without this, a `kill -INT` mid-pipeline would let lockpick mistake
+//! the cargo children's signal exits for ordinary check failures and
+//! return `1` instead of the canonical `128 + signum`. Forwarding also
+//! handles the explicit `kill -INT $lockpick_pid` case, where the
+//! terminal does not broadcast to children.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -31,9 +29,9 @@ impl State {
         }
     }
 
-    /// Signal that interrupted the run, or `None` if it ran to completion.
-    /// First signal wins so a follow-up SIGTERM cannot rewrite a SIGINT
-    /// exit code already on the wire.
+    /// Signal that interrupted the run, or `None` if it ran to
+    /// completion. First signal wins so a follow-up SIGTERM cannot
+    /// rewrite a SIGINT exit code.
     #[must_use]
     pub fn captured(&self) -> Option<i32> {
         match self.received.load(Ordering::SeqCst) {
@@ -42,9 +40,9 @@ impl State {
         }
     }
 
-    /// Recover the child set even across a poisoned `Mutex`. Lock poison
-    /// here would only follow a panic inside a child-tracking critical
-    /// section, where the protected data is still consistent.
+    /// Recover the child set even across a poisoned `Mutex`. The
+    /// protected data is just a `HashSet<u32>` that any panic would
+    /// have left consistent.
     fn lock_children(&self) -> MutexGuard<'_, HashSet<u32>> {
         self.children.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -78,12 +76,9 @@ pub fn state() -> &'static State {
     STATE.get_or_init(State::new)
 }
 
-/// Compute the process exit code for a signal-aware shutdown.
-///
-/// When the user interrupted us, return `128 + signum` so the shell
-/// reports the canonical value; otherwise fall back to `default`. Out-
-/// of-range signal numbers fall back too, since shells encode killed-
-/// by-signal exits in `[129, 255]`.
+/// Process exit code for a signal-aware shutdown: `128 + signum` when
+/// interrupted, else `default`. Out-of-range signal numbers fall back
+/// too, since shells encode killed-by-signal exits in `[129, 255]`.
 #[must_use]
 pub fn exit_code(captured: Option<i32>, default: u8) -> u8 {
     if let Some(sig) = captured
@@ -96,12 +91,12 @@ pub fn exit_code(captured: Option<i32>, default: u8) -> u8 {
     }
 }
 
-/// Install the SIGINT/SIGTERM handler. On non-Unix targets, a no-op.
+/// Install the SIGINT/SIGTERM handler (no-op on non-Unix).
 ///
 /// Spawns a background thread that drains signals forever, captures the
 /// first one into `state`, and forwards every signal to all registered
-/// child PIDs via `kill(1)`. A setup failure (rare, typically OS
-/// resource exhaustion) silently leaves the process unhandled.
+/// child PIDs via `kill(1)`. Setup failures silently leave the process
+/// unhandled.
 #[cfg(unix)]
 pub fn install() {
     let Ok(mut signals) = signal_hook::iterator::Signals::new([
@@ -124,16 +119,13 @@ pub fn install() {
     });
 }
 
-/// Forward `sig` to `pid` by shelling out to `kill(1)`. The binary is
-/// part of every POSIX install, so this avoids pulling in a libc / nix /
-/// rustix dependency just to send a single signal. Errors are swallowed
-/// because the child may have already exited between the registry
-/// snapshot and the `kill` call.
+/// Forward `sig` to `pid` via the POSIX `kill(1)` binary. Avoids a
+/// libc/nix dependency just to send one signal. Errors are swallowed:
+/// the child may have already exited between snapshot and call.
 ///
-/// The argv is `kill -<signum> <pid>`, the XSI form. GNU kill also
-/// accepts `-s <number>`, but BSD kill on macOS treats `-s` as taking
-/// a signal *name* and silently rejects `-s 2`, so the natural-looking
-/// alternative would leave macOS children unsignalled.
+/// Argv is the XSI form `kill -<signum> <pid>`. The natural-looking
+/// `-s <number>` is rejected by BSD `kill` on macOS, which expects a
+/// signal *name* there.
 #[cfg(unix)]
 fn forward_via_kill(sig: i32, pid: u32) {
     use std::process::{Command, Stdio};

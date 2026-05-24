@@ -32,37 +32,36 @@ Use it locally (pre-commit), use it in CI (one job), and get the same answer eit
 cargo install lockpick
 ```
 
-External tooling lockpick drives (install whichever checks you enable; missing tools fail-fast with a clear error):
+External tools used by individual checks. Missing ones fail fast with an install hint:
 
-- `cargo install cargo-llvm-cov`: coverage gate (on by default)
-- `cargo install cargo-machete`: unused-dependency detection
-- `cargo install cargo-audit`: RustSec advisory scan
-- `cargo install cargo-nextest --locked`: optional, auto-detected for faster test output
-
-Coverage measures functions, lines and regions on any toolchain. Branch coverage relies on `-Z coverage-options=branch` and only runs on nightly (`rustup toolchain install nightly --component llvm-tools-preview`). On stable the branches metric is dropped with a visible note, and setting `coverage.branches` in config is rejected with exit `4`.
+- `cargo install cargo-llvm-cov`: `coverage` (on by default)
+- `cargo install cargo-machete`: `machete`
+- `cargo install cargo-audit`: `audit`
+- `cargo install cargo-nextest --locked`: optional, auto-detected for faster `test` output
 
 ## Quick start
 
 ```sh
 lockpick                          # one status line per check, FAIL sections only
-lockpick -v                       # CI mode: cargo banner + every PASS/FAIL section
-lockpick --skip audit --skip doc  # skip checks (repeatable)
+lockpick -v                       # CI mode: every command, every PASS/FAIL section
+lockpick --fix                    # auto-fix fmt, clippy and machete before checks
+lockpick --skip audit --skip doc  # skip checks (repeatable, or comma-separated)
 ```
 
 ## Checks
 
-| Check      | What it does                                                                | `--skip`   |
-|------------|-----------------------------------------------------------------------------|------------|
-| `check`    | `cargo check` on every target and feature                                   | `check`    |
-| `clippy`   | `cargo clippy` with `pedantic` + `nursery` + `cargo` and `-D warnings`      | `clippy`   |
-| `fmt`      | `cargo fmt --all --check`                                                   | `fmt`      |
-| `test`     | `cargo test` / `nextest` / `llvm-cov`, auto-routed by what is installed and whether coverage is active | `test`     |
-| `doc`      | `cargo doc --no-deps` with `RUSTDOCFLAGS=-D warnings`                       | `doc`      |
-| `doc-test` | doctests; skipped on bin-only workspaces                                    | `doc-test` |
-| `machete`  | unused-dependency scan (`cargo machete`)                                    | `machete`  |
-| `audit`    | RustSec advisory scan (`cargo audit`, requires network)                     | `audit`    |
-| `license`  | byte-equal license-header scan; opt-in via config                           | `license`  |
-| `coverage` | per-metric `llvm-cov` gate, runs once `test` passes                         | `coverage` |
+| Check      | What it does                                                            | `--skip`   |
+|------------|-------------------------------------------------------------------------|------------|
+| `check`    | `cargo check` on every target and feature                               | `check`    |
+| `clippy`   | `cargo clippy` with `pedantic` + `nursery` + `cargo` and `-D warnings`  | `clippy`   |
+| `fmt`      | `cargo fmt --all --check`                                               | `fmt`      |
+| `test`     | `cargo test`, auto-routed through `nextest` or `llvm-cov` when present  | `test`     |
+| `doc`      | `cargo doc --no-deps` with `RUSTDOCFLAGS=-D warnings`                   | `doc`      |
+| `doc-test` | doctests, skipped on bin-only workspaces                                | `doc-test` |
+| `machete`  | unused-dependency scan (`cargo machete`)                                | `machete`  |
+| `audit`    | RustSec advisory scan (`cargo audit`, requires network)                 | `audit`    |
+| `license`  | byte-equal license-header scan, opt-in via config                       | `license`  |
+| `coverage` | per-metric `llvm-cov` gate, runs once `test` passes                     | `coverage` |
 
 `--skip test` implies `--skip coverage`. `--skip license` is a no-op when no header is configured. Run `lockpick -v` to see the exact cargo invocation each check fires.
 
@@ -83,7 +82,11 @@ regions   = 100
 # branches = 100  # opt-in, nightly-only (fails on stable with exit 4)
 ```
 
-The `skip` array carries a project-wide baseline of checks to disable. CLI `--skip` is additive on top of it, never a replacement. The license check reads the header file, walks the globs (default: `src/**/*.rs`, `tests/**/*.rs`, `examples/**/*.rs`, `benches/**/*.rs`), skips files marked `@generated`, and lists every offender. The coverage check parses the JSON from `cargo llvm-cov report`, treats `count == 0` as vacuously satisfied, rejects all-zero entries as broken instrumentation, and points at `cargo llvm-cov --html` on failure (with `--branch` on nightly).
+CLI `--skip` is additive on top of the `skip` array.
+
+The `license` check compares the start of each file to the header template. Default globs are `src/**/*.rs`, `tests/**/*.rs`, `examples/**/*.rs`, `benches/**/*.rs`. Files marked `@generated` are skipped.
+
+The `coverage` check parses `cargo llvm-cov report --json` and enforces each threshold with exact integer comparison. The `branches` metric is nightly-only (`rustup toolchain install nightly --component llvm-tools-preview`). On stable it is silently dropped, and an explicit `coverage.branches` aborts with exit `4`. On failure, drill in with `cargo llvm-cov --html` (`--branch` on nightly) and open `target/llvm-cov/html/index.html`.
 
 ## Exit codes
 
@@ -91,20 +94,20 @@ The `skip` array carries a project-wide baseline of checks to disable. CLI `--sk
 |------|----------------------------------------------------------------------------------------|
 | 0    | All checks passed                                                                      |
 | 1    | One or more checks failed                                                              |
-| 2    | Usage error (unknown flag, invalid `--skip` value, or every check skipped via `--skip`)|
+| 2    | Usage error (unknown flag, invalid `--skip` value, or every check skipped)             |
 | 3    | A required external tool (`cargo-llvm-cov`, `cargo-machete`, `cargo-audit`) is absent  |
 | 4    | `coverage.branches` is configured but the active toolchain is stable                   |
 
 ## Pre-commit / CI
 
-A minimal pre-commit hook:
+Minimal pre-commit hook:
 
 ```sh
 #!/usr/bin/env bash
 lockpick || exit 1
 ```
 
-A minimal GitHub Actions job:
+Minimal GitHub Actions job:
 
 ```yaml
 - uses: taiki-e/install-action@v2
@@ -115,7 +118,7 @@ A minimal GitHub Actions job:
 
 ## How it schedules
 
-Cargo holds an exclusive lock on `target/.cargo-lock` while any subcommand mutates the build directory. lockpick schedules around that constraint:
+Cargo holds an exclusive lock on `target/.cargo-lock` while a build subcommand runs. lockpick schedules around it:
 
 ```text
   fmt        ┐
@@ -125,10 +128,8 @@ Cargo holds an exclusive lock on `target/.cargo-lock` while any subcommand mutat
 
   check ──► test ──► clippy ──► doc ──► doc-test    serial (share target/.cargo-lock)
               │
-              └──► coverage                         post-test
+              └──► coverage                         post-test, parallel with chain tail
 ```
-
-The independent cohort runs alongside the serial chain. Coverage forks off the chain as soon as `test` finishes and runs in parallel with the chain tail.
 
 ## License
 

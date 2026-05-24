@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// lockpick - Rust CLI to enforce merge checks and code quality
+// lockpick - Run every Rust quality gate in one command
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
 //! Lockpick configuration loaded from `[workspace.metadata.lockpick]`
@@ -16,11 +16,10 @@ use crate::tooling::cargo_command;
 
 /// Per-metric coverage thresholds.
 ///
-/// `functions`, `lines`, and `regions` always run and default to 100%.
-/// `branches` is `Option<u8>` because branch coverage requires nightly:
-/// `None` means "unset" and behaves as 100% when nightly is detected and
-/// is silently dropped on stable. `Some(n)` is an explicit user choice
-/// and causes lockpick to refuse to run on stable.
+/// `functions`, `lines` and `regions` always run and default to 100%.
+/// `branches` is optional because branch coverage requires nightly:
+/// unset defaults to 100% on nightly and is silently dropped on
+/// stable. An explicit value causes lockpick to refuse to run on stable.
 #[derive(Deserialize, Debug, Clone, Copy)]
 #[serde(default, deny_unknown_fields)]
 pub struct CoverageConfig {
@@ -58,9 +57,8 @@ pub struct Config {
 pub struct LockpickMetadata {
     pub config: Config,
     pub has_lib_target: bool,
-    /// Absolute path of the enclosing workspace as reported by
-    /// `cargo metadata`. `None` when the probe failed (no Cargo.toml
-    /// in scope, malformed JSON, …).
+    /// Absolute path of the enclosing workspace. `None` when the probe
+    /// failed (no Cargo.toml in scope, malformed JSON, ...).
     pub workspace_root: Option<PathBuf>,
 }
 
@@ -89,8 +87,8 @@ struct CargoTarget {
 }
 
 /// Crate types Cargo treats as library targets, all of which can carry
-/// doctests. A plain `kind == "lib"` check misses `cdylib`, `proc-macro`,
-/// etc., and silently skips the doc-test gate on those workspaces.
+/// doctests. A plain `kind == "lib"` check misses `cdylib`,
+/// `proc-macro`, etc., and silently skips the doc-test gate.
 const LIB_KINDS: &[&str] = &["lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"];
 
 impl LockpickMetadata {

@@ -2,7 +2,7 @@
 name = "lockpick"
 version = "0.6.0"
 edition = "2024"
-description = "Rust CLI to enforce merge checks and code quality"
+description = "Run every Rust quality gate in one command"
 repository = "https://github.com/Kuenlun/lockpick"
 authors = ["Juan Luis Leal Contreras <kuenlunleal@gmail.com>"]
 license = "MIT OR Apache-2.0"
