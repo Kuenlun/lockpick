@@ -14,6 +14,7 @@
 
 mod common;
 
+#[cfg(unix)]
 use common::{FORMATTED_MAIN_RS, TestResult, cargo_toml_strict, combined, scratch_crate, stdout};
 
 #[cfg(unix)]
