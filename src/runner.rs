@@ -73,7 +73,7 @@ pub fn run(mut cli: Cli) -> Result<(), LockpickError> {
 
     // Coverage rides on `test`, which is the only path that emits the
     // profraw files coverage consumes. If `test` did not survive the
-    // CLI, coverage cannot have either — the assert pins that invariant
+    // CLI, coverage cannot have either. The assert pins that invariant
     // for future refactors.
     if plan.is_empty() {
         debug_assert!(
@@ -220,17 +220,17 @@ fn run_one(
 ///
 /// Layout (matches the README's `## Scheduling` diagram):
 ///
-/// * Independent cohort — one worker thread per check, all in parallel.
-/// * Serial chain — single worker walking
+/// * Independent cohort: one worker thread per check, all in parallel.
+/// * Serial chain: single worker walking
 ///   `compile → test → clippy → doc → doc-test`. Compile failure skips
 ///   the rest of the chain, since nothing else can build past it.
-/// * Coverage — forks off the chain after `test` passes and runs in
-///   parallel with the chain tail; skipped when `test` did not pass.
+/// * Coverage: forks off the chain after `test` passes and runs in
+///   parallel with the chain tail. Skipped when `test` did not pass.
 ///
 /// Outcomes are returned in plan-insertion order so the verbose section
 /// listing and the final summary stay deterministic.
 ///
-/// A panicking check propagates the panic — masking it as a `Fail` would
+/// A panicking check propagates the panic. Masking it as a `Fail` would
 /// also drop the user's diagnostics.
 fn run_pipeline(
     plan: &Plan,
@@ -280,10 +280,9 @@ fn run_pipeline(
                 chain_outcomes.push((idx, outcome));
             }
 
-            // Coverage is only spawned when `test` passes; otherwise
+            // Coverage is only spawned when `test` passes. Otherwise
             // mark its spinner Skip so the user sees the gate did not
-            // fire. `or_else` keeps the two cases in their natural
-            // order — primary first, fallback second.
+            // fire.
             let cov_outcome = coverage_handle
                 .map(|h| {
                     h.join()

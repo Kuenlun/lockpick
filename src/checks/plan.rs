@@ -18,7 +18,7 @@ use super::{audit, clippy, compile, doc, doctest, fmt, license_header, machete, 
 /// `target/.cargo-lock`. Lower values run first; gaps are allowed.
 ///
 /// The chain models the dependency every cargo build subcommand has on
-/// the per-`target/` exclusive lock — running two of these in parallel
+/// the per-`target/` exclusive lock. Running two of these in parallel
 /// would just block on the lock and noisily print `Blocking waiting for
 /// file lock`. See the `## Scheduling` section of the README.
 pub mod chain {
@@ -81,9 +81,9 @@ impl Plan {
     }
 
     /// Checks that compete for `target/.cargo-lock`, sorted by their
-    /// declared chain position so the runner walks them in canonical
-    /// order — `compile → test → clippy → doc → doc-test` — regardless
-    /// of insertion order.
+    /// declared chain position so the runner walks them in the canonical
+    /// `compile → test → clippy → doc → doc-test` order regardless of
+    /// insertion order.
     pub fn serial_chain(&self) -> impl Iterator<Item = (usize, &dyn Check)> {
         let mut chain: Vec<(u8, usize, &dyn Check)> = self
             .iter()
@@ -96,7 +96,7 @@ impl Plan {
 
 /// Assemble the [`Plan`] of checks that survived CLI/config gating.
 ///
-/// Insertion order doubles as display order — the verbose section list
+/// Insertion order doubles as display order. The verbose section list
 /// and the final summary follow it. Execution order inside the serial
 /// chain is decoupled and lives in [`Check::chain_position`].
 ///
