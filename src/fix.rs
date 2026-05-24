@@ -1,19 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// lockpick - Rust CLI to enforce merge checks and code quality
+// lockpick - Run every Rust quality gate in one command
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
-//! `--fix` phase: auto-apply formatter, clippy and machete fixes before
-//! the verify pipeline. Streams subprocess output live; aborts at the
-//! first failing step so the user never sees the same lint twice.
+//! `--fix` phase: auto-apply formatter, clippy and machete fixes
+//! before the verify pipeline. Streams subprocess output live and
+//! aborts at the first failing step.
 
 use crate::checks::{COMMON_ARGS, CargoCli, clippy::CLIPPY_LINT_ARGS, fmt_cargo_cmd};
 use crate::cli::{Cli, SkipOption};
 use crate::reporter::Reporter;
 
-/// Run every enabled fix step in order. Returns `Err(())` if a step
-/// fails or its launch errors; the caller maps that to the pipeline's
-/// generic failure exit so the user sees the subprocess output we
-/// already streamed plus the banner this module prints.
+/// Run every enabled fix step in order. `Err(())` on a failed step or
+/// launch error. The caller maps it to the pipeline's failure exit.
 pub fn apply(cli: &Cli, runner: &CargoCli, reporter: &Reporter) -> Result<(), ()> {
     let clippy_args = clippy_fix_args();
     let steps: [(SkipOption, &str, &[&str]); 3] = [
@@ -46,9 +44,9 @@ fn run_step(runner: &CargoCli, reporter: &Reporter, sub: &str, args: &[&str]) ->
     }
 }
 
-/// Build the clippy fix argv: `--fix`, workspace prefix, dirty/staged
-/// overrides (so users with WIP changes are not blocked), then the
-/// shared lint tail behind `--`.
+/// Clippy fix argv: `--fix`, workspace prefix, dirty/staged overrides
+/// (so WIP changes do not block the fix), then the shared lint tail
+/// behind `--`.
 fn clippy_fix_args() -> Vec<&'static str> {
     let mut v = Vec::with_capacity(COMMON_ARGS.len() + CLIPPY_LINT_ARGS.len() + 4);
     v.push("--fix");

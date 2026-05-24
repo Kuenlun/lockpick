@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// lockpick - Rust CLI to enforce merge checks and code quality
+// lockpick - Run every Rust quality gate in one command
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
 use std::io::IsTerminal;
@@ -25,17 +25,13 @@ pub fn run(mut cli: Cli) -> Result<(), LockpickError> {
     // Fold any `skip = [...]` from Cargo.toml into the CLI's view of
     // skips so every downstream consumer reads from a single source.
     cli.merge_config_skips(&metadata.config.skip);
-    // Color decision drives both the subprocess vocabulary
-    // (`CARGO_TERM_COLOR`, rustfmt's `--color`) and the global `colored`
-    // override, so the user's `--color`/`NO_COLOR`/TTY signals land
-    // coherently across our own output and every cargo child.
+    // Single color decision shared by our output and every subprocess
+    // (`CARGO_TERM_COLOR`, rustfmt `--color`) so `--color`/`NO_COLOR`/TTY
+    // signals land coherently across both.
     let color = cli.color_mode(std::io::stdout().is_terminal());
-    // Process-wide override: every other crate linked into this process inherits it too.
+    // Process-wide override: every other crate linked in inherits it.
     colored::control::set_override(color == ColorMode::Always);
     let runner = CargoCli::detect(color, metadata.workspace_root.clone());
-    // Probe the toolchain once at startup. Both the early `branches`-on-
-    // stable gate and the per-check `--branch` argv key off this single
-    // boolean, so caching is wasted state.
     let is_nightly = tooling::is_nightly();
     let config = &metadata.config;
     let has_lib = metadata.has_lib_target;
@@ -45,16 +41,15 @@ pub fn run(mut cli: Cli) -> Result<(), LockpickError> {
     require_tooling(&cli, coverage_active, &toolchain)?;
     require_nightly_for_branches(coverage_active, config, is_nightly)?;
 
-    // Fix phase runs before the verify pipeline so the same invocation
-    // can heal the tree and then prove it. Abort on failure: the
-    // pipeline would only refail on the same lint with the same output.
+    // Fix phase runs first so the same invocation can heal the tree
+    // and then prove it. Abort on failure: the pipeline would only
+    // refail on the same lint.
     if cli.fix && fix::apply(&cli, &runner, &reporter).is_err() {
         return Err(LockpickError::ChecksFailed(1));
     }
 
-    // Branch coverage measurement is gated on nightly because
-    // `-Z coverage-options=branch` is unstable. Stable runs still get
-    // functions/lines/regions; only the branches metric is dropped.
+    // `-Z coverage-options=branch` is nightly-only. Stable runs still
+    // get functions, lines and regions.
     let branch_coverage = is_nightly;
 
     let plan = checks::build_plan(
@@ -71,10 +66,8 @@ pub fn run(mut cli: Cli) -> Result<(), LockpickError> {
         branch_coverage,
     });
 
-    // Coverage rides on `test`, which is the only path that emits the
-    // profraw files coverage consumes. If `test` did not survive the
-    // CLI, coverage cannot have either. The assert pins that invariant
-    // for future refactors.
+    // Coverage rides on `test` (the only source of `.profraw` files),
+    // so an empty plan must imply no coverage check.
     if plan.is_empty() {
         debug_assert!(
             coverage_check.is_none(),
@@ -131,10 +124,9 @@ fn is_coverage_active(cli: &Cli) -> bool {
     !cli.skips(SkipOption::Coverage) && !cli.skips(SkipOption::Test)
 }
 
-/// Refuse to run when the user configured `coverage.branches` but the
-/// active toolchain is stable. Branch coverage relies on
-/// `-Z coverage-options=branch` (nightly-only), and degrading silently
-/// to a non-branch measurement would mask the user's explicit threshold.
+/// Refuse to run when `coverage.branches` is configured on stable.
+/// Silently dropping the threshold would mask the user's explicit ask,
+/// and branch coverage needs nightly's `-Z coverage-options=branch`.
 const fn require_nightly_for_branches(
     coverage_active: bool,
     config: &Config,
@@ -147,9 +139,8 @@ const fn require_nightly_for_branches(
     }
 }
 
-/// Collect every absent cargo subcommand at once so the user can install
-/// all of them in a single `cargo install …` invocation instead of
-/// re-running lockpick after each one.
+/// Collect every absent cargo subcommand at once so the user can
+/// install all of them in a single `cargo install …` invocation.
 fn require_tooling(
     cli: &Cli,
     coverage_active: bool,
@@ -181,8 +172,8 @@ fn require_tooling(
     }
 }
 
-/// Render one banner line per planned cargo invocation, plus a trailing
-/// blank line. Caller is responsible for the `is_verbose` gate.
+/// Render one banner line per planned cargo invocation. Caller gates
+/// on `is_verbose`.
 fn print_planned_commands(reporter: &Reporter, plan: &Plan, coverage: Option<&dyn Check>) {
     for (_, c) in plan.iter() {
         reporter.command(&c.cmd());
@@ -193,9 +184,8 @@ fn print_planned_commands(reporter: &Reporter, plan: &Plan, coverage: Option<&dy
     reporter.diagln("");
 }
 
-/// Run a single check and finish its progress bar from the same thread.
-/// PASS/FAIL marks land as soon as the check ends, regardless of which
-/// cohort it belongs to.
+/// Run a single check and finish its progress bar from the same
+/// thread, so PASS/FAIL marks land as soon as the check ends.
 fn run_one(
     check: &dyn Check,
     pb: &ProgressBar,
@@ -204,10 +194,8 @@ fn run_one(
 ) -> CheckOutcome {
     let outcome = check.run(runner);
     reporter.finish_spinner(pb, check.label(), outcome.status);
-    // A check that downgrades itself to `Skip` carries a short reason
-    // in `output`; surface it inline so the user sees why instead of an
-    // unexplained SKIP. `Pass`/`Fail` use `output` for section dumps,
-    // not notes, so this branch never fires for them.
+    // A `Skip` downgrade carries a short reason in `output`. Surface
+    // it so the user sees why instead of an unexplained SKIP.
     if outcome.status == TaskStatus::Skip && !outcome.output.is_empty() {
         reporter.note(&format!("{}: {}", check.label(), outcome.output));
     }
@@ -216,22 +204,19 @@ fn run_one(
 
 /// Schedule every check under one [`thread::scope`] so the independent
 /// cohort, the serial chain and coverage all overlap whenever Cargo's
-/// per-`target/` lock allows it.
-///
-/// Layout (matches the README's `## Scheduling` diagram):
+/// per-`target/` lock allows it. Layout mirrors the README's
+/// `## How it schedules` diagram:
 ///
 /// * Independent cohort: one worker thread per check, all in parallel.
 /// * Serial chain: single worker walking
-///   `compile → test → clippy → doc → doc-test`. Compile failure skips
-///   the rest of the chain, since nothing else can build past it.
-/// * Coverage: forks off the chain after `test` passes and runs in
-///   parallel with the chain tail. Skipped when `test` did not pass.
+///   `compile, test, clippy, doc, doc-test`. Compile failure skips the
+///   rest of the chain.
+/// * Coverage: forks off after `test` passes and runs in parallel with
+///   the chain tail.
 ///
-/// Outcomes are returned in plan-insertion order so the verbose section
-/// listing and the final summary stay deterministic.
-///
-/// A panicking check propagates the panic. Masking it as a `Fail` would
-/// also drop the user's diagnostics.
+/// Outcomes return in plan-insertion order so verbose sections and the
+/// summary are deterministic. Panicking checks propagate via
+/// [`std::panic::resume_unwind`] rather than masking as `Fail`.
 fn run_pipeline(
     plan: &Plan,
     pbs: &[ProgressBar],
@@ -280,9 +265,8 @@ fn run_pipeline(
                 chain_outcomes.push((idx, outcome));
             }
 
-            // Coverage is only spawned when `test` passes. Otherwise
-            // mark its spinner Skip so the user sees the gate did not
-            // fire.
+            // Coverage only spawns when `test` passes. Otherwise mark
+            // its spinner Skip so the user sees the gate did not fire.
             let cov_outcome = coverage_handle
                 .map(|h| {
                     h.join()
@@ -317,8 +301,7 @@ fn run_pipeline(
 }
 
 /// Flatten plan outcomes plus optional coverage into `(label, outcome)`
-/// pairs for reporting, in display order: plan items (insertion order),
-/// then coverage if it ran.
+/// pairs for reporting, in insertion order with coverage last.
 fn flatten_outcomes<'a>(
     plan: &'a Plan,
     outcomes: &'a [CheckOutcome],
@@ -334,7 +317,7 @@ fn flatten_outcomes<'a>(
     items
 }
 
-/// Print PASS sections (verbose only) then FAIL sections; return the
+/// Print PASS sections (verbose only) then FAIL sections. Return the
 /// number of failing checks.
 fn report_results(reporter: &Reporter, items: &[(&str, &CheckOutcome)]) -> usize {
     if reporter.is_verbose {

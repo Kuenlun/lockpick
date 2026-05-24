@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// lockpick - Rust CLI to enforce merge checks and code quality
+// lockpick - Run every Rust quality gate in one command
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
 //! The [`Check`] trait, the [`chain`] of serial slot positions, and the
@@ -15,12 +15,11 @@ use super::runner::Runner;
 use super::{audit, clippy, compile, doc, doctest, fmt, license_header, machete, test};
 
 /// Slot for a check inside the serial chain that competes for
-/// `target/.cargo-lock`. Lower values run first; gaps are allowed.
+/// `target/.cargo-lock`. Lower values run first. Gaps are allowed.
 ///
-/// The chain models the dependency every cargo build subcommand has on
-/// the per-`target/` exclusive lock. Running two of these in parallel
-/// would just block on the lock and noisily print `Blocking waiting for
-/// file lock`. See the `## Scheduling` section of the README.
+/// Running two cargo build subcommands in parallel would block on
+/// `target/.cargo-lock` and print `Blocking waiting for file lock`. See
+/// `## How it schedules` in the README for the cohort layout.
 pub mod chain {
     pub const COMPILE: u8 = 0;
     pub const TEST: u8 = 1;
@@ -37,21 +36,16 @@ pub trait Check: Send + Sync {
     fn cmd(&self) -> String;
     /// Execute the check.
     fn run(&self, runner: &dyn Runner) -> CheckOutcome;
-    /// Position of this check inside the serial chain that competes
-    /// for `target/.cargo-lock`. `None` marks an independent check
-    /// safe to run in parallel with everything else (it does not
-    /// touch `target/`).
-    ///
-    /// Canonical positions live in [`chain`]; lower runs first.
+    /// Slot inside the serial chain (lower runs first). `None` marks
+    /// an independent check safe to run in parallel with everything
+    /// else. Canonical positions live in [`chain`].
     fn chain_position(&self) -> Option<u8>;
 }
 
 /// The full schedule of checks that survived CLI/config gating.
-///
-/// Items keep insertion order so the verbose section list and the
-/// final summary stay stable run-to-run. The runner partitions them
-/// into two cohorts that Cargo's per-`target/` lock actually allows
-/// to overlap: an independent cohort and a serial chain.
+/// Items keep insertion order for stable reporting. The runner
+/// partitions them into an independent cohort and a serial chain that
+/// Cargo's per-`target/` lock allows to overlap.
 pub struct Plan {
     items: Vec<Box<dyn Check>>,
 }
@@ -80,9 +74,9 @@ impl Plan {
         self.iter().filter(|(_, c)| c.chain_position().is_none())
     }
 
-    /// Checks that compete for `target/.cargo-lock`, sorted by their
-    /// declared chain position so the runner walks them in the canonical
-    /// `compile → test → clippy → doc → doc-test` order regardless of
+    /// Checks that compete for `target/.cargo-lock`, sorted by chain
+    /// position so the runner walks them in the canonical
+    /// `compile, test, clippy, doc, doc-test` order regardless of
     /// insertion order.
     pub fn serial_chain(&self) -> impl Iterator<Item = (usize, &dyn Check)> {
         let mut chain: Vec<(u8, usize, &dyn Check)> = self
@@ -95,17 +89,15 @@ impl Plan {
 }
 
 /// Assemble the [`Plan`] of checks that survived CLI/config gating.
+/// Insertion order is display order. Execution order inside the serial
+/// chain lives in [`Check::chain_position`].
 ///
-/// Insertion order doubles as display order. The verbose section list
-/// and the final summary follow it. Execution order inside the serial
-/// chain is decoupled and lives in [`Check::chain_position`].
-///
-/// `coverage_active` instruments the `test` check so its `.profraw`
-/// files feed the coverage gate; `has_lib` gates the doc-test check;
-/// `branch_coverage` (true on nightly) passes `--branch` to the
-/// instrumented test run; `color` is forwarded to the fmt check, whose
-/// rustfmt diff renderer is the only subprocess that ignores the
-/// `CARGO_TERM_COLOR` env var.
+/// * `coverage_active` instruments `test` so its profraws feed coverage.
+/// * `has_lib` gates the doc-test check.
+/// * `branch_coverage` (true on nightly) passes `--branch` to the
+///   instrumented test run.
+/// * `color` is forwarded to the fmt check (rustfmt's diff ignores
+///   `CARGO_TERM_COLOR`).
 #[must_use]
 pub fn build_plan(
     cli: &Cli,

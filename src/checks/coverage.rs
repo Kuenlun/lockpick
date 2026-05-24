@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// lockpick - Rust CLI to enforce merge checks and code quality
+// lockpick - Run every Rust quality gate in one command
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
 //! Coverage gate. Parses the JSON summary from `cargo llvm-cov report`
@@ -17,7 +17,7 @@ const COV_REPORT_PLAIN_ARGS: &[&str] = &["report", "--json", "--summary-only"];
 pub struct CoverageCheck {
     pub thresholds: CoverageConfig,
     /// Whether to ask `llvm-cov report` for branch coverage and to
-    /// enforce the branches threshold. Off on stable Rust; the runner
+    /// enforce the branches threshold. Off on stable Rust. The runner
     /// keys it on [`crate::tooling::is_nightly`].
     pub branch_coverage: bool,
 }
@@ -56,11 +56,10 @@ impl Check for CoverageCheck {
         }
     }
 
-    /// Coverage is never scheduled through [`crate::checks::Plan`]: the
-    /// runner forks it off after the chain's `test` slot succeeds, so
-    /// `None` here is a non-event. It is still correct on its own
-    /// terms: `llvm-cov report` only reads cached profraws and does not
-    /// take Cargo's per-`target/` lock.
+    /// Coverage is never scheduled through [`crate::checks::Plan`].
+    /// The runner forks it off after the chain's `test` slot passes.
+    /// `None` is also correct on its own terms: `llvm-cov report` only
+    /// reads cached profraws and does not take `target/.cargo-lock`.
     fn chain_position(&self) -> Option<u8> {
         None
     }
@@ -70,8 +69,8 @@ fn collect_report(runner: &dyn Runner, args: &[&str]) -> Result<Report, String> 
     match runner.spawn("llvm-cov", args, &[]) {
         Ok(sr) if sr.success => serde_json::from_slice::<Report>(&sr.stdout)
             .map_err(|e| format!("malformed llvm-cov JSON: {e}")),
-        // Some llvm-cov failures write diagnostics to stdout, so both
-        // streams must surface to the user.
+        // llvm-cov sometimes writes diagnostics to stdout, so surface
+        // both streams.
         Ok(sr) => Err(combine_streams(&sr.stdout, &sr.stderr)),
         Err(e) => Err(format!("failed to launch `cargo llvm-cov`: {e}")),
     }
@@ -101,10 +100,9 @@ fn evaluate(report: &Report, t: CoverageConfig, branch_coverage: bool) -> CheckO
                 continue;
             }
             any_real = true;
-            // Integer comparison rather than f64 percentages so the gate
-            // is exact at ULP boundaries. The multiplications run in
-            // u128 so they cannot overflow for any conceivable
-            // count/threshold pair.
+            // Integer comparison rather than f64 percentages so the
+            // gate is exact at ULP boundaries. u128 cannot overflow
+            // for any conceivable count/threshold pair.
             if u128::from(metric.covered) * 100 < u128::from(metric.count) * u128::from(threshold) {
                 let missing = metric.count.saturating_sub(metric.covered);
                 lines.push(format!(
@@ -160,10 +158,9 @@ const METRIC_NAME_WIDTH: usize = 9;
 /// the other metrics.
 const DEFAULT_BRANCH_THRESHOLD: u8 = 100;
 
-/// Materialise the metric rows in display order. The `branches` row is
-/// only included when `branch_coverage` is true; on stable Rust we did
-/// not pass `--branch`, so `llvm-cov` reports zeros for it and surfacing
-/// the row would be misleading.
+/// Metric rows in display order. The `branches` row is dropped on
+/// stable: without `--branch`, llvm-cov reports zeros and the row
+/// would mislead.
 fn metric_rows(
     entry: &DataEntry,
     t: CoverageConfig,

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// lockpick - Rust CLI to enforce merge checks and code quality
+// lockpick - Run every Rust quality gate in one command
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
 //! `RustSec` advisory scan via `cargo audit`. Requires network access.
@@ -39,12 +39,11 @@ impl Check for AuditCheck {
     }
 }
 
-/// Substrings that cargo-audit, libgit2, or the OS resolver print when
-/// the advisory database cannot be fetched. Kept lowercase; the input is
-/// lowered once before matching. Every marker must be specific to an
-/// error path: `cargo audit` prints `Fetching advisory database from …`
-/// on every invocation, so any substring of that banner would also
-/// match a successful run that reported a real vulnerability.
+/// Lowercase substrings cargo-audit, libgit2, or the OS resolver print
+/// when the advisory database cannot be fetched. Each marker must be
+/// specific to an error path: `cargo audit` prints `Fetching advisory
+/// database from …` on every run, so a generic substring would also
+/// match successful runs that reported real vulnerabilities.
 const UNREACHABLE_MARKERS: &[&str] = &[
     "couldn't fetch",
     "failed to fetch",
