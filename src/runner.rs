@@ -11,6 +11,7 @@ use crate::checks::{self, CargoCli, Check, Plan, Runner, chain, coverage::Covera
 use crate::cli::{Cli, SkipOption};
 use crate::config::{Config, LockpickMetadata};
 use crate::error::{LockpickError, MissingTool};
+use crate::fix;
 use crate::reporter::{CheckOutcome, Reporter, TaskStatus};
 use crate::tooling::{self, ColorMode, Tool, Toolchain};
 
@@ -43,6 +44,13 @@ pub fn run(mut cli: Cli) -> Result<(), LockpickError> {
 
     require_tooling(&cli, coverage_active, &toolchain)?;
     require_nightly_for_branches(coverage_active, config, is_nightly)?;
+
+    // Fix phase runs before the verify pipeline so the same invocation
+    // can heal the tree and then prove it. Abort on failure: the
+    // pipeline would only refail on the same lint with the same output.
+    if cli.fix && fix::apply(&cli, &runner, &reporter).is_err() {
+        return Err(LockpickError::ChecksFailed(1));
+    }
 
     // Branch coverage measurement is gated on nightly because
     // `-Z coverage-options=branch` is unstable. Stable runs still get

@@ -67,6 +67,29 @@ impl CargoCli {
             workspace_root,
         }
     }
+
+    /// Spawn `cargo <sub> <args…>` with both streams inherited from the
+    /// parent, returning whether the child exited successfully. Mirrors
+    /// [`Runner::spawn`]'s anchoring, env scrubbing and signal forwarding
+    /// but streams output live so interactive fix sessions surface their
+    /// progress as it happens.
+    pub fn spawn_inherited(&self, sub: &str, args: &[&str]) -> std::io::Result<bool> {
+        let mut cmd = cargo_command();
+        if let Some(root) = &self.workspace_root {
+            cmd.current_dir(root);
+        }
+        cmd.arg(sub).args(args);
+        cmd.env("CARGO_TERM_COLOR", self.color.as_str());
+        if self.redirect_target_dir {
+            cmd.env("CARGO_TARGET_DIR", "target/lockpick");
+        }
+        cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+        let mut child = cmd.spawn()?;
+        let guard = crate::signals::state().register_child(child.id());
+        let status = child.wait();
+        drop(guard);
+        status.map(|s| s.success())
+    }
 }
 
 impl Runner for CargoCli {
