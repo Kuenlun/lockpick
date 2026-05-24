@@ -87,7 +87,7 @@ impl<'de> Deserialize<'de> for SkipOption {
     styles = clap_cargo::style::CLAP_STYLING
 )]
 pub struct Cli {
-    /// Skip one or more checks (e.g. --skip clippy --skip fmt)
+    /// Skip one or more checks (e.g. --skip clippy,fmt)
     //
     // `hide_possible_values` prevents clap from appending the auto-generated
     // `[possible values: ...]` line, which packed every variant onto a
@@ -97,8 +97,10 @@ pub struct Cli {
         long,
         value_enum,
         value_name = "CHECK",
+        value_delimiter = ',',
         hide_possible_values = true,
-        long_help = "Skip one or more checks. Repeatable, e.g. `--skip clippy --skip fmt`.\n\
+        long_help = "Skip one or more checks. Repeatable or comma-separated: \
+                     `--skip clippy --skip fmt` or `--skip clippy,fmt`.\n\
                      \n\
                      Possible values: check, clippy, test, doc-test, fmt, doc, machete, \
                      audit, license, coverage."
