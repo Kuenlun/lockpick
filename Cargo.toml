@@ -20,21 +20,21 @@ regions = 0
 branches = 0
 
 [dependencies]
-clap = { version = "4.6.1", features = ["derive", "wrap_help"] }
-clap-cargo = { version = "0.18.3", default-features = false, features = ["clap"] }
-clap_complete = "4.6"
-colored = "3.1.1"
-glob = "0.3.3"
-indicatif = "0.18.4"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
-thiserror = "2.0.18"
+clap = { version = "4", features = ["derive", "wrap_help"] }
+clap-cargo = { version = "0.18", default-features = false, features = ["clap"] }
+clap_complete = "4"
+colored = "3"
+glob = "0.3"
+indicatif = "0.18"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
 
 # Unix-only: SIGINT/SIGTERM capture so a Ctrl-C (or `kill -INT`) mid-pipeline
 # yields the canonical `128 + signum` exit code instead of being misread as
 # a check failure. Children get the same signal forwarded via `kill(1)`.
 [target.'cfg(unix)'.dependencies]
-signal-hook = { version = "0.3.18", default-features = false, features = ["iterator"] }
+signal-hook = { version = "0.4", default-features = false, features = ["iterator"] }
 
 [lints.rust]
 unsafe_code = "forbid"
