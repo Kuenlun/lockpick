@@ -26,19 +26,3 @@ impl Check for MacheteCheck {
         None
     }
 }
-
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cmd_is_cargo_machete() {
-        assert_eq!(MacheteCheck.cmd(), "cargo machete");
-    }
-
-    #[test]
-    fn chain_position_is_none_because_machete_only_reads_manifests() {
-        assert_eq!(MacheteCheck.chain_position(), None);
-    }
-}

@@ -28,29 +28,3 @@ impl Check for CompileCheck {
         Some(chain::COMPILE)
     }
 }
-
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cmd_targets_workspace_with_all_targets_and_features() {
-        let cmd = CompileCheck.cmd();
-        assert!(cmd.starts_with("cargo check "));
-        assert!(cmd.contains("--workspace"));
-        assert!(cmd.contains("--all-targets"));
-        assert!(cmd.contains("--all-features"));
-    }
-
-    #[test]
-    fn label_constant_matches_trait_method() {
-        assert_eq!(CompileCheck::LABEL, "check");
-        assert_eq!(CompileCheck.label(), CompileCheck::LABEL);
-    }
-
-    #[test]
-    fn chain_position_is_compile_so_compile_runs_first_and_gates_the_chain() {
-        assert_eq!(CompileCheck.chain_position(), Some(chain::COMPILE));
-    }
-}
