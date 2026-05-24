@@ -88,7 +88,11 @@ pub fn lockpick_bin() -> PathBuf {
 /// `HOME` and `CARGO_HOME` locate cargo and rustup state, `RUSTUP_HOME`
 /// the toolchain layout, `RUSTUP_TOOLCHAIN` honours `rust-toolchain.toml`
 /// overrides set by the harness. `PATH` is repopulated by the caller
-/// (either kept verbatim or replaced with a sanitised one).
+/// (either kept verbatim or replaced with a sanitised one). The Windows
+/// block forwards what MSVC's `link.exe` (`LIB`, `INCLUDE`, `LIBPATH`)
+/// and the Win32 runtime (`SystemRoot`, `TEMP`, `USERPROFILE`, etc.)
+/// demand. `forward_env` silently drops any var unset on the current
+/// platform, so Unix runs ignore the Windows tail.
 const PASSTHROUGH_ENV: &[&str] = &[
     "HOME",
     "CARGO_HOME",
@@ -101,6 +105,23 @@ const PASSTHROUGH_ENV: &[&str] = &[
     // writes into `target/llvm-cov-target/` instead of dumping
     // `default_*.profraw` in whatever cwd the test happened to pick.
     "LLVM_PROFILE_FILE",
+    // Windows MSVC toolchain + Win32 runtime.
+    "INCLUDE",
+    "LIB",
+    "LIBPATH",
+    "SystemRoot",
+    "SystemDrive",
+    "windir",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "LOCALAPPDATA",
+    "APPDATA",
+    "ProgramData",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ComSpec",
+    "PATHEXT",
 ];
 
 /// Build a `Command` that runs the lockpick test binary with a tightly
