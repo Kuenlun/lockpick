@@ -31,6 +31,7 @@ pub fn run(mut cli: Cli) -> Result<(), LockpickError> {
     // override, so the user's `--color`/`NO_COLOR`/TTY signals land
     // coherently across our own output and every cargo child.
     let color = cli.color_mode(std::io::stdout().is_terminal());
+    // Process-wide override: every other crate linked into this process inherits it too.
     colored::control::set_override(color == ColorMode::Always);
     let runner = CargoCli::detect(color);
     // Probe the toolchain once at startup. Both the early `branches`-on-
