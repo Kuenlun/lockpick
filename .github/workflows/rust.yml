@@ -37,10 +37,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt, clippy, llvm-tools-preview
-      - name: Install cargo-llvm-cov
+      - name: Install external check tools
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-llvm-cov
+          tool: cargo-llvm-cov,cargo-machete,cargo-audit,cargo-nextest
       - name: Generate LCOV report
         run: cargo llvm-cov --branch --workspace --all-targets --all-features --no-fail-fast --lcov --output-path lcov.info
       - name: Upload coverage to Codecov
