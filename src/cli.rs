@@ -111,6 +111,12 @@ pub struct Cli {
     #[arg(short = 'v', long = "verbose")]
     pub verbose: bool,
 
+    /// Auto-apply fmt + clippy --fix + machete --fix before running the
+    /// checks. Honours `--skip` on the same axes (skipping clippy also
+    /// skips its fix). Aborts before the pipeline if any fix step fails.
+    #[arg(long)]
+    pub fix: bool,
+
     /// Coloured output policy. `auto` (the default) follows TTY detection
     /// and the `NO_COLOR` env var; `always`/`never` are explicit overrides
     /// that win over both signals.
@@ -195,6 +201,7 @@ Examples:
   lockpick                            # run every check
   lockpick --skip coverage            # skip the slow coverage gate
   lockpick --skip clippy --skip fmt   # skip multiple checks (repeatable)
+  lockpick --fix                      # auto-apply fmt + clippy --fix + machete --fix before checks
   lockpick -v                         # CI mode: every cargo banner and section
   lockpick --color=never              # force plain output (overrides NO_COLOR)
   NO_COLOR=1 lockpick                 # plain ASCII output, no ANSI escapes
