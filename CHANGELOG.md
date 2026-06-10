@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/Kuenlun/lockpick/compare/v0.6.0...v0.7.0) - 2026-06-10
+
+### Added
+
+- [**breaking**] make coverage gate opt-in ([#64](https://github.com/Kuenlun/lockpick/pull/64))
+- *(fix)* add --fix to auto-apply clippy/machete/fmt before checks ([#57](https://github.com/Kuenlun/lockpick/pull/57))
+- *(cli)* accept `--skip a,b,c` comma list ([#55](https://github.com/Kuenlun/lockpick/pull/55))
+- *(audit)* skip when the advisory database is unreachable ([#53](https://github.com/Kuenlun/lockpick/pull/53))
+- *(cli)* add `completions <shell>` subcommand ([#43](https://github.com/Kuenlun/lockpick/pull/43))
+- *(cli)* add --color flag to override TTY and NO_COLOR ([#42](https://github.com/Kuenlun/lockpick/pull/42))
+- *(signals)* capture SIGINT/SIGTERM and forward to cargo children ([#41](https://github.com/Kuenlun/lockpick/pull/41))
+- *(cli)* wrap --help and add Examples/Environment sections ([#40](https://github.com/Kuenlun/lockpick/pull/40))
+- *(config)* accept skip = [...] in [*.metadata.lockpick] ([#39](https://github.com/Kuenlun/lockpick/pull/39))
+- *(output)* forward color decision to cargo and rustfmt subprocesses ([#38](https://github.com/Kuenlun/lockpick/pull/38))
+- *(reporter)* split report onto stdout, keep diagnostics on stderr ([#37](https://github.com/Kuenlun/lockpick/pull/37))
+
+### Fixed
+
+- *(doc)* preserve user-supplied RUSTDOCFLAGS ([#50](https://github.com/Kuenlun/lockpick/pull/50))
+- *(config)* detect doc-tests across all library crate kinds ([#49](https://github.com/Kuenlun/lockpick/pull/49))
+- *(coverage)* make --branch nightly-only, exit 4 when branches is set on stable ([#36](https://github.com/Kuenlun/lockpick/pull/36))
+- *(config)* reject unknown keys in [package.metadata.lockpick] ([#35](https://github.com/Kuenlun/lockpick/pull/35))
+- *(cli)* list every phase in --help, unify doc-test label, warn on inert --skip ([#34](https://github.com/Kuenlun/lockpick/pull/34))
+- *(runner)* anchor cwd to workspace root before running checks ([#33](https://github.com/Kuenlun/lockpick/pull/33))
+- *(runner)* [**breaking**] exit 2 when every check is skipped instead of 0 ([#32](https://github.com/Kuenlun/lockpick/pull/32))
+- *(runner)* bundle missing-tool errors into one install hint ([#29](https://github.com/Kuenlun/lockpick/pull/29))
+
+### Other
+
+- *(config)* skip coverage instead of pinning thresholds to zero ([#63](https://github.com/Kuenlun/lockpick/pull/63))
+- add integration suite for CLI, config and runtime contracts ([#62](https://github.com/Kuenlun/lockpick/pull/62))
+- *(deps)* loosen version pins and bump signal-hook to 0.4 ([#61](https://github.com/Kuenlun/lockpick/pull/61))
+- *(cli)* tighten short help and move details to long help ([#60](https://github.com/Kuenlun/lockpick/pull/60))
+- refresh tagline and tighten copy across README, CLI and comments ([#59](https://github.com/Kuenlun/lockpick/pull/59))
+- replace em dashes with conventional punctuation ([#58](https://github.com/Kuenlun/lockpick/pull/58))
+- *(runner)* anchor cargo children via `current_dir` instead of process chdir ([#56](https://github.com/Kuenlun/lockpick/pull/56))
+- *(runner)* note that colored override is process-wide ([#54](https://github.com/Kuenlun/lockpick/pull/54))
+- *(checks)* split mod.rs into plan, runner, util ([#52](https://github.com/Kuenlun/lockpick/pull/52))
+- *(reporter)* batch section dump under one suspend ([#51](https://github.com/Kuenlun/lockpick/pull/51))
+- drop remaining test-only seams and dead doc references ([#48](https://github.com/Kuenlun/lockpick/pull/48))
+- *(cli)* adopt clap-cargo styling preset ([#47](https://github.com/Kuenlun/lockpick/pull/47))
+- remove tests and test-only scaffolding ([#46](https://github.com/Kuenlun/lockpick/pull/46))
+- *(coverage)* set thresholds to 0 ([#45](https://github.com/Kuenlun/lockpick/pull/45))
+- *(runner)* schedule independent checks beside the serial chain ([#31](https://github.com/Kuenlun/lockpick/pull/31))
+
 ## [0.6.0](https://github.com/Kuenlun/lockpick/compare/v0.5.0...v0.6.0) - 2026-05-14
 
 ### Added
