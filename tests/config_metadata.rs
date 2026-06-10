@@ -23,7 +23,7 @@ fn package_metadata_skip_list_is_honored() -> TestResult {
     let (_path_dir, path) = common::sanitized_path()?;
     let project = scratch_crate(
         "skip_via_meta",
-        "[package.metadata.lockpick]\nskip = [\"audit\", \"machete\", \"coverage\"]\n",
+        "[package.metadata.lockpick]\nskip = [\"audit\", \"machete\"]\n",
         &[("src/main.rs", FORMATTED_MAIN_RS)],
     );
 
@@ -65,7 +65,7 @@ fn workspace_metadata_skip_list_is_honored() -> TestResult {
                      resolver = \"2\"\n\
                      \n\
                      [workspace.metadata.lockpick]\n\
-                     skip = [\"audit\", \"machete\", \"coverage\"]\n";
+                     skip = [\"audit\", \"machete\"]\n";
     std::fs::write(workspace.path().join("Cargo.toml"), root_toml)?;
 
     for name in ["alpha", "beta"] {

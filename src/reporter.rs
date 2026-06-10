@@ -214,3 +214,29 @@ impl Reporter {
         }
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn outcome_predicates_track_status() {
+        let skip = CheckOutcome::skipped();
+        assert_eq!(skip.status, TaskStatus::Skip);
+        assert!(skip.output.is_empty());
+        assert!(!skip.passed() && !skip.failed());
+
+        let pass = CheckOutcome {
+            status: TaskStatus::Pass,
+            output: String::new(),
+        };
+        assert!(pass.passed() && !pass.failed());
+
+        let fail = CheckOutcome {
+            status: TaskStatus::Fail,
+            output: String::new(),
+        };
+        assert!(fail.failed() && !fail.passed());
+    }
+}

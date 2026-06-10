@@ -12,7 +12,6 @@ categories = ["development-tools", "command-line-utilities"]
 # Self-hosted lockpick configuration.
 [package.metadata.lockpick]
 license-header = ".github/license_header.rs"
-skip = ["coverage"]
 
 [dependencies]
 clap = { version = "4", features = ["derive", "wrap_help"] }

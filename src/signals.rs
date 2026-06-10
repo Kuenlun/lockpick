@@ -139,3 +139,48 @@ fn forward_via_kill(sig: i32, pid: u32) {
 
 #[cfg(not(unix))]
 pub const fn install() {}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exit_code_maps_signals_to_128_plus_signum() {
+        assert_eq!(exit_code(None, 0), 0);
+        assert_eq!(exit_code(None, 3), 3);
+        assert_eq!(exit_code(Some(2), 0), 130);
+        assert_eq!(exit_code(Some(15), 1), 143);
+    }
+
+    #[test]
+    fn out_of_range_signals_fall_back_to_the_default() {
+        assert_eq!(exit_code(Some(0), 7), 7);
+        assert_eq!(exit_code(Some(128), 7), 7);
+        assert_eq!(exit_code(Some(-1), 7), 7);
+        assert_eq!(exit_code(Some(300), 7), 7);
+    }
+
+    #[test]
+    fn first_captured_signal_wins() {
+        let state = State::new();
+        assert_eq!(state.captured(), None);
+        let _ = state
+            .received
+            .compare_exchange(0, 2, Ordering::SeqCst, Ordering::SeqCst);
+        let _ = state
+            .received
+            .compare_exchange(0, 15, Ordering::SeqCst, Ordering::SeqCst);
+        assert_eq!(state.captured(), Some(2));
+    }
+
+    #[test]
+    fn child_guard_unregisters_its_pid_on_drop() {
+        let state = State::new();
+        {
+            let _guard = state.register_child(4242);
+            assert!(state.lock_children().contains(&4242));
+        }
+        assert!(state.lock_children().is_empty());
+    }
+}

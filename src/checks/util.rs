@@ -67,3 +67,49 @@ pub fn fmt_cargo_cmd(subcommand: &str, args: &[&str]) -> String {
         format!("cargo {subcommand} {}", args.join(" "))
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn combine_streams_inserts_a_newline_only_when_needed() {
+        assert_eq!(combine_streams(b"out", b"err"), "out\nerr");
+        assert_eq!(combine_streams(b"out\n", b"err"), "out\nerr");
+        assert_eq!(combine_streams(b"", b"err"), "err");
+        assert_eq!(combine_streams(b"out", b""), "out\n");
+    }
+
+    #[test]
+    fn outcome_from_lowers_exit_status_and_launch_failure() {
+        let pass = outcome_from(Ok(SpawnResult {
+            success: true,
+            stdout: b"hi".to_vec(),
+            stderr: Vec::new(),
+        }));
+        assert!(pass.passed());
+        assert_eq!(pass.output, "hi\n");
+
+        let fail = outcome_from(Ok(SpawnResult {
+            success: false,
+            stdout: Vec::new(),
+            stderr: b"boom".to_vec(),
+        }));
+        assert!(fail.failed());
+        assert_eq!(fail.output, "boom");
+
+        let launch = outcome_from(Err(std::io::Error::other("no such binary")));
+        assert!(launch.failed());
+        assert!(launch.output.is_empty());
+    }
+
+    #[test]
+    fn fmt_cargo_cmd_renders_with_and_without_args() {
+        assert_eq!(fmt_cargo_cmd("audit", &[]), "cargo audit");
+        assert_eq!(
+            fmt_cargo_cmd("check", &["--workspace", "--all-features"]),
+            "cargo check --workspace --all-features"
+        );
+    }
+}

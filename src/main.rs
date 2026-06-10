@@ -2,6 +2,10 @@
 // lockpick - Run every Rust quality gate in one command
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
+// `coverage(off)` on unit-test modules keeps `cargo llvm-cov` focused
+// on production code. The cfg is injected by cargo-llvm-cov on nightly.
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 mod checks;
 mod cli;
 mod config;
@@ -36,15 +40,16 @@ fn main() -> ExitCode {
 }
 
 /// Map a [`runner::run`] result to a process exit code: `0` success,
-/// `1` check failure, `2` empty pipeline, `3` missing tool,
-/// `4` `coverage.branches` on stable. Pre-check errors print their
-/// Display to stderr. `ChecksFailed` stays silent because the reporter
-/// already rendered the per-check FAIL sections.
+/// `1` check failure, `2` usage error (empty pipeline or contradictory
+/// coverage flags), `3` missing tool, `4` `coverage.branches` on
+/// stable. Pre-check errors print their Display to stderr.
+/// `ChecksFailed` stays silent because the reporter already rendered
+/// the per-check FAIL sections.
 fn dispatch(result: Result<(), LockpickError>) -> u8 {
     match result {
         Ok(()) => 0,
         Err(LockpickError::ChecksFailed(_)) => 1,
-        Err(e @ LockpickError::NoChecksToRun) => {
+        Err(e @ (LockpickError::NoChecksToRun | LockpickError::CoverageConflict(_))) => {
             eprintln!("error: {e}");
             2
         }

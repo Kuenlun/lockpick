@@ -12,7 +12,9 @@
 
 mod common;
 
-use common::{TestResult, dummy_cargo_project, run_lockpick, stderr, stdout};
+use common::{
+    FORMATTED_MAIN_RS, TestResult, dummy_cargo_project, run_lockpick, scratch_crate, stderr, stdout,
+};
 
 #[test]
 fn usage_error_on_unknown_skip_value() -> TestResult {
@@ -66,6 +68,57 @@ fn empty_pipeline_returns_exit_two_with_message() -> TestResult {
     assert!(
         err.contains("all checks skipped; nothing to verify"),
         "missing empty-pipeline message:\n{err}"
+    );
+    Ok(())
+}
+
+#[test]
+fn coverage_flag_conflicting_with_cli_skip_exits_two() -> TestResult {
+    // `--coverage` demands the gate run; combining it with a skip that
+    // disables the gate must be a usage error, not a silent winner.
+    let project = dummy_cargo_project();
+    for skip in ["coverage", "test"] {
+        let out = run_lockpick(project.path())
+            .args(["--coverage", "--skip", skip])
+            .output()?;
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "expected exit 2 on --coverage --skip {skip}, got code={code:?} stderr=\n{err}",
+            code = out.status.code(),
+            err = stderr(&out),
+        );
+        let err = stderr(&out);
+        assert!(
+            err.contains("`--coverage` conflicts with skipping") && err.contains(skip),
+            "missing conflict message for `{skip}`:\n{err}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn coverage_flag_conflicting_with_config_skip_exits_two() -> TestResult {
+    // The conflict guard runs after config skips merge into the CLI
+    // view, so a `skip = ["test"]` from Cargo.toml contradicts
+    // `--coverage` just like a CLI flag would.
+    let project = scratch_crate(
+        "config_conflict",
+        "[package.metadata.lockpick]\nskip = [\"test\"]\n",
+        &[("src/main.rs", FORMATTED_MAIN_RS)],
+    );
+    let out = run_lockpick(project.path()).arg("--coverage").output()?;
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "expected exit 2 on --coverage vs config skip, got code={code:?} stderr=\n{err}",
+        code = out.status.code(),
+        err = stderr(&out),
+    );
+    let err = stderr(&out);
+    assert!(
+        err.contains("config `skip` list"),
+        "conflict message should point at the config skip list:\n{err}"
     );
     Ok(())
 }

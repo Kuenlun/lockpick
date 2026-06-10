@@ -24,6 +24,14 @@ pub enum LockpickError {
     #[error("all checks skipped; nothing to verify")]
     NoChecksToRun,
 
+    /// `--coverage` combined with a skip that disables the gate, from
+    /// the CLI or the config `skip` list. Surfaced as a usage error
+    /// instead of silently letting one side win.
+    #[error(
+        "`--coverage` conflicts with skipping `{0}` (via `--skip {0}` or the config `skip` list)"
+    )]
+    CoverageConflict(&'static str),
+
     /// `coverage.branches` configured on a stable toolchain. Refusing
     /// up front beats handing back a raw `rustc` error mid-pipeline.
     #[error("{}", render_branches_nightly())]
@@ -126,4 +134,61 @@ fn render_branches_nightly() -> String {
     );
 
     out
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_tools_lists_binaries_and_combined_install_line() {
+        let err = LockpickError::MissingTools(vec![
+            MissingTool {
+                binary: "cargo-llvm-cov",
+                skip_flag: "coverage",
+            },
+            MissingTool {
+                binary: "cargo-audit",
+                skip_flag: "audit",
+            },
+        ]);
+        let msg = err.to_string();
+        assert!(msg.contains("2 required tools are missing"), "got: {msg}");
+        assert!(
+            msg.contains("cargo install cargo-llvm-cov cargo-audit"),
+            "missing combined install hint: {msg}"
+        );
+        assert!(
+            msg.contains("--skip coverage") && msg.contains("--skip audit"),
+            "missing skip escape hatches: {msg}"
+        );
+    }
+
+    #[test]
+    fn missing_single_tool_uses_singular_grammar() {
+        let err = LockpickError::MissingTools(vec![MissingTool {
+            binary: "cargo-machete",
+            skip_flag: "machete",
+        }]);
+        let msg = err.to_string();
+        assert!(msg.contains("1 required tool is missing"), "got: {msg}");
+    }
+
+    #[test]
+    fn coverage_conflict_names_the_skipped_check() {
+        let msg = LockpickError::CoverageConflict("test").to_string();
+        assert!(msg.contains("`--coverage`"), "got: {msg}");
+        assert!(msg.contains("--skip test"), "got: {msg}");
+    }
+
+    #[test]
+    fn branches_on_stable_points_at_both_fixes() {
+        let msg = LockpickError::BranchesRequireNightly.to_string();
+        assert!(msg.contains("coverage.branches"), "got: {msg}");
+        assert!(
+            msg.contains("rustup toolchain install nightly"),
+            "got: {msg}"
+        );
+    }
 }

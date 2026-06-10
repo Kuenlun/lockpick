@@ -76,7 +76,8 @@ impl<'de> Deserialize<'de> for SkipOption {
 #[command(
     version,
     about = "Run every Rust quality gate in one command: compile, clippy, fmt, tests, doc, \
-             doc-tests, machete, audit, licenses and coverage. One summary, one exit code.",
+             doc-tests, machete, audit, plus opt-in license and coverage gates. One summary, \
+             one exit code.",
     long_about = None,
     after_long_help = LONG_HELP_TAIL,
     // Cap help width even when stdout is not a TTY (pipes, CI logs). 100 is
@@ -118,6 +119,16 @@ pub struct Cli {
                      the pipeline if any fix step fails."
     )]
     pub fix: bool,
+
+    /// Run the opt-in coverage gate (thresholds default to 100%)
+    #[arg(
+        long,
+        long_help = "Run the coverage gate even when `[*.metadata.lockpick.coverage]` is \
+                     absent from Cargo.toml. Active thresholds default to 100% for every \
+                     metric. Contradicts `--skip coverage` and `--skip test`, which is \
+                     reported as a usage error rather than silently picking a winner."
+    )]
+    pub coverage: bool,
 
     /// Color policy. Honours `NO_COLOR` and TTY detection when `auto`
     #[arg(
@@ -198,6 +209,7 @@ Examples:
   lockpick                          # run every check
   lockpick --skip clippy,fmt        # skip multiple checks (comma or repeated)
   lockpick --fix                    # auto-fix fmt, clippy and machete first
+  lockpick --coverage               # also enforce the coverage gate (100% defaults)
   lockpick -v                       # show every cargo command and its full output
   lockpick --color=never            # force plain output (overrides NO_COLOR)
 
@@ -210,16 +222,85 @@ Configuration:
   Optional settings read from Cargo.toml under
   `[workspace.metadata.lockpick]` (preferred) or
   `[package.metadata.lockpick]`. Every field is optional. CLI `--skip`
-  is additive on top of the `skip = [...]` array.
+  is additive on top of the `skip = [...]` array. The coverage gate is
+  opt-in: it runs when the `coverage` table exists (even empty) or
+  `--coverage` is passed.
 
       [workspace.metadata.lockpick]
       skip = [\"audit\", \"machete\"]
       license-header = \".github/license_header.rs\"
       license-header-globs = [\"src/**/*.rs\", \"tests/**/*.rs\"]
 
+      # Presence of this table (even empty) enables the coverage gate.
       [workspace.metadata.lockpick.coverage]
-      functions = 100
+      functions = 100   # every threshold defaults to 100
       lines     = 100
       regions   = 100
       # branches = 100  # opt-in, nightly-only (exit 4 on stable)
 ";
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skip_flag_round_trips_every_variant() {
+        for variant in SkipOption::value_variants() {
+            assert_eq!(SkipOption::from_flag(variant.skip_flag()), Some(*variant));
+        }
+    }
+
+    #[test]
+    fn deserialize_accepts_kebab_case_identifiers() {
+        let parsed: SkipOption = serde_json::from_value(serde_json::json!("doc-test")).unwrap();
+        assert_eq!(parsed, SkipOption::DocTest);
+    }
+
+    #[test]
+    fn deserialize_rejects_unknown_identifier_with_hint() {
+        let err = serde_json::from_value::<SkipOption>(serde_json::json!("wat")).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("unknown skip value `wat`"), "got: {msg}");
+        assert!(msg.contains("doc-test"), "hint must list variants: {msg}");
+    }
+
+    #[test]
+    fn merge_config_skips_appends_without_duplicating() {
+        let mut cli = Cli::parse_from(["lockpick", "--skip", "clippy"]);
+        cli.merge_config_skips(&[SkipOption::Clippy, SkipOption::Fmt]);
+        assert_eq!(cli.skip, vec![SkipOption::Clippy, SkipOption::Fmt]);
+    }
+
+    #[test]
+    fn skips_reflects_parsed_values() {
+        let cli = Cli::parse_from(["lockpick", "--skip", "audit,machete"]);
+        assert!(cli.skips(SkipOption::Audit));
+        assert!(cli.skips(SkipOption::Machete));
+        assert!(!cli.skips(SkipOption::Coverage));
+    }
+
+    #[test]
+    fn coverage_flag_defaults_off_and_parses_on() {
+        assert!(!Cli::parse_from(["lockpick"]).coverage);
+        assert!(Cli::parse_from(["lockpick", "--coverage"]).coverage);
+    }
+
+    #[test]
+    fn explicit_color_choice_overrides_tty_state() {
+        let always = Cli::parse_from(["lockpick", "--color", "always"]);
+        let never = Cli::parse_from(["lockpick", "--color", "never"]);
+        for is_tty in [true, false] {
+            assert_eq!(always.color_mode(is_tty), ColorMode::Always);
+            assert_eq!(never.color_mode(is_tty), ColorMode::Never);
+        }
+    }
+
+    #[test]
+    fn completions_render_a_nonempty_script() {
+        let mut buf = Vec::new();
+        Cli::write_completions(Shell::Bash, &mut buf);
+        let script = String::from_utf8(buf).unwrap();
+        assert!(script.contains("lockpick"), "got: {script}");
+    }
+}

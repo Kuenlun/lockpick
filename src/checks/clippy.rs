@@ -8,6 +8,9 @@ use crate::reporter::CheckOutcome;
 // Strict policy: enable the three opt-in groups (pedantic, nursery,
 // cargo) and escalate every warning to an error. `restriction` is
 // excluded because its lints contradict each other by design.
+// `multiple_crate_versions` is carved out of the cargo group: duplicate
+// versions almost always come from transitive dependencies the project
+// under check cannot fix, so failing on them punishes the wrong party.
 //
 // Split from the workspace prefix so `--fix` can reuse the exact same
 // lint tail without `--` in the middle.
@@ -18,6 +21,8 @@ pub const CLIPPY_LINT_ARGS: &[&str] = &[
     "clippy::nursery",
     "-W",
     "clippy::cargo",
+    "-A",
+    "clippy::multiple_crate_versions",
     "-D",
     "warnings",
 ];
@@ -60,5 +65,35 @@ impl Check for ClippyCheck {
 
     fn chain_position(&self) -> Option<u8> {
         Some(chain::CLIPPY)
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn argv_is_workspace_prefix_then_separator_then_lint_tail() {
+        let (prefix, rest) = CLIPPY_ARGS.split_at(COMMON_ARGS.len());
+        assert_eq!(prefix, COMMON_ARGS);
+        assert_eq!(rest[0], "--");
+        assert_eq!(&rest[1..], CLIPPY_LINT_ARGS);
+    }
+
+    #[test]
+    fn transitive_duplicate_versions_are_exempted() {
+        // `-A` must come after `-W clippy::cargo` so it wins for that
+        // single lint while the rest of the group stays escalated.
+        let allow = CLIPPY_LINT_ARGS
+            .iter()
+            .position(|a| *a == "clippy::multiple_crate_versions")
+            .expect("exemption missing from lint tail");
+        assert_eq!(CLIPPY_LINT_ARGS[allow - 1], "-A");
+        let cargo_group = CLIPPY_LINT_ARGS
+            .iter()
+            .position(|a| *a == "clippy::cargo")
+            .expect("cargo group missing from lint tail");
+        assert!(cargo_group < allow);
     }
 }
