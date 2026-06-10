@@ -16,7 +16,8 @@ use crate::tooling::cargo_command;
 
 /// Per-metric coverage thresholds.
 ///
-/// `functions`, `lines` and `regions` always run and default to 100%.
+/// The coverage gate itself is opt-in (see [`Config::coverage`]). Once
+/// active, `functions`, `lines` and `regions` default to 100%.
 /// `branches` is optional because branch coverage requires nightly:
 /// unset defaults to 100% on nightly and is silently dropped on
 /// stable. An explicit value causes lockpick to refuse to run on stable.
@@ -45,7 +46,11 @@ impl Default for CoverageConfig {
 pub struct Config {
     pub license_header: Option<PathBuf>,
     pub license_header_globs: Option<Vec<String>>,
-    pub coverage: CoverageConfig,
+    /// Opt-in coverage gate. `Some` whenever the
+    /// `[*.metadata.lockpick.coverage]` table exists, even empty, with
+    /// per-metric thresholds defaulting to 100%. `None` keeps coverage
+    /// off unless the CLI passes `--coverage`.
+    pub coverage: Option<CoverageConfig>,
     /// Project-wide skip list. Same kebab-case identifiers `--skip`
     /// accepts on the CLI, merged with (not replaced by) any CLI flags.
     pub skip: Vec<SkipOption>,
@@ -163,4 +168,86 @@ fn extract_lockpick(metadata: &CargoMetadata) -> Option<Value> {
         );
     }
     None
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::cli::SkipOption;
+
+    fn metadata_from(value: serde_json::Value) -> CargoMetadata {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn coverage_table_is_off_by_default_and_on_when_present() {
+        let absent: Config = serde_json::from_value(json!({})).unwrap();
+        assert!(absent.coverage.is_none());
+
+        let present: Config = serde_json::from_value(json!({ "coverage": {} })).unwrap();
+        let thresholds = present.coverage.unwrap();
+        assert_eq!(thresholds.functions, 100);
+        assert_eq!(thresholds.lines, 100);
+        assert_eq!(thresholds.regions, 100);
+        assert!(thresholds.branches.is_none());
+    }
+
+    #[test]
+    fn config_accepts_kebab_case_fields_and_skip_list() {
+        let config: Config = serde_json::from_value(json!({
+            "license-header": "hdr.txt",
+            "skip": ["audit", "machete"],
+            "coverage": { "lines": 90 },
+        }))
+        .unwrap();
+        assert_eq!(config.license_header.unwrap(), PathBuf::from("hdr.txt"));
+        assert_eq!(config.skip, vec![SkipOption::Audit, SkipOption::Machete]);
+        assert_eq!(config.coverage.unwrap().lines, 90);
+    }
+
+    #[test]
+    fn invalid_section_falls_back_to_defaults() {
+        let config = deserialize_or_warn(json!({ "no-such-key": true }));
+        assert!(config.coverage.is_none());
+        assert!(config.skip.is_empty());
+    }
+
+    #[test]
+    fn workspace_metadata_wins_over_package_metadata() {
+        let metadata = metadata_from(json!({
+            "metadata": { "lockpick": { "skip": ["audit"] } },
+            "packages": [
+                { "metadata": { "lockpick": { "skip": ["fmt"] } }, "targets": [] },
+            ],
+        }));
+        let section = extract_lockpick(&metadata).unwrap();
+        assert_eq!(section, json!({ "skip": ["audit"] }));
+    }
+
+    #[test]
+    fn single_package_metadata_is_the_fallback() {
+        let metadata = metadata_from(json!({
+            "metadata": null,
+            "packages": [
+                { "metadata": { "lockpick": { "skip": ["fmt"] } }, "targets": [] },
+            ],
+        }));
+        let section = extract_lockpick(&metadata).unwrap();
+        assert_eq!(section, json!({ "skip": ["fmt"] }));
+    }
+
+    #[test]
+    fn multi_package_metadata_without_workspace_section_is_dropped() {
+        let metadata = metadata_from(json!({
+            "metadata": null,
+            "packages": [
+                { "metadata": { "lockpick": { "skip": ["fmt"] } }, "targets": [] },
+                { "metadata": null, "targets": [] },
+            ],
+        }));
+        assert!(extract_lockpick(&metadata).is_none());
+    }
 }

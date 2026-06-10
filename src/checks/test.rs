@@ -93,3 +93,69 @@ impl Check for TestCheck {
         Some(chain::TEST)
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dispatch_routes_instrumentation_runner_and_branch_flag() {
+        let cases = [
+            (
+                (true, true, true),
+                ("llvm-cov", LLVM_COV_NEXTEST_BRANCH_ARGS),
+            ),
+            (
+                (true, true, false),
+                ("llvm-cov", LLVM_COV_NEXTEST_PLAIN_ARGS),
+            ),
+            ((true, false, true), ("llvm-cov", LLVM_COV_BRANCH_ARGS)),
+            ((true, false, false), ("llvm-cov", LLVM_COV_PLAIN_ARGS)),
+            ((false, true, false), ("nextest", NEXTEST_PLAIN_ARGS)),
+            ((false, false, false), ("test", COMMON_ARGS)),
+        ];
+        for ((instrumented, nextest, branch_coverage), expected) in cases {
+            let check = TestCheck {
+                instrumented,
+                nextest,
+                branch_coverage,
+            };
+            assert_eq!(
+                check.dispatch(),
+                expected,
+                "instrumented={instrumented} nextest={nextest} branch={branch_coverage}"
+            );
+        }
+    }
+
+    #[test]
+    fn branch_flag_is_inert_without_instrumentation() {
+        for nextest in [true, false] {
+            let on = TestCheck {
+                instrumented: false,
+                nextest,
+                branch_coverage: true,
+            };
+            let off = TestCheck {
+                instrumented: false,
+                nextest,
+                branch_coverage: false,
+            };
+            assert_eq!(on.dispatch(), off.dispatch());
+        }
+    }
+
+    #[test]
+    fn cmd_renders_the_dispatched_argv() {
+        let plain = TestCheck {
+            instrumented: false,
+            nextest: false,
+            branch_coverage: false,
+        };
+        assert_eq!(
+            plain.cmd(),
+            "cargo test --workspace --all-targets --all-features"
+        );
+    }
+}

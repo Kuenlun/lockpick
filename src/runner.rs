@@ -9,7 +9,7 @@ use indicatif::ProgressBar;
 
 use crate::checks::{self, CargoCli, Check, Plan, Runner, chain, coverage::CoverageCheck};
 use crate::cli::{Cli, SkipOption};
-use crate::config::{Config, LockpickMetadata};
+use crate::config::{Config, CoverageConfig, LockpickMetadata};
 use crate::error::{LockpickError, MissingTool};
 use crate::fix;
 use crate::reporter::{CheckOutcome, Reporter, TaskStatus};
@@ -36,8 +36,9 @@ pub fn run(mut cli: Cli) -> Result<(), LockpickError> {
     let config = &metadata.config;
     let has_lib = metadata.has_lib_target;
 
-    let coverage_active = is_coverage_active(&cli);
+    let coverage_active = is_coverage_active(&cli, config);
 
+    require_coverage_consistency(&cli)?;
     require_tooling(&cli, coverage_active, &toolchain)?;
     require_nightly_for_branches(coverage_active, config, is_nightly)?;
 
@@ -61,8 +62,8 @@ pub fn run(mut cli: Cli) -> Result<(), LockpickError> {
         branch_coverage,
         color,
     );
-    let coverage_check = coverage_active.then_some(CoverageCheck {
-        thresholds: config.coverage,
+    let coverage_check = coverage_active.then(|| CoverageCheck {
+        thresholds: config.coverage.unwrap_or_default(),
         branch_coverage,
     });
 
@@ -76,7 +77,11 @@ pub fn run(mut cli: Cli) -> Result<(), LockpickError> {
         return Err(LockpickError::NoChecksToRun);
     }
 
-    if cli.skips(SkipOption::Test) && !cli.skips(SkipOption::Coverage) {
+    if cli.skips(SkipOption::Coverage) && config.coverage.is_none() {
+        reporter.note("--skip coverage has no effect: coverage is opt-in and not configured");
+    }
+    if config.coverage.is_some() && cli.skips(SkipOption::Test) && !cli.skips(SkipOption::Coverage)
+    {
         reporter.note("--skip test implies coverage will be skipped");
     }
     if cli.skips(SkipOption::DocTest) && !has_lib {
@@ -118,10 +123,29 @@ pub fn run(mut cli: Cli) -> Result<(), LockpickError> {
     Ok(())
 }
 
-/// Whether the coverage gate runs. Disabled by `--skip coverage` or by
-/// `--skip test` (no instrumentation, no coverage).
-fn is_coverage_active(cli: &Cli) -> bool {
-    !cli.skips(SkipOption::Coverage) && !cli.skips(SkipOption::Test)
+/// Whether the coverage gate runs. Opt-in via `--coverage` or the
+/// `[*.metadata.lockpick.coverage]` table, disabled by `--skip coverage`
+/// or by `--skip test` (no instrumentation, no coverage).
+fn is_coverage_active(cli: &Cli, config: &Config) -> bool {
+    (cli.coverage || config.coverage.is_some())
+        && !cli.skips(SkipOption::Coverage)
+        && !cli.skips(SkipOption::Test)
+}
+
+/// Refuse contradictory coverage flags. `--coverage` demands the gate
+/// run, so combining it with a skip of `coverage` or `test` (from the
+/// CLI or the config `skip` list) is a usage error, not a silent win
+/// for either side. Runs after [`Cli::merge_config_skips`] so config
+/// entries are covered too.
+fn require_coverage_consistency(cli: &Cli) -> Result<(), LockpickError> {
+    if cli.coverage {
+        for skip in [SkipOption::Coverage, SkipOption::Test] {
+            if cli.skips(skip) {
+                return Err(LockpickError::CoverageConflict(skip.skip_flag()));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Refuse to run when `coverage.branches` is configured on stable.
@@ -132,7 +156,14 @@ const fn require_nightly_for_branches(
     config: &Config,
     is_nightly: bool,
 ) -> Result<(), LockpickError> {
-    if coverage_active && config.coverage.branches.is_some() && !is_nightly {
+    let branches_configured = matches!(
+        config.coverage,
+        Some(CoverageConfig {
+            branches: Some(_),
+            ..
+        })
+    );
+    if coverage_active && branches_configured && !is_nightly {
         Err(LockpickError::BranchesRequireNightly)
     } else {
         Ok(())
@@ -340,4 +371,100 @@ fn report_results(reporter: &Reporter, items: &[(&str, &CheckOutcome)]) -> usize
         .collect();
     reporter.summary(items.len(), &failed);
     failed.len()
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    fn config_with_coverage() -> Config {
+        Config {
+            coverage: Some(CoverageConfig::default()),
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn coverage_is_inactive_by_default() {
+        let cli = Cli::parse_from(["lockpick"]);
+        assert!(!is_coverage_active(&cli, &Config::default()));
+    }
+
+    #[test]
+    fn coverage_activates_via_flag_or_config_table() {
+        let flag = Cli::parse_from(["lockpick", "--coverage"]);
+        assert!(is_coverage_active(&flag, &Config::default()));
+
+        let plain = Cli::parse_from(["lockpick"]);
+        assert!(is_coverage_active(&plain, &config_with_coverage()));
+    }
+
+    #[test]
+    fn skipping_coverage_or_test_deactivates_a_configured_gate() {
+        let config = config_with_coverage();
+        for skip in ["coverage", "test"] {
+            let cli = Cli::parse_from(["lockpick", "--skip", skip]);
+            assert!(!is_coverage_active(&cli, &config), "skip {skip}");
+        }
+    }
+
+    #[test]
+    fn coverage_flag_with_contradicting_skip_is_a_usage_error() {
+        for skip in ["coverage", "test"] {
+            let cli = Cli::parse_from(["lockpick", "--coverage", "--skip", skip]);
+            assert!(
+                matches!(
+                    require_coverage_consistency(&cli),
+                    Err(LockpickError::CoverageConflict(flag)) if flag == skip
+                ),
+                "skip {skip} must conflict with --coverage"
+            );
+        }
+    }
+
+    #[test]
+    fn coverage_flag_alone_is_consistent() {
+        let cli = Cli::parse_from(["lockpick", "--coverage"]);
+        assert!(require_coverage_consistency(&cli).is_ok());
+        let plain = Cli::parse_from(["lockpick", "--skip", "coverage"]);
+        assert!(require_coverage_consistency(&plain).is_ok());
+    }
+
+    #[test]
+    fn require_tooling_skips_llvm_cov_when_coverage_inactive() {
+        // An empty toolchain is missing every optional tool; with
+        // machete and audit skipped and coverage inactive, nothing is
+        // required. Activating coverage must then demand cargo-llvm-cov.
+        let cli = Cli::parse_from(["lockpick", "--skip", "machete,audit"]);
+        let toolchain = Toolchain::default();
+        assert!(require_tooling(&cli, false, &toolchain).is_ok());
+
+        let Err(LockpickError::MissingTools(missing)) = require_tooling(&cli, true, &toolchain)
+        else {
+            panic!("active coverage must require cargo-llvm-cov");
+        };
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].binary, "cargo-llvm-cov");
+    }
+
+    #[test]
+    fn branches_threshold_requires_nightly_only_when_coverage_active() {
+        let config = Config {
+            coverage: Some(CoverageConfig {
+                branches: Some(100),
+                ..CoverageConfig::default()
+            }),
+            ..Config::default()
+        };
+        assert!(matches!(
+            require_nightly_for_branches(true, &config, false),
+            Err(LockpickError::BranchesRequireNightly)
+        ));
+        assert!(require_nightly_for_branches(true, &config, true).is_ok());
+        assert!(require_nightly_for_branches(false, &config, false).is_ok());
+        assert!(require_nightly_for_branches(true, &Config::default(), false).is_ok());
+    }
 }

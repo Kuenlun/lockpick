@@ -57,3 +57,22 @@ fn clippy_fix_args() -> Vec<&'static str> {
     v.extend_from_slice(CLIPPY_LINT_ARGS);
     v
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clippy_fix_argv_keeps_fix_prefix_overrides_and_lint_tail() {
+        let args = clippy_fix_args();
+        assert_eq!(args[0], "--fix");
+        assert!(args.contains(&"--allow-dirty"));
+        assert!(args.contains(&"--allow-staged"));
+        let separator = args
+            .iter()
+            .position(|a| *a == "--")
+            .expect("missing `--` separator");
+        assert_eq!(&args[separator + 1..], CLIPPY_LINT_ARGS);
+    }
+}

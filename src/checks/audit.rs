@@ -60,3 +60,68 @@ fn is_advisory_db_unreachable(output: &str) -> bool {
     let lower = output.to_ascii_lowercase();
     UNREACHABLE_MARKERS.iter().any(|m| lower.contains(m))
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    use crate::checks::runner::SpawnResult;
+
+    /// Stub [`Runner`] returning the same canned result for every spawn.
+    struct CannedRunner {
+        success: bool,
+        stderr: &'static str,
+    }
+
+    impl Runner for CannedRunner {
+        fn spawn(
+            &self,
+            _sub: &str,
+            _args: &[&str],
+            _envs: &[(&str, &str)],
+        ) -> std::io::Result<SpawnResult> {
+            Ok(SpawnResult {
+                success: self.success,
+                stdout: Vec::new(),
+                stderr: self.stderr.as_bytes().to_vec(),
+            })
+        }
+    }
+
+    #[test]
+    fn unreachable_advisory_db_downgrades_to_skip() {
+        let runner = CannedRunner {
+            success: false,
+            stderr: "error: couldn't fetch advisory database",
+        };
+        let outcome = AuditCheck.run(&runner);
+        assert_eq!(outcome.status, TaskStatus::Skip);
+        assert!(outcome.output.contains("advisory database unreachable"));
+    }
+
+    #[test]
+    fn real_findings_stay_failures() {
+        let runner = CannedRunner {
+            success: false,
+            stderr: "error: 1 vulnerability found!",
+        };
+        assert!(AuditCheck.run(&runner).failed());
+    }
+
+    #[test]
+    fn clean_audit_passes() {
+        let runner = CannedRunner {
+            success: true,
+            stderr: "Fetching advisory database from github",
+        };
+        assert!(AuditCheck.run(&runner).passed());
+    }
+
+    #[test]
+    fn detection_is_case_insensitive_and_marker_scoped() {
+        assert!(is_advisory_db_unreachable("Connection REFUSED"));
+        assert!(!is_advisory_db_unreachable(
+            "Fetching advisory database from https://github.com/RustSec/advisory-db.git"
+        ));
+    }
+}

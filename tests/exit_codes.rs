@@ -50,12 +50,17 @@ fn failing_check_returns_one_and_lists_label() -> TestResult {
 fn missing_tool_returns_exit_three_with_install_hint() -> TestResult {
     // PATH is reduced to a tempdir holding only `cargo` and `rustc`,
     // so cargo metadata still works but every optional plugin reads as
-    // absent. The hint must enumerate all three binaries, combine them
-    // into a single `cargo install` line, and offer a `--skip` for
-    // each (order-independent so a future re-shuffle of
-    // `require_tooling` does not silently break the test).
+    // absent. The fixture opts into coverage so cargo-llvm-cov is
+    // demanded alongside machete and audit. The hint must enumerate all
+    // three binaries, combine them into a single `cargo install` line,
+    // and offer a `--skip` for each (order-independent so a future
+    // re-shuffle of `require_tooling` does not silently break the test).
     let (_path_dir, path) = common::sanitized_path()?;
-    let project = dummy_cargo_project();
+    let project = scratch_crate(
+        "missing_tools",
+        "[package.metadata.lockpick.coverage]\n",
+        &[("src/main.rs", FORMATTED_MAIN_RS)],
+    );
 
     let out = run_lockpick(project.path()).env("PATH", &path).output()?;
     assert_eq!(
@@ -79,6 +84,85 @@ fn missing_tool_returns_exit_three_with_install_hint() -> TestResult {
             "missing escape hatch `{skip}` in stderr:\n{err}"
         );
     }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn unconfigured_coverage_does_not_require_llvm_cov() -> TestResult {
+    // Coverage is opt-in: without `[*.metadata.lockpick.coverage]` (or
+    // `--coverage`) lockpick must not demand cargo-llvm-cov. machete
+    // and audit are still hidden by the sanitised PATH, so exit 3 fires
+    // listing only those two.
+    let (_path_dir, path) = common::sanitized_path()?;
+    let project = dummy_cargo_project();
+
+    let out = run_lockpick(project.path()).env("PATH", &path).output()?;
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "expected exit 3 on missing tools, got code={code:?} stderr=\n{err}",
+        code = out.status.code(),
+        err = stderr(&out),
+    );
+    let err = stderr(&out);
+    assert!(
+        !err.contains("cargo-llvm-cov"),
+        "cargo-llvm-cov must not be required without the coverage opt-in:\n{err}"
+    );
+    for binary in ["cargo-machete", "cargo-audit"] {
+        assert!(err.contains(binary), "missing `{binary}` in stderr:\n{err}");
+    }
+    Ok(())
+}
+
+#[test]
+fn configured_coverage_gate_fails_an_uncovered_binary() -> TestResult {
+    // An empty `[package.metadata.lockpick.coverage]` table opts in
+    // with 100% thresholds. The fixture's test covers `double` but
+    // never `main`, so the gate must fail and the summary must name
+    // `coverage` as the offender.
+    const PARTIALLY_COVERED_MAIN_RS: &str = "\
+const fn double(x: u64) -> u64 {
+    x * 2
+}
+
+fn main() {
+    println!(\"{}\", double(2));
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn double_doubles() {
+        assert_eq!(super::double(3), 6);
+    }
+}
+";
+    let project = scratch_crate(
+        "uncovered",
+        "[package.metadata.lockpick.coverage]\n",
+        &[("src/main.rs", PARTIALLY_COVERED_MAIN_RS)],
+    );
+
+    let out = run_lockpick(project.path())
+        .args(["--skip", "machete", "--skip", "audit"])
+        .output()?;
+    let report = stdout(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "expected exit 1 from the coverage gate, got code={code:?} stdout=\n{report}",
+        code = out.status.code(),
+    );
+    assert!(
+        report.contains("(coverage)"),
+        "summary should name the failing label `coverage`:\n{report}"
+    );
+    assert!(
+        report.contains("FAIL functions"),
+        "missing per-metric FAIL row for functions:\n{report}"
+    );
     Ok(())
 }
 

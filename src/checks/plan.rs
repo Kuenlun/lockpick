@@ -153,3 +153,108 @@ pub fn build_plan(
 
     Plan { items }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+    use crate::checks::coverage::CoverageCheck;
+    use crate::reporter::LABEL_WIDTH;
+
+    fn plan_for(args: &[&str], config: &Config, has_lib: bool) -> Plan {
+        let cli = Cli::parse_from(args.iter().copied());
+        build_plan(
+            &cli,
+            false,
+            &Toolchain::default(),
+            config,
+            has_lib,
+            false,
+            ColorMode::Never,
+        )
+    }
+
+    fn labels(plan: &Plan) -> Vec<&'static str> {
+        plan.iter().map(|(_, c)| c.label()).collect()
+    }
+
+    #[test]
+    fn default_plan_lists_every_always_on_check_in_display_order() {
+        let plan = plan_for(&["lockpick"], &Config::default(), true);
+        assert_eq!(
+            labels(&plan),
+            [
+                "check", "clippy", "fmt", "test", "doc", "doc-test", "machete", "audit"
+            ]
+        );
+    }
+
+    #[test]
+    fn skip_flags_drop_their_checks() {
+        let plan = plan_for(
+            &["lockpick", "--skip", "check,clippy,test,doc,doc-test"],
+            &Config::default(),
+            true,
+        );
+        assert_eq!(labels(&plan), ["fmt", "machete", "audit"]);
+    }
+
+    #[test]
+    fn doc_test_requires_a_lib_target() {
+        let plan = plan_for(&["lockpick"], &Config::default(), false);
+        assert!(!labels(&plan).contains(&"doc-test"));
+    }
+
+    #[test]
+    fn license_check_joins_only_when_a_header_is_configured() {
+        let config = Config {
+            license_header: Some("hdr.txt".into()),
+            ..Config::default()
+        };
+        assert!(labels(&plan_for(&["lockpick"], &config, true)).contains(&"license"));
+        assert!(!labels(&plan_for(&["lockpick"], &Config::default(), true)).contains(&"license"));
+    }
+
+    #[test]
+    fn serial_chain_walks_canonical_order_and_the_rest_runs_parallel() {
+        let plan = plan_for(&["lockpick"], &Config::default(), true);
+        let chain: Vec<&str> = plan.serial_chain().map(|(_, c)| c.label()).collect();
+        assert_eq!(chain, ["check", "test", "clippy", "doc", "doc-test"]);
+        let independent: Vec<&str> = plan.independent().map(|(_, c)| c.label()).collect();
+        assert_eq!(independent, ["fmt", "machete", "audit"]);
+    }
+
+    #[test]
+    fn skipping_everything_yields_an_empty_plan() {
+        let plan = plan_for(
+            &[
+                "lockpick",
+                "--skip",
+                "check,clippy,test,doc-test,fmt,doc,machete,audit,license,coverage",
+            ],
+            &Config::default(),
+            true,
+        );
+        assert!(plan.is_empty());
+        assert_eq!(plan.len(), 0);
+    }
+
+    #[test]
+    fn every_label_fits_the_reporter_column() {
+        let config = Config {
+            license_header: Some("hdr.txt".into()),
+            ..Config::default()
+        };
+        let plan = plan_for(&["lockpick"], &config, true);
+        for (_, check) in plan.iter() {
+            assert!(
+                check.label().len() <= LABEL_WIDTH,
+                "label `{}` overflows the {LABEL_WIDTH}-column layout",
+                check.label()
+            );
+        }
+        assert!(CoverageCheck::LABEL.len() <= LABEL_WIDTH);
+    }
+}

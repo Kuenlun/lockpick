@@ -37,14 +37,39 @@ impl Check for DocCheck {
     }
 }
 
+/// Read the current `RUSTDOCFLAGS` and append `-D warnings`.
+fn rustdocflags() -> String {
+    compose_rustdocflags(std::env::var("RUSTDOCFLAGS").ok())
+}
+
 /// Compose `RUSTDOCFLAGS` so the user's existing value survives.
 ///
 /// `cargo doc` reads a single `RUSTDOCFLAGS` string, so naively overriding
 /// it would erase flags the user needs (e.g. `--cfg docsrs` to gate
 /// `#[doc(cfg(...))]` items). Append `-D warnings` instead.
-fn rustdocflags() -> String {
-    match std::env::var("RUSTDOCFLAGS") {
-        Ok(existing) if !existing.trim().is_empty() => format!("{existing} {DENY_WARNINGS}"),
+fn compose_rustdocflags(existing: Option<String>) -> String {
+    match existing {
+        Some(flags) if !flags.trim().is_empty() => format!("{flags} {DENY_WARNINGS}"),
         _ => DENY_WARNINGS.to_string(),
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deny_warnings_is_appended_to_existing_flags() {
+        assert_eq!(
+            compose_rustdocflags(Some("--cfg docsrs".to_string())),
+            "--cfg docsrs -D warnings"
+        );
+    }
+
+    #[test]
+    fn unset_or_blank_flags_become_deny_warnings_alone() {
+        assert_eq!(compose_rustdocflags(None), "-D warnings");
+        assert_eq!(compose_rustdocflags(Some("   ".to_string())), "-D warnings");
     }
 }

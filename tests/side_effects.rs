@@ -19,8 +19,8 @@ use common::{
 };
 
 const SKIP_ALL_BUT_FMT: &[&str] = &[
-    "--skip", "clippy", "--skip", "machete", "--skip", "audit", "--skip", "coverage", "--skip",
-    "license", "--skip", "check", "--skip", "test", "--skip", "doc-test", "--skip", "doc",
+    "--skip", "clippy", "--skip", "machete", "--skip", "audit", "--skip", "license", "--skip",
+    "check", "--skip", "test", "--skip", "doc-test", "--skip", "doc",
 ];
 
 #[test]
@@ -131,9 +131,7 @@ fn license_header_detects_offender_and_skips_generated() -> TestResult {
         // `file(s) checked against` proof) lands on stdout, not just
         // the silent summary line.
         let out = run_lockpick(project.path())
-            .args([
-                "-v", "--skip", "coverage", "--skip", "machete", "--skip", "audit",
-            ])
+            .args(["-v", "--skip", "machete", "--skip", "audit"])
             .output()?;
         let report = stdout(&out);
         assert_eq!(
@@ -167,7 +165,7 @@ fn signal_aware_exit_uses_128_plus_signum() -> TestResult {
 
     let project = dummy_cargo_project();
     let mut child = run_lockpick(project.path())
-        .args(["--skip", "coverage", "--skip", "machete", "--skip", "audit"])
+        .args(["--skip", "machete", "--skip", "audit"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;
@@ -194,7 +192,7 @@ fn signal_aware_exit_uses_128_plus_signum() -> TestResult {
 fn clean_run_keeps_stderr_quiet_and_summary_on_stdout() -> TestResult {
     let project = dummy_cargo_project();
     let out = run_lockpick(project.path())
-        .args(["--skip", "coverage", "--skip", "machete", "--skip", "audit"])
+        .args(["--skip", "machete", "--skip", "audit"])
         .output()?;
     let report = stdout(&out);
     let diag = stderr(&out);
@@ -208,6 +206,58 @@ fn clean_run_keeps_stderr_quiet_and_summary_on_stdout() -> TestResult {
     assert!(
         diag.trim().is_empty(),
         "stderr must be empty on a clean run, got:\n{diag}"
+    );
+    Ok(())
+}
+
+#[test]
+fn skip_coverage_without_config_notes_no_effect() -> TestResult {
+    // Coverage is opt-in, so skipping it on an unconfigured project is
+    // a no-op that must be called out instead of silently accepted.
+    let project = dummy_cargo_project();
+    let mut args: Vec<&str> = vec!["--skip", "coverage"];
+    args.extend_from_slice(SKIP_ALL_BUT_FMT);
+
+    let out = run_lockpick(project.path()).args(&args).output()?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "expected exit 0, got code={code:?} stderr=\n{err}",
+        code = out.status.code(),
+        err = stderr(&out),
+    );
+    assert!(
+        stderr(&out).contains("--skip coverage has no effect"),
+        "missing no-effect note on stderr:\n{err}",
+        err = stderr(&out),
+    );
+    Ok(())
+}
+
+#[test]
+fn skip_test_with_configured_coverage_notes_implied_skip() -> TestResult {
+    // Coverage opts in via config, but `--skip test` starves the gate
+    // of profraws, so lockpick must say it is implicitly skipped.
+    let project = scratch_crate(
+        "cov_skip_test",
+        "[package.metadata.lockpick.coverage]\n",
+        &[("src/main.rs", FORMATTED_MAIN_RS)],
+    );
+
+    let out = run_lockpick(project.path())
+        .args(SKIP_ALL_BUT_FMT)
+        .output()?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "expected exit 0, got code={code:?} stderr=\n{err}",
+        code = out.status.code(),
+        err = stderr(&out),
+    );
+    assert!(
+        stderr(&out).contains("--skip test implies coverage will be skipped"),
+        "missing implied-skip note on stderr:\n{err}",
+        err = stderr(&out),
     );
     Ok(())
 }

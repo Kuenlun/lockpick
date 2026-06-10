@@ -162,3 +162,63 @@ impl Toolchain {
         self.present.contains(&tool)
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn color_mode_is_never_on_a_non_tty_regardless_of_env() {
+        // The TTY check short-circuits before NO_COLOR is consulted, so
+        // this stays deterministic under any test environment.
+        assert_eq!(ColorMode::for_stdout(false), ColorMode::Never);
+    }
+
+    #[test]
+    fn color_mode_renders_cargo_compatible_strings() {
+        assert_eq!(ColorMode::Always.as_str(), "always");
+        assert_eq!(ColorMode::Never.as_str(), "never");
+    }
+
+    #[test]
+    fn package_scoped_env_vars_are_scrubbed_and_global_ones_survive() {
+        for key in [
+            "CARGO_PKG_NAME",
+            "CARGO_BIN_NAME",
+            "CARGO_CRATE_NAME",
+            "CARGO_MANIFEST_DIR",
+            "CARGO_MANIFEST_PATH",
+            "CARGO_PRIMARY_PACKAGE",
+        ] {
+            assert!(should_scrub_cargo_env(key), "{key} must be scrubbed");
+        }
+        for key in ["CARGO_HOME", "CARGO_TARGET_DIR", "CARGO_TERM_COLOR", "PATH"] {
+            assert!(!should_scrub_cargo_env(key), "{key} must survive");
+        }
+    }
+
+    #[test]
+    fn subcommand_lookup_scans_path_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("cargo-zzz"), "").unwrap();
+        let path = std::env::join_paths([dir.path()]).unwrap();
+        assert!(has_cargo_subcommand_in(Some(&path), "zzz"));
+        assert!(!has_cargo_subcommand_in(Some(&path), "absent"));
+        assert!(!has_cargo_subcommand_in(None, "zzz"));
+    }
+
+    #[test]
+    fn every_tool_maps_to_its_cargo_binary_suffix() {
+        let subcommands: Vec<&str> = ALL_TOOLS.iter().map(|t| t.subcommand()).collect();
+        assert_eq!(subcommands, ["llvm-cov", "nextest", "machete", "audit"]);
+    }
+
+    #[test]
+    fn default_toolchain_reports_every_tool_absent() {
+        let toolchain = Toolchain::default();
+        for tool in ALL_TOOLS {
+            assert!(!toolchain.has(*tool));
+        }
+    }
+}

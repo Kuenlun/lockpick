@@ -5,6 +5,6 @@ if ! lockpick; then
   echo ""
   echo "ERROR: lockpick failed. Commit aborted."
   echo "Fix the reported issues and run lockpick successfully before committing."
-  echo "To skip coverage temporarily, run with --skip coverage; bypass with --no-verify."
+  echo "Bypass with --no-verify."
   exit 1
 fi
