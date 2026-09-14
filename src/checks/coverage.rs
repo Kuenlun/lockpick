@@ -67,13 +67,29 @@ impl Check for CoverageCheck {
 
 fn collect_report(runner: &dyn Runner, args: &[&str]) -> Result<Report, String> {
     match runner.spawn("llvm-cov", args, &[]) {
-        Ok(sr) if sr.success => serde_json::from_slice::<Report>(&sr.stdout)
-            .map_err(|e| format!("malformed llvm-cov JSON: {e}")),
+        Ok(sr) if sr.success => parse_report(&sr.stdout).map_err(|e| {
+            format!("{e}\n{}", String::from_utf8_lossy(&sr.stderr))
+                .trim()
+                .to_owned()
+        }),
         // llvm-cov sometimes writes diagnostics to stdout, so surface
         // both streams.
         Ok(sr) => Err(combine_streams(&sr.stdout, &sr.stderr)),
         Err(e) => Err(format!("failed to launch `cargo llvm-cov`: {e}")),
     }
+}
+
+fn parse_report(bytes: &[u8]) -> Result<Report, String> {
+    let report: Report =
+        serde_json::from_slice(bytes).map_err(|e| format!("malformed llvm-cov JSON: {e}"))?;
+    if report.kind != "llvm.coverage.json.export"
+        || !matches!(report.version.split('.').next(), Some("2" | "3"))
+    {
+        return Err(
+            "unsupported llvm-cov JSON type or version (expected export version 2 or 3)".into(),
+        );
+    }
+    Ok(report)
 }
 
 fn evaluate(report: &Report, t: CoverageConfig, branch_coverage: bool) -> CheckOutcome {
@@ -93,8 +109,21 @@ fn evaluate(report: &Report, t: CoverageConfig, branch_coverage: bool) -> CheckO
             passed = false;
             continue;
         }
+        if entry.files.iter().any(|file| file.filename.is_empty()) {
+            lines.push("FAIL empty source filename in coverage report".to_string());
+            passed = false;
+        }
+        if branch_coverage && entry.totals.branches.is_none() {
+            lines.push("FAIL missing branches metric in coverage report".to_string());
+            passed = false;
+        }
         let mut any_real = false;
         for (name, metric, threshold) in metric_rows(entry, t, branch_coverage) {
+            if metric.covered > metric.count {
+                lines.push(format!("FAIL {name}: covered count exceeds total count"));
+                passed = false;
+                continue;
+            }
             if metric.count == 0 {
                 lines.push(format!("ok   {name:<METRIC_NAME_WIDTH$}: 0/0 (vacuous)"));
                 continue;
@@ -174,7 +203,7 @@ fn metric_rows(
     if branch_coverage {
         rows.push((
             "branches",
-            entry.totals.branches,
+            entry.totals.branches.unwrap_or_default(),
             t.branches.unwrap_or(DEFAULT_BRANCH_THRESHOLD),
         ));
     }
@@ -194,34 +223,34 @@ fn format_pct(covered: u64, count: u64) -> String {
 
 #[derive(Deserialize, Debug)]
 pub struct Report {
+    #[serde(rename = "type")]
+    kind: String,
+    version: String,
     data: Vec<DataEntry>,
 }
 
 #[derive(Deserialize, Default, Debug)]
 struct DataEntry {
-    #[serde(default)]
     totals: Metrics,
-    #[serde(default)]
-    files: Vec<serde_json::Value>,
+    files: Vec<SourceFile>,
+}
+
+#[derive(Deserialize, Default, Debug)]
+struct SourceFile {
+    filename: String,
 }
 
 #[derive(Deserialize, Default, Debug)]
 struct Metrics {
-    #[serde(default)]
     functions: Metric,
-    #[serde(default)]
     lines: Metric,
-    #[serde(default)]
     regions: Metric,
-    #[serde(default)]
-    branches: Metric,
+    branches: Option<Metric>,
 }
 
 #[derive(Deserialize, Default, Clone, Copy, Debug)]
 struct Metric {
-    #[serde(default)]
     count: u64,
-    #[serde(default)]
     covered: u64,
 }
 
@@ -247,7 +276,8 @@ mod tests {
 
     fn report(totals: &serde_json::Value) -> Report {
         serde_json::from_value(json!({
-            "data": [{ "totals": totals, "files": [{}] }],
+            "type": "llvm.coverage.json.export", "version": "2.0.1",
+            "data": [{ "totals": totals, "files": [{ "filename": "src/lib.rs" }] }],
         }))
         .unwrap()
     }
@@ -330,12 +360,16 @@ mod tests {
 
     #[test]
     fn empty_report_data_and_missing_files_fail() {
-        let empty: Report = serde_json::from_value(json!({ "data": [] })).unwrap();
+        let empty: Report = serde_json::from_value(
+            json!({ "type": "llvm.coverage.json.export", "version": "2.0.1", "data": [] }),
+        )
+        .unwrap();
         let outcome = evaluate(&empty, CoverageConfig::default(), false);
         assert!(outcome.failed());
         assert!(outcome.output.contains("no data entries"));
 
         let no_files: Report = serde_json::from_value(json!({
+            "type": "llvm.coverage.json.export", "version": "2.0.1",
             "data": [{ "totals": totals(10, 10), "files": [] }],
         }))
         .unwrap();
@@ -366,5 +400,140 @@ mod tests {
             branch_coverage: false,
         };
         assert_eq!(off.cmd(), "cargo llvm-cov report --json --summary-only");
+    }
+    #[test]
+    fn report_schema_rejects_missing_and_invalid_counts() {
+        let valid = json!({
+            "type": "llvm.coverage.json.export", "version": "2.0.1",
+            "data": [{ "totals": totals(1, 1), "files": [{ "filename": "src/lib.rs" }] }],
+        });
+        assert!(parse_report(&serde_json::to_vec(&valid).unwrap()).is_ok());
+        for pointer in [
+            "/type",
+            "/version",
+            "/data/0/totals/functions",
+            "/data/0/totals/lines/count",
+            "/data/0/totals/regions/covered",
+            "/data/0/files/0/filename",
+        ] {
+            let mut broken = valid.clone();
+            *broken.pointer_mut(pointer).unwrap() = json!(null);
+            assert!(
+                parse_report(&serde_json::to_vec(&broken).unwrap()).is_err(),
+                "{pointer}"
+            );
+        }
+        for version in ["", "1.0", "20.0"] {
+            let mut broken = valid.clone();
+            broken["version"] = json!(version);
+            assert!(parse_report(&serde_json::to_vec(&broken).unwrap()).is_err());
+        }
+        assert!(parse_report(b"not JSON").is_err());
+        for (covered, count) in [(1, 0), (11, 10), (u64::MAX, 1)] {
+            assert!(
+                evaluate(
+                    &report(&totals(covered, count)),
+                    CoverageConfig::default(),
+                    true
+                )
+                .failed()
+            );
+        }
+        let mut missing = totals(10, 10);
+        missing.as_object_mut().unwrap().remove("branches");
+        assert!(evaluate(&report(&missing), CoverageConfig::default(), true).failed());
+        assert!(evaluate(&report(&missing), CoverageConfig::default(), false).passed());
+    }
+
+    #[test]
+    fn large_counts_and_zero_thresholds_do_not_overflow_or_round_up() {
+        assert!(
+            evaluate(
+                &report(&totals(u64::MAX, u64::MAX)),
+                CoverageConfig::default(),
+                true
+            )
+            .passed()
+        );
+        assert!(
+            evaluate(
+                &report(&totals(u64::MAX - 1, u64::MAX)),
+                CoverageConfig::default(),
+                true
+            )
+            .failed()
+        );
+        let thresholds = CoverageConfig {
+            functions: 0,
+            lines: 0,
+            regions: 0,
+            branches: Some(0),
+        };
+        assert!(evaluate(&report(&totals(0, 1)), thresholds, true).passed());
+        assert!(evaluate(&report(&totals(0, 0)), thresholds, true).failed());
+    }
+
+    struct ReportRunner {
+        result: std::io::Result<super::super::runner::SpawnResult>,
+    }
+
+    impl Runner for ReportRunner {
+        fn spawn(
+            &self,
+            sub: &str,
+            args: &[&str],
+            envs: &[(&str, &str)],
+        ) -> std::io::Result<super::super::runner::SpawnResult> {
+            assert_eq!(sub, "llvm-cov");
+            assert_eq!(args, COV_REPORT_PLAIN_ARGS);
+            assert!(envs.is_empty());
+            self.result
+                .as_ref()
+                .cloned()
+                .map_err(|e| std::io::Error::new(e.kind(), e.to_string()))
+        }
+    }
+
+    #[test]
+    fn report_execution_preserves_diagnostics_and_launch_errors() {
+        use super::super::runner::SpawnResult;
+        for (result, message) in [
+            (Err(std::io::Error::other("launch denied")), "launch denied"),
+            (
+                Ok(SpawnResult {
+                    success: false,
+                    stdout: b"report failed".to_vec(),
+                    stderr: b"merge failed".to_vec(),
+                }),
+                "merge failed",
+            ),
+            (
+                Ok(SpawnResult {
+                    success: true,
+                    stdout: b"{}".to_vec(),
+                    stderr: b"tool diagnostic".to_vec(),
+                }),
+                "tool diagnostic",
+            ),
+        ] {
+            let check = CoverageCheck {
+                thresholds: CoverageConfig::default(),
+                branch_coverage: false,
+            };
+            let outcome = check.run(&ReportRunner { result });
+            assert!(outcome.failed());
+            assert!(outcome.output.contains(message), "{}", outcome.output);
+        }
+    }
+    #[test]
+    fn source_filenames_and_export_types_are_required() {
+        let mut value = json!({
+            "type": "llvm.coverage.json.export", "version": "3.1.0",
+            "data": [{ "totals": totals(1, 1), "files": [{ "filename": "" }] }],
+        });
+        let parsed = parse_report(&serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(evaluate(&parsed, CoverageConfig::default(), false).failed());
+        value["type"] = json!("another-report");
+        assert!(parse_report(&serde_json::to_vec(&value).unwrap()).is_err());
     }
 }
