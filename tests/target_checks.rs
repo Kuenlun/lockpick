@@ -46,7 +46,7 @@ fn host_tests_and_embedded_profiles_share_one_gate() -> TestResult {
         "--coverage",
         "-v",
     ]))?;
-    assert_eq!(out.status.code(), Some(0), "{}", combined(&out));
+    assert_eq!(out.status.code(), Some(0_i32), "{}", combined(&out));
     let view = combined(&out);
     assert!(view.contains("executes_on_host"));
     assert!(view.contains("--target host-tuple"));
@@ -66,7 +66,7 @@ fn locked_policy_rejects_a_missing_lockfile_without_creating_one() -> TestResult
     let out = run_lockpick(project.path())
         .args(["--skip", "clippy,fmt,test,doc,doc-test,machete,audit"])
         .output()?;
-    assert_eq!(out.status.code(), Some(1), "{}", combined(&out));
+    assert_eq!(out.status.code(), Some(1_i32), "{}", combined(&out));
     assert!(!project.path().join("Cargo.lock").exists());
     assert!(combined(&out).contains("--locked"));
     Ok(())
@@ -87,7 +87,7 @@ fn invalid_feature_policy_is_rejected_before_any_checks() -> TestResult {
             &[("src/lib.rs", "pub const VALUE: u8 = 7;\n")],
         );
         let out = run_lockpick(project.path()).output()?;
-        assert_eq!(out.status.code(), Some(2), "{}", combined(&out));
+        assert_eq!(out.status.code(), Some(2_i32), "{}", combined(&out));
         assert!(combined(&out).contains("target-checks"));
     }
     Ok(())
@@ -106,7 +106,7 @@ fn embedded_binaries_use_selected_features_and_enforce_release_profile() -> Test
             .output()
     };
     let out = execute()?;
-    assert_eq!(out.status.code(), Some(0), "{}", combined(&out));
+    assert_eq!(out.status.code(), Some(0_i32), "{}", combined(&out));
     std::fs::write(
         project.path().join("src/main.rs"),
         format!(
@@ -114,7 +114,7 @@ fn embedded_binaries_use_selected_features_and_enforce_release_profile() -> Test
         ),
     )?;
     let out = execute()?;
-    assert_eq!(out.status.code(), Some(1), "{}", combined(&out));
+    assert_eq!(out.status.code(), Some(1_i32), "{}", combined(&out));
     assert!(combined(&out).contains("release check reached"));
     Ok(())
 }

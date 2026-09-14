@@ -12,13 +12,13 @@ use std::path::{Path, PathBuf};
 use super::{Check, Runner};
 use crate::reporter::{CheckOutcome, TaskStatus};
 
-pub struct LicenseHeaderCheck {
-    pub header_path: PathBuf,
-    pub globs: Vec<String>,
+pub(crate) struct LicenseHeaderCheck {
+    pub(crate) header_path: PathBuf,
+    pub(crate) globs: Vec<String>,
 }
 
 #[must_use]
-pub fn default_globs() -> Vec<String> {
+pub(crate) fn default_globs() -> Vec<String> {
     vec![
         "src/**/*.rs".to_string(),
         "tests/**/*.rs".to_string(),
@@ -117,7 +117,7 @@ impl Check for LicenseHeaderCheck {
                 continue;
             }
             match classify(fs::read(&file), &header) {
-                Classification::Match => scanned += 1,
+                Classification::Match => scanned = scanned.saturating_add(1),
                 Classification::Generated => {}
                 Classification::Offender => offenders.push(file),
             }

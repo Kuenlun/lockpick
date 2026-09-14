@@ -2,39 +2,58 @@
 // lockpick - Run every Rust quality gate in one command
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
+#![expect(
+    clippy::redundant_pub_crate,
+    reason = "Explicit internal visibility satisfies unreachable_pub."
+)]
 // `feature(coverage_attribute)` is declared by each test binary at its
 // own crate root; this submodule only opts out of instrumentation.
 #![cfg_attr(coverage_nightly, coverage(off))]
-#![allow(clippy::unwrap_used)]
+#![expect(
+    clippy::unwrap_used,
+    reason = "Fixture setup failures abort their test."
+)]
 // Not every test binary exercises every helper.
-#![allow(dead_code)]
+#![expect(
+    dead_code,
+    reason = "Each integration binary uses only part of the shared fixture helpers."
+)]
 
 //! Shared scaffolding for the integration suite: fixture text, Cargo.toml
 //! templating, scratch crate scaffolding, and a `Command` factory that
 //! quarantines lockpick from the harness env. Unix-only helpers (PATH
 //! sanitiser, symlink layout) gate themselves with `#[cfg(unix)]`.
 
+// Cargo passes application dependencies to each integration binary. The CLI is
+// exercised through subprocesses, so declare those inherited dependencies here.
+#[cfg(unix)]
+use signal_hook as _;
+use {
+    clap as _, clap_cargo as _, clap_complete as _, colored as _, glob as _, indicatif as _,
+    serde as _, serde_json as _, thiserror as _,
+};
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-pub type TestResult = Result<(), Box<dyn std::error::Error>>;
+pub(crate) type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 /// Matches `rustfmt` output byte-for-byte. Used as the pristine baseline
 /// for fmt-check assertions and as the body of well-formed fixtures.
-pub const FORMATTED_MAIN_RS: &str = "fn main() {\n    println!(\"Hello!\");\n}\n";
+pub(crate) const FORMATTED_MAIN_RS: &str = "fn main() {\n    println!(\"Hello!\");\n}\n";
 
 /// Compiles cleanly but fails `cargo fmt --check`.
-pub const UNFORMATTED_MAIN_RS: &str = "fn main(){println!(\"Hello!\");}\n";
+pub(crate) const UNFORMATTED_MAIN_RS: &str = "fn main(){println!(\"Hello!\");}\n";
 
 /// Fails `cargo check` (an `&str` cannot bind to `i32`).
-pub const BROKEN_MAIN_RS: &str = "fn main() {\n    let _x: i32 = \"not a number\";\n}\n";
+pub(crate) const BROKEN_MAIN_RS: &str = "fn main() {\n    let _x: i32 = \"not a number\";\n}\n";
 
 /// Render a `Cargo.toml` body that survives strict clippy out of the
 /// box (every field `cargo_common_metadata` demands is present). `extra`
 /// is appended after a blank line, ready for `[package.metadata.*]`
 /// stanzas.
 #[must_use]
-pub fn cargo_toml_strict(name: &str, extra: &str) -> String {
+pub(crate) fn cargo_toml_strict(name: &str, extra: &str) -> String {
     format!(
         "[package]\n\
          name = \"{name}\"\n\
@@ -55,7 +74,11 @@ pub fn cargo_toml_strict(name: &str, extra: &str) -> String {
 /// strict Cargo.toml, an empty README, and every `(relpath, body)` in
 /// `files`. Intermediate directories are created on demand.
 #[must_use]
-pub fn scratch_crate(name: &str, extra_toml: &str, files: &[(&str, &str)]) -> tempfile::TempDir {
+pub(crate) fn scratch_crate(
+    name: &str,
+    extra_toml: &str,
+    files: &[(&str, &str)],
+) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     write_file(
         dir.path(),
@@ -73,14 +96,14 @@ pub fn scratch_crate(name: &str, extra_toml: &str, files: &[(&str, &str)]) -> te
 /// check that does not require external fixtures (audit, machete,
 /// coverage) is green by default.
 #[must_use]
-pub fn dummy_cargo_project() -> tempfile::TempDir {
+pub(crate) fn dummy_cargo_project() -> tempfile::TempDir {
     scratch_crate("dummy_project", "", &[("src/main.rs", FORMATTED_MAIN_RS)])
 }
 
 /// Absolute path of the lockpick binary built by the current
 /// `cargo test` invocation. The env var is injected by cargo.
 #[must_use]
-pub fn lockpick_bin() -> PathBuf {
+pub(crate) fn lockpick_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_lockpick"))
 }
 
@@ -129,22 +152,22 @@ const PASSTHROUGH_ENV: &[&str] = &[
 /// re-exported from the harness. Override by calling `.env("PATH", ...)`
 /// on the returned `Command` (e.g. with [`sanitized_path`]).
 #[must_use]
-pub fn run_lockpick(cwd: &Path) -> Command {
+pub(crate) fn run_lockpick(cwd: &Path) -> Command {
     let mut cmd = Command::new(lockpick_bin());
-    cmd.env_clear();
+    let _command = cmd.env_clear();
     forward_env(&mut cmd, "PATH");
     for key in PASSTHROUGH_ENV {
         forward_env(&mut cmd, key);
     }
-    cmd.current_dir(cwd);
+    let _command = cmd.current_dir(cwd);
     cmd
 }
 
 /// Re-export `key` from the harness env into `cmd`, if set. Silent
 /// no-op on absent vars so callers stay infallible.
-pub fn forward_env(cmd: &mut Command, key: &str) {
+pub(crate) fn forward_env(cmd: &mut Command, key: &str) {
     if let Some(val) = std::env::var_os(key) {
-        cmd.env(key, val);
+        let _command = cmd.env(key, val);
     }
 }
 
@@ -167,7 +190,7 @@ const HIDDEN_CARGO_PLUGINS: &[&str] = &[
 /// the named plugins keeps `require_tooling` honest without crippling
 /// the optional checks the test does NOT skip.
 #[cfg(unix)]
-pub fn sanitized_path() -> Result<(tempfile::TempDir, String), Box<dyn std::error::Error>> {
+pub(crate) fn sanitized_path() -> Result<(tempfile::TempDir, String), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     let bin = dir.path().join("bin");
     std::fs::create_dir_all(&bin)?;
@@ -222,17 +245,17 @@ fn mirror_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
 }
 
 #[must_use]
-pub fn stdout(out: &Output) -> String {
+pub(crate) fn stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
 #[must_use]
-pub fn stderr(out: &Output) -> String {
+pub(crate) fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
 #[must_use]
-pub fn combined(out: &Output) -> String {
+pub(crate) fn combined(out: &Output) -> String {
     format!("{}{}", stdout(out), stderr(out))
 }
 
@@ -246,7 +269,7 @@ fn write_file(root: &Path, rel: &str, body: &str) {
 }
 
 /// Capture a real-tool run without an unbounded wait or full output pipes.
-pub fn bounded_output(command: &mut Command) -> std::io::Result<Output> {
+pub(crate) fn bounded_output(command: &mut Command) -> std::io::Result<Output> {
     use std::io::{Read, Seek};
     use std::time::{Duration, Instant};
     let mut stdout = tempfile::tempfile()?;
@@ -255,14 +278,14 @@ pub fn bounded_output(command: &mut Command) -> std::io::Result<Output> {
         .stdout(stdout.try_clone()?)
         .stderr(stderr.try_clone()?)
         .spawn()?;
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let started = Instant::now();
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
         }
-        if Instant::now() >= deadline {
+        if started.elapsed() >= Duration::from_secs(60) {
             child.kill()?;
-            child.wait()?;
+            let _status = child.wait()?;
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 "Lockpick fixture exceeded 60 seconds",
@@ -277,7 +300,7 @@ pub fn bounded_output(command: &mut Command) -> std::io::Result<Output> {
         stdout: Vec::new(),
         stderr: Vec::new(),
     };
-    stdout.read_to_end(&mut out.stdout)?;
-    stderr.read_to_end(&mut out.stderr)?;
+    let _stdout_len = stdout.read_to_end(&mut out.stdout)?;
+    let _stderr_len = stderr.read_to_end(&mut out.stderr)?;
     Ok(out)
 }

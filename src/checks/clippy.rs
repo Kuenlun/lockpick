@@ -14,7 +14,7 @@ use crate::reporter::CheckOutcome;
 //
 // Split from the workspace prefix so `--fix` can reuse the exact same
 // lint tail without `--` in the middle.
-pub const CLIPPY_LINT_ARGS: &[&str] = &[
+pub(crate) const CLIPPY_LINT_ARGS: &[&str] = &[
     "-W",
     "clippy::pedantic",
     "-W",
@@ -27,29 +27,16 @@ pub const CLIPPY_LINT_ARGS: &[&str] = &[
     "warnings",
 ];
 
-/// Argv for `cargo clippy`: workspace prefix, `--`, then the shared
-/// lint tail. Materialised at compile time so `cmd()` and `run()` see
-/// a stable `&'static [&'static str]`.
-const CLIPPY_ARGS: &[&str] = &concat_clippy_args();
-
-const fn concat_clippy_args() -> [&'static str; COMMON_ARGS.len() + 1 + CLIPPY_LINT_ARGS.len()] {
-    let mut out = [""; COMMON_ARGS.len() + 1 + CLIPPY_LINT_ARGS.len()];
-    let mut i = 0;
-    while i < COMMON_ARGS.len() {
-        out[i] = COMMON_ARGS[i];
-        i += 1;
-    }
-    out[COMMON_ARGS.len()] = "--";
-    let mut j = 0;
-    while j < CLIPPY_LINT_ARGS.len() {
-        out[COMMON_ARGS.len() + 1 + j] = CLIPPY_LINT_ARGS[j];
-        j += 1;
-    }
-    out
+/// Share one argument constructor between execution and display.
+fn clippy_args(options: super::util::BuildOptions) -> Vec<&'static str> {
+    let mut args = options.args(COMMON_ARGS);
+    args.push("--");
+    args.extend_from_slice(CLIPPY_LINT_ARGS);
+    args
 }
 
-pub struct ClippyCheck {
-    pub options: super::util::BuildOptions,
+pub(crate) struct ClippyCheck {
+    pub(crate) options: super::util::BuildOptions,
 }
 
 impl Check for ClippyCheck {
@@ -58,11 +45,11 @@ impl Check for ClippyCheck {
     }
 
     fn cmd(&self) -> String {
-        fmt_cargo_cmd("clippy", &self.options.args(CLIPPY_ARGS))
+        fmt_cargo_cmd("clippy", &clippy_args(self.options))
     }
 
     fn run(&self, runner: &dyn Runner) -> CheckOutcome {
-        cargo_outcome(runner, "clippy", &self.options.args(CLIPPY_ARGS))
+        cargo_outcome(runner, "clippy", &clippy_args(self.options))
     }
 
     fn chain_position(&self) -> Option<u8> {
@@ -77,10 +64,14 @@ mod tests {
 
     #[test]
     fn argv_is_workspace_prefix_then_separator_then_lint_tail() {
-        let (prefix, rest) = CLIPPY_ARGS.split_at(COMMON_ARGS.len());
+        let args = clippy_args(super::super::util::BuildOptions::default());
+        let (prefix, rest) = args.split_at(COMMON_ARGS.len());
         assert_eq!(prefix, COMMON_ARGS);
-        assert_eq!(rest[0], "--");
-        assert_eq!(&rest[1..], CLIPPY_LINT_ARGS);
+        assert_eq!(rest.first(), Some(&"--"));
+        assert_eq!(
+            rest.iter().skip(1).copied().collect::<Vec<_>>(),
+            CLIPPY_LINT_ARGS
+        );
     }
 
     #[test]
@@ -91,7 +82,11 @@ mod tests {
             .iter()
             .position(|a| *a == "clippy::multiple_crate_versions")
             .expect("exemption missing from lint tail");
-        assert_eq!(CLIPPY_LINT_ARGS[allow - 1], "-A");
+        assert!(
+            CLIPPY_LINT_ARGS
+                .windows(2)
+                .any(|pair| pair == ["-A", "clippy::multiple_crate_versions"])
+        );
         let cargo_group = CLIPPY_LINT_ARGS
             .iter()
             .position(|a| *a == "clippy::cargo")

@@ -9,30 +9,30 @@ use colored::Colorize;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TaskStatus {
+pub(crate) enum TaskStatus {
     Pass,
     Fail,
     Skip,
 }
 
-pub struct CheckOutcome {
-    pub status: TaskStatus,
-    pub output: String,
+pub(crate) struct CheckOutcome {
+    pub(crate) status: TaskStatus,
+    pub(crate) output: String,
 }
 
 impl CheckOutcome {
     #[must_use]
-    pub const fn passed(&self) -> bool {
+    pub(crate) const fn passed(&self) -> bool {
         matches!(self.status, TaskStatus::Pass)
     }
 
     #[must_use]
-    pub const fn failed(&self) -> bool {
+    pub(crate) const fn failed(&self) -> bool {
         matches!(self.status, TaskStatus::Fail)
     }
 
     #[must_use]
-    pub const fn skipped() -> Self {
+    pub(crate) const fn skipped() -> Self {
         Self {
             status: TaskStatus::Skip,
             output: String::new(),
@@ -40,7 +40,7 @@ impl CheckOutcome {
     }
 }
 
-pub struct Reporter {
+pub(crate) struct Reporter {
     mp: MultiProgress,
     spin_style: ProgressStyle,
     done_style: ProgressStyle,
@@ -51,12 +51,12 @@ pub struct Reporter {
     /// (file, pipe, CI), so the spinner keeps a visible final state on
     /// stderr instead of clearing.
     stdout_is_tty: bool,
-    pub is_verbose: bool,
+    pub(crate) is_verbose: bool,
 }
 
 /// Column width used to align check labels in spinners and status lines.
 /// Must accommodate the longest concrete `Check::label()`.
-pub const LABEL_WIDTH: usize = 10;
+pub(crate) const LABEL_WIDTH: usize = 10;
 
 const DONE_TEMPLATE: &str = "  {msg}";
 const TICK_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
@@ -75,7 +75,7 @@ impl Reporter {
     /// Build a [`Reporter`] with the TTY state of stdout and stderr
     /// probed from the process's own streams.
     #[must_use]
-    pub fn auto(is_verbose: bool) -> Self {
+    pub(crate) fn auto(is_verbose: bool) -> Self {
         let is_tty = std::io::stderr().is_terminal();
         let stdout_is_tty = std::io::stdout().is_terminal();
         let spin_style = parse_template(&spin_template()).tick_chars(TICK_CHARS);
@@ -95,7 +95,7 @@ impl Reporter {
         }
     }
 
-    pub fn add_spinner(&self, label: &str) -> ProgressBar {
+    pub(crate) fn add_spinner(&self, label: &str) -> ProgressBar {
         let pb = self.mp.add(ProgressBar::new_spinner());
         pb.set_style(self.spin_style.clone());
         pb.set_message(label.to_string());
@@ -114,7 +114,7 @@ impl Reporter {
     /// * stderr TTY + stdout captured: anchor on stderr, also emit on
     ///   stdout for the capture.
     /// * stderr non-TTY: spinner is hidden, only emit on stdout.
-    pub fn finish_spinner(&self, pb: &ProgressBar, label: &str, status: TaskStatus) {
+    pub(crate) fn finish_spinner(&self, pb: &ProgressBar, label: &str, status: TaskStatus) {
         let tag = match status {
             TaskStatus::Pass => "PASS".green().bold(),
             TaskStatus::Fail => "FAIL".red().bold(),
@@ -134,9 +134,10 @@ impl Reporter {
     /// Write a line to the diagnostic stream (stderr): banners, notes,
     /// progress chatter. Routed through `MultiProgress` so it interleaves
     /// cleanly with active spinners in TTY mode.
-    pub fn diagln(&self, msg: impl AsRef<str>) {
+    #[expect(clippy::print_stderr, reason = "Reporter owns the diagnostic stream.")]
+    pub(crate) fn diagln(&self, msg: impl AsRef<str>) {
         if self.is_tty {
-            self.mp.println(msg).ok();
+            let _write_result = self.mp.println(msg);
         } else {
             eprintln!("{}", msg.as_ref());
         }
@@ -147,21 +148,26 @@ impl Reporter {
     /// for the write so the two streams do not stomp on each other.
     /// Multi-line blocks should batch under one `suspend` (see
     /// [`Self::print_section`]) to avoid one redraw cycle per line.
-    pub fn reportln(&self, msg: impl AsRef<str>) {
+    #[expect(clippy::print_stdout, reason = "Reporter owns the report stream.")]
+    pub(crate) fn reportln(&self, msg: impl AsRef<str>) {
         self.mp.suspend(|| println!("{}", msg.as_ref()));
     }
 
     /// Render a planned cargo invocation. Caller gates on `is_verbose`.
-    pub fn command(&self, cmd: &str) {
+    pub(crate) fn command(&self, cmd: &str) {
         self.diagln(format!("  {} {cmd}", "$".dimmed()));
     }
 
     /// Render an always-visible status note.
-    pub fn note(&self, msg: &str) {
+    pub(crate) fn note(&self, msg: &str) {
         self.diagln(format!("  {msg}"));
     }
 
-    pub fn print_section(&self, label: &str, output: &str, passed: bool) {
+    #[expect(
+        clippy::print_stdout,
+        reason = "Reporter writes each section as one suspended progress update."
+    )]
+    pub(crate) fn print_section(&self, label: &str, output: &str, passed: bool) {
         let (header, divider, pipe) = if passed {
             (
                 format!(" ✔ {} OUTPUT ", label.to_uppercase())
@@ -201,7 +207,7 @@ impl Reporter {
     }
 
     /// Final footer. Lists failing labels, or reports total on success.
-    pub fn summary(&self, total: usize, failures: &[&str]) {
+    pub(crate) fn summary(&self, total: usize, failures: &[&str]) {
         self.reportln("");
         if failures.is_empty() {
             let msg = format!("OK: {total}/{total} checks passed").green().bold();

@@ -10,7 +10,7 @@ use crate::tooling::ColorMode;
 
 /// Check identifier for `--skip`.
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SkipOption {
+pub(crate) enum SkipOption {
     Check,
     Clippy,
     Test,
@@ -29,7 +29,7 @@ impl SkipOption {
     /// Single source of truth so hints in error messages cannot drift
     /// from what clap actually parses.
     #[must_use]
-    pub const fn skip_flag(self) -> &'static str {
+    pub(crate) const fn skip_flag(self) -> &'static str {
         match self {
             Self::Check => "check",
             Self::Clippy => "clippy",
@@ -88,7 +88,7 @@ impl<'de> Deserialize<'de> for SkipOption {
     max_term_width = 100,
     styles = clap_cargo::style::CLAP_STYLING
 )]
-pub struct Cli {
+pub(crate) struct Cli {
     /// Skip one or more checks (e.g. --skip clippy,fmt)
     //
     // `hide_possible_values` prevents clap from appending the auto-generated
@@ -107,11 +107,11 @@ pub struct Cli {
                      Possible values: check, clippy, test, doc-test, fmt, doc, machete, \
                      audit, license, coverage, targets."
     )]
-    pub skip: Vec<SkipOption>,
+    pub(crate) skip: Vec<SkipOption>,
 
     /// Show every command and the full output of all checks
     #[arg(short = 'v', long = "verbose")]
-    pub verbose: bool,
+    pub(crate) verbose: bool,
 
     /// Auto-apply fmt, clippy --fix and machete --fix before the checks
     #[arg(
@@ -120,7 +120,7 @@ pub struct Cli {
                      Honours `--skip` (skipping clippy also skips its fix) and aborts \
                      the pipeline if any fix step fails."
     )]
-    pub fix: bool,
+    pub(crate) fix: bool,
 
     /// Run the opt-in coverage gate (thresholds default to 100%)
     #[arg(
@@ -130,7 +130,7 @@ pub struct Cli {
                      metric. Contradicts `--skip coverage` and `--skip test`, which is \
                      reported as a usage error rather than silently picking a winner."
     )]
-    pub coverage: bool,
+    pub(crate) coverage: bool,
 
     /// Color policy. Honours `NO_COLOR` and TTY detection when `auto`
     #[arg(
@@ -142,16 +142,16 @@ pub struct Cli {
                      and the `NO_COLOR` env var. `always`/`never` are explicit overrides \
                      that win over both signals."
     )]
-    pub color: ColorChoice,
+    pub(crate) color: ColorChoice,
 
     /// Optional meta subcommand. `None` runs the default check pipeline.
     #[command(subcommand)]
-    pub command: Option<Cmd>,
+    pub(crate) command: Option<Cmd>,
 }
 
 /// Meta operations that bypass the check pipeline.
 #[derive(Subcommand, Debug, Clone)]
-pub enum Cmd {
+pub(crate) enum Cmd {
     /// Emit a shell completion script for SHELL to stdout.
     ///
     /// Example (fish):
@@ -164,7 +164,7 @@ pub enum Cmd {
 
 impl Cli {
     #[must_use]
-    pub fn skips(&self, option: SkipOption) -> bool {
+    pub(crate) fn skips(&self, option: SkipOption) -> bool {
         self.skip.contains(&option)
     }
 
@@ -173,7 +173,7 @@ impl Cli {
     /// expects. `Auto` defers to the TTY+`NO_COLOR` heuristic, explicit
     /// `always`/`never` wins outright.
     #[must_use]
-    pub fn color_mode(&self, is_tty: bool) -> ColorMode {
+    pub(crate) fn color_mode(&self, is_tty: bool) -> ColorMode {
         match self.color {
             ColorChoice::Always => ColorMode::Always,
             ColorChoice::Never => ColorMode::Never,
@@ -184,7 +184,7 @@ impl Cli {
     /// Render the completion script for `shell` to `writer`. Sourced
     /// from the same `clap::Command` the parser uses, so the script can
     /// never describe a flag the binary does not accept.
-    pub fn write_completions<W: std::io::Write>(shell: Shell, writer: &mut W) {
+    pub(crate) fn write_completions<W: std::io::Write>(shell: Shell, writer: &mut W) {
         let mut cmd = Self::command();
         let name = cmd.get_name().to_string();
         generate(shell, &mut cmd, name, writer);
@@ -193,7 +193,7 @@ impl Cli {
     /// Merge `config_skips` into `self.skip` in place. CLI order wins so
     /// error and diagnostic messages echo back what the user actually
     /// typed, with config entries as a stable, deduplicated tail.
-    pub fn merge_config_skips(&mut self, config_skips: &[SkipOption]) {
+    pub(crate) fn merge_config_skips(&mut self, config_skips: &[SkipOption]) {
         for s in config_skips {
             if !self.skip.contains(s) {
                 self.skip.push(*s);

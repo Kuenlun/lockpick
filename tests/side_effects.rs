@@ -4,7 +4,6 @@
 
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![cfg_attr(coverage_nightly, coverage(off))]
-#![allow(clippy::unwrap_used)]
 
 //! Side-effect contracts: `--fix` mutates source, the in-process
 //! license-header gate flags offenders and skips `@generated` files,
@@ -32,7 +31,7 @@ fn fix_flag_mutates_source_before_check() -> TestResult {
     let out = run_lockpick(project.path()).args(&args).output()?;
     assert_eq!(
         out.status.code(),
-        Some(0),
+        Some(0_i32),
         "expected exit 0 after --fix healed the tree, got code={code:?} stdout=\n{out_text}\nstderr=\n{err}",
         code = out.status.code(),
         out_text = stdout(&out),
@@ -54,7 +53,7 @@ fn pipeline_fails_without_fix_on_unformatted_source() -> TestResult {
         .output()?;
     assert_eq!(
         out.status.code(),
-        Some(1),
+        Some(1_i32),
         "expected exit 1 on unformatted source, got code={code:?} stdout=\n{out_text}",
         code = out.status.code(),
         out_text = stdout(&out),
@@ -163,7 +162,7 @@ fn clean_run_keeps_stderr_quiet_and_summary_on_stdout() -> TestResult {
     let diag = stderr(&out);
     assert_eq!(
         out.status.code(),
-        Some(0),
+        Some(0_i32),
         "expected exit 0 on clean run, got code={code:?} stdout=\n{report}\nstderr=\n{diag}",
         code = out.status.code(),
     );
@@ -186,7 +185,7 @@ fn skip_coverage_without_config_notes_no_effect() -> TestResult {
     let out = run_lockpick(project.path()).args(&args).output()?;
     assert_eq!(
         out.status.code(),
-        Some(0),
+        Some(0_i32),
         "expected exit 0, got code={code:?} stderr=\n{err}",
         code = out.status.code(),
         err = stderr(&out),
@@ -214,7 +213,7 @@ fn skip_test_with_configured_coverage_notes_implied_skip() -> TestResult {
         .output()?;
     assert_eq!(
         out.status.code(),
-        Some(0),
+        Some(0_i32),
         "expected exit 0, got code={code:?} stderr=\n{err}",
         code = out.status.code(),
         err = stderr(&out),
@@ -261,12 +260,12 @@ fn license_scan_is_workspace_relative_and_includes_all_members() -> TestResult {
     };
     for cwd in [&root, &root.join("alpha/src")] {
         let out = run(cwd)?;
-        assert_eq!(out.status.code(), Some(0), "{}", common::combined(&out));
+        assert_eq!(out.status.code(), Some(0_i32), "{}", common::combined(&out));
         assert!(stdout(&out).contains("2 file(s) checked"));
     }
     std::fs::write(root.join("beta/src/lib.rs"), "pub const VALUE: u8 = 1;\n")?;
     let out = run(&root.join("alpha"))?;
-    assert_eq!(out.status.code(), Some(1), "{}", common::combined(&out));
+    assert_eq!(out.status.code(), Some(1_i32), "{}", common::combined(&out));
     assert!(stdout(&out).contains("beta"));
     Ok(())
 }
@@ -288,8 +287,20 @@ fn license_scan_rejects_invalid_empty_and_unmatched_globs() -> TestResult {
         let out = run_lockpick(project.path())
             .args(["--skip", "check,clippy,fmt,test,doc,doc-test,machete,audit"])
             .output()?;
-        assert_eq!(out.status.code(), Some(1), "{}", common::combined(&out));
+        assert_eq!(out.status.code(), Some(1_i32), "{}", common::combined(&out));
         assert!(stdout(&out).contains("license-header-globs"));
     }
+    Ok(())
+}
+
+#[test]
+fn failed_fix_stops_before_the_check_pipeline() -> TestResult {
+    let project = scratch_crate("failed_fix", "", &[("src/main.rs", common::BROKEN_MAIN_RS)]);
+    let out = run_lockpick(project.path())
+        .args(["--fix", "--skip", "machete,audit"])
+        .output()?;
+    assert_eq!(out.status.code(), Some(1_i32), "{}", common::combined(&out));
+    assert!(stderr(&out).contains("fix: cargo clippy exited with non-zero status"));
+    assert!(!stdout(&out).contains("checks passed"));
     Ok(())
 }

@@ -62,7 +62,7 @@ lockpick --skip audit --skip doc  # skip checks (repeatable, or comma-separated)
 | `doc`      | `cargo doc --no-deps` with `RUSTDOCFLAGS=-D warnings`                   | `doc`      |
 | `doc-test` | doctests, skipped on bin-only workspaces                                | `doc-test` |
 | `machete`  | unused-dependency scan (`cargo machete`)                                | `machete`  |
-| `audit`    | RustSec advisory scan (`cargo audit`, requires network)                 | `audit`    |
+| `audit`    | RustSec advisory scan (`cargo audit --deny warnings`, requires network)                 | `audit`    |
 | `license`  | byte-equal license-header scan, opt-in via config                       | `license`  |
 | `targets`  | additional Clippy checks for configured targets and profiles           | `targets` |
 | `coverage` | per-metric `llvm-cov` gate, opt-in via config or `--coverage`           | `coverage` |
@@ -72,6 +72,7 @@ lockpick --skip audit --skip doc  # skip checks (repeatable, or comma-separated)
 The audit gate fails on advisory warnings and on tool or network errors. An unavailable advisory database is not a successful security check. To intentionally omit the gate, use `--skip audit`.
 
 The documentation gate appends `-D warnings` to existing `RUSTDOCFLAGS`, or to `CARGO_ENCODED_RUSTDOCFLAGS` when present, preserving Cargo's encoded-flag precedence and argument boundaries.
+
 
 `--skip test` implies `--skip coverage`. `--skip license` and `--skip coverage` are no-ops when the matching gate is not configured. Run `lockpick -v` to see the exact cargo invocation each check fires.
 

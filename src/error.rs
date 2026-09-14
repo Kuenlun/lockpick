@@ -8,7 +8,7 @@ use colored::Colorize;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum LockpickError {
+pub(crate) enum LockpickError {
     #[error("invalid Lockpick configuration: {0}")]
     Configuration(String),
 
@@ -43,11 +43,11 @@ pub enum LockpickError {
 
 /// One absent cargo subcommand row used by [`LockpickError::MissingTools`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MissingTool {
+pub(crate) struct MissingTool {
     /// Binary name on `PATH`, doubles as the `cargo install` argument.
-    pub binary: &'static str,
+    pub(crate) binary: &'static str,
     /// `--skip` value that disables the dependent check.
-    pub skip_flag: &'static str,
+    pub(crate) skip_flag: &'static str,
 }
 
 /// Render the bundled install-or-skip hint. Caller ensures `missing`
@@ -66,11 +66,11 @@ fn render_missing(missing: &[MissingTool]) -> String {
     let width = missing.iter().map(|m| m.binary.len()).max().unwrap_or(0);
 
     let mut out = String::new();
-    let _ = writeln!(&mut out, "{n} required {noun} {verb} missing:");
+    let _result = writeln!(&mut out, "{n} required {noun} {verb} missing:");
     out.push('\n');
     for m in missing {
         let bin = format!("{:<width$}", m.binary, width = width);
-        let _ = writeln!(
+        let _result = writeln!(
             &mut out,
             "  {bullet} {bin}  (needed for: {check})",
             bullet = "•".dimmed(),
@@ -97,11 +97,11 @@ fn render_missing(missing: &[MissingTool]) -> String {
     );
 
     out.push('\n');
-    let _ = writeln!(&mut out, "{}", "Install:".bold());
-    let _ = writeln!(&mut out, "  {}", install_cmd.cyan().bold());
+    let _result = writeln!(&mut out, "{}", "Install:".bold());
+    let _result = writeln!(&mut out, "  {}", install_cmd.cyan().bold());
     out.push('\n');
-    let _ = writeln!(&mut out, "{}", "Or skip:".bold());
-    let _ = write!(&mut out, "  {}", skip_cmd.cyan());
+    let _result = writeln!(&mut out, "{}", "Or skip:".bold());
+    let _result = write!(&mut out, "  {}", skip_cmd.cyan());
 
     out
 }
@@ -111,25 +111,25 @@ fn render_missing(missing: &[MissingTool]) -> String {
 /// "what is wrong / how to fix" shape.
 fn render_branches_nightly() -> String {
     let mut out = String::new();
-    let _ = writeln!(
+    let _result = writeln!(
         &mut out,
         "{key} requires nightly Rust",
         key = "coverage.branches".yellow().bold(),
     );
     out.push('\n');
-    let _ = writeln!(
+    let _result = writeln!(
         &mut out,
         "Branch coverage uses `-Z coverage-options=branch`, which only nightly accepts."
     );
     out.push('\n');
-    let _ = writeln!(&mut out, "{}", "Either:".bold());
-    let _ = writeln!(
+    let _result = writeln!(&mut out, "{}", "Either:".bold());
+    let _result = writeln!(
         &mut out,
         "  {bullet} remove {key} from [*.metadata.lockpick.coverage]",
         bullet = "•".dimmed(),
         key = "branches".cyan(),
     );
-    let _ = write!(
+    let _result = write!(
         &mut out,
         "  {bullet} install nightly: {cmd}",
         bullet = "•".dimmed(),

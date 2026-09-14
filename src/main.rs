@@ -2,9 +2,15 @@
 // lockpick - Run every Rust quality gate in one command
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
+//! Run the Rust quality pipeline and report one process exit status.
+
 // `coverage(off)` on unit-test modules keeps `cargo llvm-cov` focused
 // on production code. The cfg is injected by cargo-llvm-cov on nightly.
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+#![expect(
+    clippy::redundant_pub_crate,
+    reason = "Explicit internal visibility satisfies unreachable_pub."
+)]
 
 mod checks;
 mod cli;
@@ -45,6 +51,10 @@ fn main() -> ExitCode {
 /// stable. Pre-check errors print their Display to stderr.
 /// `ChecksFailed` stays silent because the reporter already rendered
 /// the per-check FAIL sections.
+#[expect(
+    clippy::print_stderr,
+    reason = "CLI startup errors are reported on stderr."
+)]
 fn dispatch(result: Result<(), LockpickError>) -> u8 {
     match result {
         Ok(()) => 0,

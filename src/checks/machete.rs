@@ -7,7 +7,7 @@
 use super::{Check, Runner, cargo_outcome, fmt_cargo_cmd};
 use crate::reporter::CheckOutcome;
 
-pub struct MacheteCheck;
+pub(crate) struct MacheteCheck;
 
 impl Check for MacheteCheck {
     fn label(&self) -> &'static str {

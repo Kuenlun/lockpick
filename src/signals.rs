@@ -16,7 +16,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 /// Process-wide registry of in-flight cargo child PIDs plus the latest
 /// captured signal number.
-pub struct State {
+pub(crate) struct State {
     received: AtomicI32,
     children: Mutex<HashSet<u32>>,
 }
@@ -33,7 +33,7 @@ impl State {
     /// completion. First signal wins so a follow-up SIGTERM cannot
     /// rewrite a SIGINT exit code.
     #[must_use]
-    pub fn captured(&self) -> Option<i32> {
+    pub(crate) fn captured(&self) -> Option<i32> {
         match self.received.load(Ordering::SeqCst) {
             0 => None,
             n => Some(n),
@@ -50,8 +50,8 @@ impl State {
     /// Track a live cargo subprocess so the handler can forward signals
     /// to it. The returned guard removes the entry on drop, including
     /// unwind paths.
-    pub fn register_child(&self, pid: u32) -> ChildGuard<'_> {
-        self.lock_children().insert(pid);
+    pub(crate) fn register_child(&self, pid: u32) -> ChildGuard<'_> {
+        let _inserted = self.lock_children().insert(pid);
         #[cfg(unix)]
         if let Some(signal) = self.captured() {
             forward_via_kill(signal, pid);
@@ -61,21 +61,21 @@ impl State {
 }
 
 /// RAII guard returned by [`State::register_child`].
-pub struct ChildGuard<'a> {
+pub(crate) struct ChildGuard<'a> {
     state: &'a State,
     pid: u32,
 }
 
 impl Drop for ChildGuard<'_> {
     fn drop(&mut self) {
-        self.state.lock_children().remove(&self.pid);
+        let _removed = self.state.lock_children().remove(&self.pid);
     }
 }
 
 /// Process-wide signal state, shared by [`install`] and every cargo
 /// runner.
 #[must_use]
-pub fn state() -> &'static State {
+pub(crate) fn state() -> &'static State {
     static STATE: OnceLock<State> = OnceLock::new();
     STATE.get_or_init(State::new)
 }
@@ -84,12 +84,12 @@ pub fn state() -> &'static State {
 /// interrupted, else `default`. Out-of-range signal numbers fall back
 /// too, since shells encode killed-by-signal exits in `[129, 255]`.
 #[must_use]
-pub fn exit_code(captured: Option<i32>, default: u8) -> u8 {
+pub(crate) fn exit_code(captured: Option<i32>, default: u8) -> u8 {
     if let Some(sig) = captured
         && let Ok(sig) = u8::try_from(sig)
         && (1..128).contains(&sig)
     {
-        128 + sig
+        128_u8.saturating_add(sig)
     } else {
         default
     }
@@ -102,7 +102,7 @@ pub fn exit_code(captured: Option<i32>, default: u8) -> u8 {
 /// child process groups via `kill(1)`. Setup failures silently leave the process
 /// unhandled.
 #[cfg(unix)]
-pub fn install() {
+pub(crate) fn install() {
     let Ok(mut signals) = signal_hook::iterator::Signals::new([
         signal_hook::consts::SIGINT,
         signal_hook::consts::SIGTERM,
@@ -110,11 +110,12 @@ pub fn install() {
         return;
     };
     let state = state();
-    std::thread::spawn(move || {
+    let _signal_thread = std::thread::spawn(move || {
         for sig in signals.forever() {
-            let _ = state
-                .received
-                .compare_exchange(0, sig, Ordering::SeqCst, Ordering::SeqCst);
+            let _result =
+                state
+                    .received
+                    .compare_exchange(0, sig, Ordering::SeqCst, Ordering::SeqCst);
             let pids: Vec<u32> = state.lock_children().iter().copied().collect();
             for pid in pids {
                 forward_via_kill(sig, pid);
@@ -134,7 +135,7 @@ pub fn install() {
 fn forward_via_kill(sig: i32, pid: u32) {
     use std::process::{Command, Stdio};
 
-    let _ = Command::new("kill")
+    let _result = Command::new("kill")
         .args([&format!("-{sig}"), "--", &format!("-{pid}")])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -142,7 +143,7 @@ fn forward_via_kill(sig: i32, pid: u32) {
 }
 
 #[cfg(not(unix))]
-pub const fn install() {}
+pub(crate) const fn install() {}
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -153,29 +154,29 @@ mod tests {
     fn exit_code_maps_signals_to_128_plus_signum() {
         assert_eq!(exit_code(None, 0), 0);
         assert_eq!(exit_code(None, 3), 3);
-        assert_eq!(exit_code(Some(2), 0), 130);
-        assert_eq!(exit_code(Some(15), 1), 143);
+        assert_eq!(exit_code(Some(2_i32), 0), 130);
+        assert_eq!(exit_code(Some(15_i32), 1), 143);
     }
 
     #[test]
     fn out_of_range_signals_fall_back_to_the_default() {
-        assert_eq!(exit_code(Some(0), 7), 7);
-        assert_eq!(exit_code(Some(128), 7), 7);
-        assert_eq!(exit_code(Some(-1), 7), 7);
-        assert_eq!(exit_code(Some(300), 7), 7);
+        assert_eq!(exit_code(Some(0_i32), 7), 7);
+        assert_eq!(exit_code(Some(128_i32), 7), 7);
+        assert_eq!(exit_code(Some(-1_i32), 7), 7);
+        assert_eq!(exit_code(Some(300_i32), 7), 7);
     }
 
     #[test]
     fn first_captured_signal_wins() {
         let state = State::new();
         assert_eq!(state.captured(), None);
-        let _ = state
+        let _result = state
             .received
             .compare_exchange(0, 2, Ordering::SeqCst, Ordering::SeqCst);
-        let _ = state
+        let _result = state
             .received
             .compare_exchange(0, 15, Ordering::SeqCst, Ordering::SeqCst);
-        assert_eq!(state.captured(), Some(2));
+        assert_eq!(state.captured(), Some(2_i32));
     }
 
     #[test]

@@ -12,8 +12,8 @@ use crate::reporter::CheckOutcome;
 const DOC_ARGS: &[&str] = &["--no-deps", "--workspace", "--all-features"];
 const DENY_WARNINGS: &str = "-D warnings";
 
-pub struct DocCheck {
-    pub options: super::util::BuildOptions,
+pub(crate) struct DocCheck {
+    pub(crate) options: super::util::BuildOptions,
 }
 
 impl Check for DocCheck {

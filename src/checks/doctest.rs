@@ -9,8 +9,8 @@ use crate::reporter::CheckOutcome;
 
 const DOCTEST_ARGS: &[&str] = &["--doc", "--workspace", "--all-features"];
 
-pub struct DocTestCheck {
-    pub options: super::util::BuildOptions,
+pub(crate) struct DocTestCheck {
+    pub(crate) options: super::util::BuildOptions,
 }
 
 impl Check for DocTestCheck {

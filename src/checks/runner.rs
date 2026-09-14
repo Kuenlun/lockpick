@@ -14,14 +14,14 @@ use crate::tooling::{ColorMode, cargo_command};
 
 /// Captured output of a finished cargo invocation.
 #[derive(Debug, Clone)]
-pub struct SpawnResult {
-    pub success: bool,
-    pub stdout: Vec<u8>,
-    pub stderr: Vec<u8>,
+pub(crate) struct SpawnResult {
+    pub(crate) success: bool,
+    pub(crate) stdout: Vec<u8>,
+    pub(crate) stderr: Vec<u8>,
 }
 
 /// Strategy that runs `cargo <sub> <args…>`. Production uses [`CargoCli`].
-pub trait Runner: Send + Sync {
+pub(crate) trait Runner: Send + Sync {
     /// Spawn the subcommand and capture its raw output.
     ///
     /// [`Err`] signals an OS-level launch failure. Non-zero exits come
@@ -43,7 +43,7 @@ pub trait Runner: Send + Sync {
 /// `./Cargo.lock`, agrees with lockpick from any subdirectory. Other
 /// checks walk up the manifest tree on their own and are unaffected.
 #[derive(Debug, Clone, Default)]
-pub struct CargoCli {
+pub(crate) struct CargoCli {
     /// Isolated build directory when Cargo would overwrite this executable.
     target_dir: Option<PathBuf>,
     /// Propagated to every child as `CARGO_TERM_COLOR` so captured
@@ -59,7 +59,7 @@ impl CargoCli {
     /// Decide whether children need `CARGO_TARGET_DIR` redirected, pin
     /// the propagated color mode, and record the workspace root.
     #[must_use]
-    pub fn detect(
+    pub(crate) fn detect(
         color: ColorMode,
         workspace_root: Option<PathBuf>,
         target_directory: Option<&Path>,
@@ -75,13 +75,13 @@ impl CargoCli {
     }
 
     /// Set the host target used by cargo-llvm-cov's direct rustc probes.
-    pub fn with_coverage_host(mut self, host: Option<String>) -> Self {
+    pub(crate) fn with_coverage_host(mut self, host: Option<String>) -> Self {
         self.coverage_host = host;
         self
     }
 
     fn append_args(&self, command: &mut Command, sub: &str, args: &[&str]) {
-        command.arg(sub);
+        let _command = command.arg(sub);
         if sub == "llvm-cov"
             && let Some(host) = &self.coverage_host
             && let Some(position) = args
@@ -89,12 +89,12 @@ impl CargoCli {
                 .position(|pair| pair == ["--target", "host-tuple"])
         {
             let (before, target_and_after) = args.split_at(position);
-            command
+            let _command = command
                 .args(before)
                 .args(["--target", host])
                 .args(target_and_after.iter().skip(2));
         } else {
-            command.args(args);
+            let _command = command.args(args);
         }
     }
 
@@ -102,27 +102,27 @@ impl CargoCli {
     fn command(&self, sub: &str, args: &[&str], envs: &[(&str, &str)]) -> Command {
         let mut command = cargo_command();
         if let Some(root) = &self.workspace_root {
-            command.current_dir(root);
+            let _command = command.current_dir(root);
         }
         self.append_args(&mut command, sub, args);
-        command.env("CARGO_TERM_COLOR", self.color.as_str());
-        command.envs(envs.iter().copied());
+        let _command = command.env("CARGO_TERM_COLOR", self.color.as_str());
+        let _command = command.envs(envs.iter().copied());
         if let Some(directory) = &self.target_dir {
-            command.env("CARGO_TARGET_DIR", directory);
+            let _command = command.env("CARGO_TARGET_DIR", directory);
         }
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
-            command.process_group(0);
+            let _command = command.process_group(0);
         }
         command
     }
 
     /// Run a fix step with live output and the same cancellation behavior.
-    pub fn spawn_inherited(&self, sub: &str, args: &[&str]) -> std::io::Result<bool> {
+    pub(crate) fn spawn_inherited(&self, sub: &str, args: &[&str]) -> std::io::Result<bool> {
         ensure_running()?;
         let mut cmd = self.command(sub, args, &[]);
-        cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+        let _command = cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
         let mut child = cmd.spawn()?;
         let guard = crate::signals::state().register_child(child.id());
         let status = child.wait();

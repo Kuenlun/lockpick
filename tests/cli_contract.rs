@@ -4,7 +4,6 @@
 
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![cfg_attr(coverage_nightly, coverage(off))]
-#![allow(clippy::unwrap_used)]
 
 //! Contract tests around lockpick's CLI surface: argv parsing, the
 //! empty-pipeline misconfiguration arm, and the `completions`
@@ -26,7 +25,7 @@ fn usage_error_on_unknown_skip_value() -> TestResult {
     let out = run_lockpick(&cwd).args(["--skip", "wat"]).output()?;
     assert_eq!(
         out.status.code(),
-        Some(2),
+        Some(2_i32),
         "expected exit 2 on unknown skip value, got code={code:?} stderr=\n{err}",
         code = out.status.code(),
         err = stderr(&out),
@@ -59,7 +58,7 @@ fn empty_pipeline_returns_exit_two_with_message() -> TestResult {
     let out = run_lockpick(project.path()).args(&skip_args).output()?;
     assert_eq!(
         out.status.code(),
-        Some(2),
+        Some(2_i32),
         "expected exit 2 on empty pipeline, got code={code:?} stderr=\n{err}",
         code = out.status.code(),
         err = stderr(&out),
@@ -83,7 +82,7 @@ fn coverage_flag_conflicting_with_cli_skip_exits_two() -> TestResult {
             .output()?;
         assert_eq!(
             out.status.code(),
-            Some(2),
+            Some(2_i32),
             "expected exit 2 on --coverage --skip {skip}, got code={code:?} stderr=\n{err}",
             code = out.status.code(),
             err = stderr(&out),
@@ -110,7 +109,7 @@ fn coverage_flag_conflicting_with_config_skip_exits_two() -> TestResult {
     let out = run_lockpick(project.path()).arg("--coverage").output()?;
     assert_eq!(
         out.status.code(),
-        Some(2),
+        Some(2_i32),
         "expected exit 2 on --coverage vs config skip, got code={code:?} stderr=\n{err}",
         code = out.status.code(),
         err = stderr(&out),
@@ -134,7 +133,7 @@ fn completions_emit_shell_script_to_stdout() -> TestResult {
         let out = run_lockpick(&cwd).args(["completions", shell]).output()?;
         assert_eq!(
             out.status.code(),
-            Some(0),
+            Some(0_i32),
             "completions {shell} expected exit 0, got code={code:?} stderr=\n{err}",
             code = out.status.code(),
             err = stderr(&out),

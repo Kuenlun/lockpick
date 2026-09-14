@@ -18,7 +18,7 @@ use crate::tooling::{self, ColorMode, Tool, Toolchain};
 /// Run the full check pipeline. Loads tooling, config and workspace
 /// metadata, then orchestrates the independent cohort, the serial chain
 /// and coverage.
-pub fn run(mut cli: Cli) -> Result<(), LockpickError> {
+pub(crate) fn run(mut cli: Cli) -> Result<(), LockpickError> {
     let reporter = Reporter::auto(cli.verbose);
     let toolchain = Toolchain::detect();
     let metadata = LockpickMetadata::load()?;
@@ -114,20 +114,12 @@ pub fn run(mut cli: Cli) -> Result<(), LockpickError> {
         print_planned_commands(
             &reporter,
             &plan,
-            coverage_check.as_ref().map(|c| c as &dyn Check),
+            coverage_check.as_ref().map(|c| -> &dyn Check { c }),
         );
     }
 
-    let pbs: Vec<ProgressBar> = plan
-        .iter()
-        .map(|(_, c)| reporter.add_spinner(c.label()))
-        .collect();
-    let coverage_pb = coverage_check
-        .as_ref()
-        .map(|c| reporter.add_spinner(c.label()));
-    let coverage = coverage_check.as_ref().zip(coverage_pb.as_ref());
-
-    let (outcomes, coverage_outcome) = run_pipeline(&plan, &pbs, coverage, &reporter, &runner);
+    let (outcomes, coverage_outcome) =
+        run_pipeline(&plan, coverage_check.as_ref(), &reporter, &runner);
 
     let items = flatten_outcomes(&plan, &outcomes, coverage_outcome.as_ref());
     let failure_count = report_results(&reporter, &items);
@@ -266,21 +258,24 @@ fn run_one(
 /// [`std::panic::resume_unwind`] rather than masking as `Fail`.
 fn run_pipeline(
     plan: &Plan,
-    pbs: &[ProgressBar],
-    coverage: Option<(&CoverageCheck, &ProgressBar)>,
+    coverage_check: Option<&CoverageCheck>,
     reporter: &Reporter,
     runner: &dyn Runner,
 ) -> (Vec<CheckOutcome>, Option<CheckOutcome>) {
-    let mut outcomes: Vec<CheckOutcome> =
-        (0..plan.len()).map(|_| CheckOutcome::skipped()).collect();
+    // Create spinners in display order before partitioning execution cohorts.
+    let (independent, mut chain): (Vec<_>, Vec<_>) = plan
+        .iter()
+        .map(|(index, check)| (index, check, reporter.add_spinner(check.label())))
+        .partition(|(_, check, _)| check.chain_position().is_none());
+    chain.sort_by_key(|(_, check, _)| check.chain_position());
+    let coverage_pb = coverage_check.map(|check| reporter.add_spinner(check.label()));
+    let coverage = coverage_check.zip(coverage_pb.as_ref());
+    let mut outcomes = Vec::with_capacity(plan.len());
 
     let coverage_outcome = thread::scope(|s| {
-        let independent_handles: Vec<_> = plan
-            .independent()
-            .map(|(idx, check)| {
-                let pb = &pbs[idx];
-                s.spawn(move || (idx, run_one(check, pb, reporter, runner)))
-            })
+        let independent_handles: Vec<_> = independent
+            .iter()
+            .map(|(idx, check, pb)| s.spawn(move || (*idx, run_one(*check, pb, reporter, runner))))
             .collect();
 
         let chain_handle = s.spawn(move || {
@@ -288,15 +283,14 @@ fn run_pipeline(
             let mut coverage_handle = None;
             let mut compile_failed = false;
 
-            for (idx, check) in plan.serial_chain() {
-                let pb = &pbs[idx];
+            for (idx, check, pb) in &chain {
                 let label = check.label();
                 let position = check.chain_position();
                 let outcome = if compile_failed {
                     reporter.finish_spinner(pb, label, TaskStatus::Skip);
                     CheckOutcome::skipped()
                 } else {
-                    run_one(check, pb, reporter, runner)
+                    run_one(*check, pb, reporter, runner)
                 };
                 let passed = outcome.passed();
 
@@ -309,7 +303,7 @@ fn run_pipeline(
                 {
                     coverage_handle = Some(s.spawn(move || run_one(cov, cov_pb, reporter, runner)));
                 }
-                chain_outcomes.push((idx, outcome));
+                chain_outcomes.push((*idx, outcome));
             }
 
             // Coverage only spawns when `test` passes. Otherwise mark
@@ -333,18 +327,20 @@ fn run_pipeline(
             let (idx, outcome) = handle
                 .join()
                 .unwrap_or_else(|payload| std::panic::resume_unwind(payload));
-            outcomes[idx] = outcome;
+            outcomes.push((idx, outcome));
         }
         let (chain_outcomes, cov_outcome) = chain_handle
             .join()
             .unwrap_or_else(|payload| std::panic::resume_unwind(payload));
-        for (idx, outcome) in chain_outcomes {
-            outcomes[idx] = outcome;
-        }
+        outcomes.extend(chain_outcomes);
         cov_outcome
     });
 
-    (outcomes, coverage_outcome)
+    outcomes.sort_by_key(|(index, _)| *index);
+    (
+        outcomes.into_iter().map(|(_, outcome)| outcome).collect(),
+        coverage_outcome,
+    )
 }
 
 /// Flatten plan outcomes plus optional coverage into `(label, outcome)`
@@ -450,7 +446,8 @@ mod tests {
     }
 
     #[test]
-    fn require_tooling_skips_llvm_cov_when_coverage_inactive() {
+    fn require_tooling_skips_llvm_cov_when_coverage_inactive()
+    -> Result<(), Box<dyn std::error::Error>> {
         // An empty toolchain is missing every optional tool; with
         // machete and audit skipped and coverage inactive, nothing is
         // required. Activating coverage must then demand cargo-llvm-cov.
@@ -460,10 +457,11 @@ mod tests {
 
         let Err(LockpickError::MissingTools(missing)) = require_tooling(&cli, true, &toolchain)
         else {
-            panic!("active coverage must require cargo-llvm-cov");
+            return Err("active coverage must require cargo-llvm-cov".into());
         };
         assert_eq!(missing.len(), 1);
-        assert_eq!(missing[0].binary, "cargo-llvm-cov");
+        assert_eq!(missing.first().unwrap().binary, "cargo-llvm-cov");
+        Ok(())
     }
 
     #[test]
@@ -482,5 +480,145 @@ mod tests {
         assert!(require_nightly_for_branches(true, &config, true).is_ok());
         assert!(require_nightly_for_branches(false, &config, false).is_ok());
         assert!(require_nightly_for_branches(true, &Config::default(), false).is_ok());
+    }
+    struct PipelineRunner {
+        fail: &'static str,
+        calls: std::sync::Mutex<Vec<&'static str>>,
+        fmt_started: std::sync::mpsc::Sender<()>,
+        wait_for_fmt: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+        compile_started: std::sync::mpsc::Sender<()>,
+        wait_for_compile: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl PipelineRunner {
+        fn new(fail: &'static str) -> Self {
+            let (fmt_started, wait_for_fmt) = std::sync::mpsc::channel();
+            let (compile_started, wait_for_compile) = std::sync::mpsc::channel();
+            Self {
+                fail,
+                calls: std::sync::Mutex::new(Vec::new()),
+                fmt_started,
+                wait_for_fmt: std::sync::Mutex::new(wait_for_fmt),
+                compile_started,
+                wait_for_compile: std::sync::Mutex::new(wait_for_compile),
+            }
+        }
+    }
+
+    impl Runner for PipelineRunner {
+        fn spawn(
+            &self,
+            sub: &str,
+            args: &[&str],
+            _envs: &[(&str, &str)],
+        ) -> std::io::Result<checks::runner::SpawnResult> {
+            let label = match sub {
+                "check" => "check",
+                "fmt" => "fmt",
+                "clippy" => "clippy",
+                "doc" => "doc",
+                "test" if args.contains(&"--doc") => "doc-test",
+                "test" => "test",
+                _ => return Err(std::io::Error::other("unexpected pipeline command")),
+            };
+            let timeout = std::time::Duration::from_secs(2);
+            match label {
+                "check" => {
+                    self.compile_started
+                        .send(())
+                        .map_err(std::io::Error::other)?;
+                    self.wait_for_fmt
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(timeout)
+                        .map_err(std::io::Error::other)?;
+                }
+                "fmt" => {
+                    self.fmt_started.send(()).map_err(std::io::Error::other)?;
+                    self.wait_for_compile
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(timeout)
+                        .map_err(std::io::Error::other)?;
+                }
+                _ => {}
+            }
+            self.calls.lock().unwrap().push(label);
+            Ok(checks::runner::SpawnResult {
+                success: label != self.fail,
+                stdout: label.as_bytes().to_vec(),
+                stderr: Vec::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn pipeline_overlaps_independent_work_and_preserves_serial_and_report_order() {
+        let cli = Cli::parse_from(["lockpick", "--skip", "machete,audit"]);
+        let plan = checks::build_plan(
+            &cli,
+            false,
+            &Toolchain::default(),
+            &Config::default(),
+            true,
+            false,
+            ColorMode::Never,
+        );
+        let runner = PipelineRunner::new("");
+        let (outcomes, coverage) = run_pipeline(&plan, None, &Reporter::auto(false), &runner);
+        assert!(coverage.is_none());
+        for ((_, check), outcome) in plan.iter().zip(&outcomes) {
+            assert!(outcome.passed(), "{}", outcome.output);
+            assert_eq!(outcome.output.trim(), check.label());
+        }
+        let serial: Vec<_> = runner
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .copied()
+            .filter(|label| *label != "fmt")
+            .collect();
+        assert_eq!(serial, ["check", "test", "clippy", "doc", "doc-test"]);
+    }
+
+    #[test]
+    fn compile_failure_skips_the_chain_and_test_failure_skips_only_coverage() {
+        let cli = Cli::parse_from(["lockpick", "--skip", "machete,audit"]);
+        let plan = checks::build_plan(
+            &cli,
+            false,
+            &Toolchain::default(),
+            &Config::default(),
+            true,
+            false,
+            ColorMode::Never,
+        );
+        let coverage = CoverageCheck {
+            options: checks::util::BuildOptions::default(),
+            thresholds: CoverageConfig::default(),
+            branch_coverage: false,
+        };
+        for fail in ["check", "test"] {
+            let runner = PipelineRunner::new(fail);
+            let (outcomes, coverage) =
+                run_pipeline(&plan, Some(&coverage), &Reporter::auto(false), &runner);
+            assert_eq!(coverage.unwrap().status, TaskStatus::Skip);
+            for ((_, check), outcome) in plan.iter().zip(&outcomes) {
+                let expected = if check.label() == fail {
+                    TaskStatus::Fail
+                } else if fail == "check" && check.label() != "fmt" {
+                    TaskStatus::Skip
+                } else {
+                    TaskStatus::Pass
+                };
+                assert_eq!(
+                    outcome.status,
+                    expected,
+                    "{} after {fail} failure",
+                    check.label()
+                );
+            }
+        }
     }
 }

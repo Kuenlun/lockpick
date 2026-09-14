@@ -11,7 +11,7 @@ use std::process::Command;
 /// them when stdout is an interactive terminal, strip them on a pipe or
 /// when `NO_COLOR` is set (<https://no-color.org>).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ColorMode {
+pub(crate) enum ColorMode {
     Always,
     #[default]
     Never,
@@ -21,7 +21,7 @@ impl ColorMode {
     /// Decide the mode from the report stream's TTY state and the
     /// `NO_COLOR` env var.
     #[must_use]
-    pub fn for_stdout(is_tty: bool) -> Self {
+    pub(crate) fn for_stdout(is_tty: bool) -> Self {
         if is_tty && !no_color_env() {
             Self::Always
         } else {
@@ -32,7 +32,7 @@ impl ColorMode {
     /// Form accepted by both `CARGO_TERM_COLOR` and rustfmt's `--color`,
     /// so cargo and rustfmt stay in lockstep.
     #[must_use]
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Always => "always",
             Self::Never => "never",
@@ -99,11 +99,11 @@ fn should_scrub_cargo_env(key: &str) -> bool {
 /// Build a [`Command`] for `cargo` with package-scoped env vars
 /// scrubbed so they cannot leak from `cargo run` into subcommands.
 #[must_use]
-pub fn cargo_command() -> Command {
+pub(crate) fn cargo_command() -> Command {
     let mut cmd = Command::new("cargo");
     for (key, _) in std::env::vars_os() {
         if key.to_str().is_some_and(should_scrub_cargo_env) {
-            cmd.env_remove(&key);
+            let _command = cmd.env_remove(&key);
         }
     }
     cmd
@@ -113,7 +113,7 @@ pub fn cargo_command() -> Command {
 /// Used to gate `-Z coverage-options=branch`. Spawn failure or non-zero
 /// exit reads as "not nightly": stable is the safe fallback.
 #[must_use]
-pub fn is_nightly() -> bool {
+pub(crate) fn is_nightly() -> bool {
     Command::new("rustc")
         .arg("--version")
         .output()
@@ -123,7 +123,7 @@ pub fn is_nightly() -> bool {
 }
 
 /// Resolve Cargo's host alias before passing a target to cargo-llvm-cov.
-pub fn coverage_host() -> Result<String, crate::error::LockpickError> {
+pub(crate) fn coverage_host() -> Result<String, crate::error::LockpickError> {
     let compiler = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
     let output = Command::new(compiler)
         .args(["--print", "host-tuple"])
@@ -150,7 +150,7 @@ pub fn coverage_host() -> Result<String, crate::error::LockpickError> {
 /// Optional cargo subcommand lockpick can drive. Each variant resolves
 /// to a `cargo-<binary>` lookup on `PATH`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Tool {
+pub(crate) enum Tool {
     LlvmCov,
     Nextest,
     Machete,
@@ -174,14 +174,14 @@ const ALL_TOOLS: &[Tool] = &[Tool::LlvmCov, Tool::Nextest, Tool::Machete, Tool::
 
 /// Snapshot of optional cargo subcommands installed on the host.
 #[derive(Debug, Clone, Default)]
-pub struct Toolchain {
+pub(crate) struct Toolchain {
     present: HashSet<Tool>,
 }
 
 impl Toolchain {
     /// Probe the host `PATH` for every known tool.
     #[must_use]
-    pub fn detect() -> Self {
+    pub(crate) fn detect() -> Self {
         let path = std::env::var_os("PATH");
         let present = ALL_TOOLS
             .iter()
@@ -193,7 +193,7 @@ impl Toolchain {
 
     /// Whether `tool` is installed.
     #[must_use]
-    pub fn has(&self, tool: Tool) -> bool {
+    pub(crate) fn has(&self, tool: Tool) -> bool {
         self.present.contains(&tool)
     }
 }

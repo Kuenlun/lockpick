@@ -8,12 +8,12 @@ use super::{Check, Runner, cargo_outcome, clippy::CLIPPY_LINT_ARGS, util::BuildO
 use crate::config::{Config, TargetCheck};
 use crate::reporter::{CheckOutcome, TaskStatus};
 
-pub struct TargetChecks {
+pub(crate) struct TargetChecks {
     commands: Vec<Vec<String>>,
 }
 
 impl TargetChecks {
-    pub fn new(config: &Config, default_clippy: bool) -> Self {
+    pub(crate) fn new(config: &Config, default_clippy: bool) -> Self {
         let options = BuildOptions {
             locked: config.locked,
             host_target: config.host_target,
@@ -29,7 +29,7 @@ impl TargetChecks {
         Self { commands }
     }
 
-    pub const fn is_empty(&self) -> bool {
+    pub(crate) const fn is_empty(&self) -> bool {
         self.commands.is_empty()
     }
 }
@@ -159,7 +159,10 @@ mod tests {
         let args = arguments(&check, options);
         let separator = args.iter().position(|arg| arg == "--").unwrap();
         assert_eq!(
-            &args[..separator],
+            args.iter()
+                .take(separator)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
             [
                 "--package",
                 "logic",

@@ -49,17 +49,17 @@ const LLVM_COV_NEXTEST_PLAIN_ARGS: &[&str] = &[
     "--no-tests=pass",
 ];
 
-pub struct TestCheck {
-    pub options: super::util::BuildOptions,
+pub(crate) struct TestCheck {
+    pub(crate) options: super::util::BuildOptions,
     /// Run tests through `cargo llvm-cov` to emit `.profraw` files.
-    pub instrumented: bool,
+    pub(crate) instrumented: bool,
     /// Prefer `cargo nextest` as the runner.
-    pub nextest: bool,
+    pub(crate) nextest: bool,
     /// Whether to pass `--branch` to `cargo llvm-cov`. Off on stable
     /// because `-Z coverage-options=branch` is nightly-only. Ignored
     /// when `instrumented` is false (plain `test`/`nextest` never see
     /// the flag).
-    pub branch_coverage: bool,
+    pub(crate) branch_coverage: bool,
 }
 
 impl TestCheck {
