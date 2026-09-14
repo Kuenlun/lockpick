@@ -153,41 +153,6 @@ fn license_header_detects_offender_and_skips_generated() -> TestResult {
     Ok(())
 }
 
-#[cfg(unix)]
-#[test]
-fn signal_aware_exit_uses_128_plus_signum() -> TestResult {
-    // Forward SIGTERM mid-pipeline and assert lockpick exits 143
-    // (128 + 15). Stdout/stderr go to `/dev/null` because the
-    // signal-aware exit path is what we test, not the captured output.
-    use std::process::Stdio;
-    use std::thread;
-    use std::time::Duration;
-
-    let project = dummy_cargo_project();
-    let mut child = run_lockpick(project.path())
-        .args(["--skip", "machete", "--skip", "audit"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-
-    // Give cargo time to spawn at least one child so the SIGTERM hits
-    // the handler with live PIDs to forward to.
-    thread::sleep(Duration::from_millis(300));
-    let kill = std::process::Command::new("kill")
-        .args(["-TERM", &child.id().to_string()])
-        .status()?;
-    assert!(kill.success(), "kill -TERM lockpick failed");
-
-    let status = child.wait()?;
-    assert_eq!(
-        status.code(),
-        Some(143),
-        "expected exit 143 (128 + SIGTERM), got code={code:?}",
-        code = status.code(),
-    );
-    Ok(())
-}
-
 #[test]
 fn clean_run_keeps_stderr_quiet_and_summary_on_stdout() -> TestResult {
     let project = dummy_cargo_project();

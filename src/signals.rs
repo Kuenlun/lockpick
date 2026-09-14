@@ -52,6 +52,10 @@ impl State {
     /// unwind paths.
     pub fn register_child(&self, pid: u32) -> ChildGuard<'_> {
         self.lock_children().insert(pid);
+        #[cfg(unix)]
+        if let Some(signal) = self.captured() {
+            forward_via_kill(signal, pid);
+        }
         ChildGuard { state: self, pid }
     }
 }
@@ -95,7 +99,7 @@ pub fn exit_code(captured: Option<i32>, default: u8) -> u8 {
 ///
 /// Spawns a background thread that drains signals forever, captures the
 /// first one into `state`, and forwards every signal to all registered
-/// child PIDs via `kill(1)`. Setup failures silently leave the process
+/// child process groups via `kill(1)`. Setup failures silently leave the process
 /// unhandled.
 #[cfg(unix)]
 pub fn install() {
@@ -119,11 +123,11 @@ pub fn install() {
     });
 }
 
-/// Forward `sig` to `pid` via the POSIX `kill(1)` binary. Avoids a
+/// Forward `sig` to the child process group led by `pid` via the POSIX `kill(1)` binary. Avoids a
 /// libc/nix dependency just to send one signal. Errors are swallowed:
 /// the child may have already exited between snapshot and call.
 ///
-/// Argv is the XSI form `kill -<signum> <pid>`. The natural-looking
+/// Argv is `kill -<signum> -- -<pgid>` to include Cargo descendants. The natural-looking
 /// `-s <number>` is rejected by BSD `kill` on macOS, which expects a
 /// signal *name* there.
 #[cfg(unix)]
@@ -131,7 +135,7 @@ fn forward_via_kill(sig: i32, pid: u32) {
     use std::process::{Command, Stdio};
 
     let _ = Command::new("kill")
-        .args([&format!("-{sig}"), &pid.to_string()])
+        .args([&format!("-{sig}"), "--", &format!("-{pid}")])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();

@@ -60,6 +60,7 @@ pub struct Config {
 /// `cargo metadata` invocation.
 #[derive(Debug, Clone, Default)]
 pub struct LockpickMetadata {
+    pub target_directory: Option<PathBuf>,
     pub config: Config,
     pub has_lib_target: bool,
     /// Absolute path of the enclosing workspace. `None` when the probe
@@ -69,6 +70,8 @@ pub struct LockpickMetadata {
 
 #[derive(Deserialize, Default)]
 struct CargoMetadata {
+    #[serde(default)]
+    target_directory: Option<PathBuf>,
     // Cargo emits this key as plain `metadata`, not `workspace_metadata`.
     #[serde(default, rename = "metadata")]
     workspace_metadata: Value,
@@ -107,6 +110,7 @@ impl LockpickMetadata {
         let config =
             extract_lockpick(&metadata)?.map_or_else(|| Ok(Config::default()), parse_config)?;
         Ok(Self {
+            target_directory: metadata.target_directory,
             config,
             has_lib_target,
             workspace_root: Some(metadata.workspace_root),
