@@ -12,6 +12,32 @@ use super::runner::{Runner, SpawnResult};
 /// Workspace-wide argv prefix shared by build-flavored checks.
 pub const COMMON_ARGS: &[&str] = &["--workspace", "--all-targets", "--all-features"];
 
+/// Options shared by all Cargo compilation, test and report commands.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct BuildOptions {
+    pub locked: bool,
+    pub host_target: bool,
+}
+
+impl BuildOptions {
+    pub fn args<'a>(self, args: &[&'a str]) -> Vec<&'a str> {
+        let separator = args
+            .iter()
+            .position(|arg| *arg == "--")
+            .unwrap_or(args.len());
+        let (cargo, tool) = args.split_at(separator);
+        let mut result = cargo.to_vec();
+        if self.locked {
+            result.push("--locked");
+        }
+        if self.host_target {
+            result.extend(["--target", "host-tuple"]);
+        }
+        result.extend_from_slice(tool);
+        result
+    }
+}
+
 /// Concatenate `stdout` and `stderr`, inserting a newline between them
 /// when stdout does not already end with one.
 #[must_use]

@@ -31,11 +31,6 @@ pub fn run(mut cli: Cli) -> Result<(), LockpickError> {
     let color = cli.color_mode(std::io::stdout().is_terminal());
     // Process-wide override: every other crate linked in inherits it.
     colored::control::set_override(color == ColorMode::Always);
-    let runner = CargoCli::detect(
-        color,
-        metadata.workspace_root.clone(),
-        metadata.target_directory.as_deref(),
-    );
     let is_nightly = tooling::is_nightly();
     let config = &metadata.config;
     let has_lib = metadata.has_lib_target;
@@ -46,10 +41,26 @@ pub fn run(mut cli: Cli) -> Result<(), LockpickError> {
     require_tooling(&cli, coverage_active, &toolchain)?;
     require_nightly_for_branches(coverage_active, config, is_nightly)?;
 
+    let coverage_host = if coverage_active && config.host_target {
+        Some(tooling::coverage_host()?)
+    } else {
+        None
+    };
+    let runner = CargoCli::detect(
+        color,
+        metadata.workspace_root.clone(),
+        metadata.target_directory.as_deref(),
+    )
+    .with_coverage_host(coverage_host);
+    let options = checks::util::BuildOptions {
+        locked: config.locked,
+        host_target: config.host_target,
+    };
+
     // Fix phase runs first so the same invocation can heal the tree
     // and then prove it. Abort on failure: the pipeline would only
     // refail on the same lint.
-    if cli.fix && fix::apply(&cli, &runner, &reporter).is_err() {
+    if cli.fix && fix::apply(&cli, &runner, &reporter, options).is_err() {
         return Err(LockpickError::ChecksFailed(1));
     }
 
@@ -67,6 +78,7 @@ pub fn run(mut cli: Cli) -> Result<(), LockpickError> {
         color,
     );
     let coverage_check = coverage_active.then(|| CoverageCheck {
+        options,
         thresholds: config.coverage.unwrap_or_default(),
         branch_coverage,
     });

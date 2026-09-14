@@ -15,6 +15,7 @@ const COV_REPORT_BRANCH_ARGS: &[&str] = &["report", "--json", "--summary-only", 
 const COV_REPORT_PLAIN_ARGS: &[&str] = &["report", "--json", "--summary-only"];
 
 pub struct CoverageCheck {
+    pub options: super::util::BuildOptions,
     pub thresholds: CoverageConfig,
     /// Whether to ask `llvm-cov report` for branch coverage and to
     /// enforce the branches threshold. Off on stable Rust. The runner
@@ -43,11 +44,14 @@ impl Check for CoverageCheck {
     }
 
     fn cmd(&self) -> String {
-        format!("cargo llvm-cov {}", self.report_args().join(" "))
+        format!(
+            "cargo llvm-cov {}",
+            self.options.args(self.report_args()).join(" ")
+        )
     }
 
     fn run(&self, runner: &dyn Runner) -> CheckOutcome {
-        match collect_report(runner, self.report_args()) {
+        match collect_report(runner, &self.options.args(self.report_args())) {
             Ok(report) => evaluate(&report, self.thresholds, self.branch_coverage),
             Err(output) => CheckOutcome {
                 status: TaskStatus::Fail,
@@ -388,6 +392,7 @@ mod tests {
     #[test]
     fn cmd_matches_the_branch_coverage_stance() {
         let on = CoverageCheck {
+            options: super::super::util::BuildOptions::default(),
             thresholds: CoverageConfig::default(),
             branch_coverage: true,
         };
@@ -396,6 +401,7 @@ mod tests {
             "cargo llvm-cov report --json --summary-only --branch"
         );
         let off = CoverageCheck {
+            options: super::super::util::BuildOptions::default(),
             thresholds: CoverageConfig::default(),
             branch_coverage: false,
         };
@@ -517,6 +523,7 @@ mod tests {
             ),
         ] {
             let check = CoverageCheck {
+                options: super::super::util::BuildOptions::default(),
                 thresholds: CoverageConfig::default(),
                 branch_coverage: false,
             };

@@ -44,6 +44,12 @@ impl Default for CoverageConfig {
 #[derive(Deserialize, Debug, Default, Clone)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Config {
+    /// Require an existing, current lockfile for Cargo build commands.
+    pub locked: bool,
+    /// Override Cargo's default compilation target with the host.
+    pub host_target: bool,
+    /// Additional compilation and lint checks, without executing tests.
+    pub target_checks: Vec<TargetCheck>,
     pub license_header: Option<PathBuf>,
     pub license_header_globs: Option<Vec<String>>,
     /// Opt-in coverage gate. `Some` whenever the
@@ -54,6 +60,81 @@ pub struct Config {
     /// Project-wide skip list. Same kebab-case identifiers `--skip`
     /// accepts on the CLI, merged with (not replaced by) any CLI flags.
     pub skip: Vec<SkipOption>,
+}
+
+/// Cargo artifact selection for an additional target check.
+#[derive(Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum Artifacts {
+    Lib,
+    Bins,
+    #[default]
+    AllTargets,
+}
+
+impl Artifacts {
+    pub const fn flag(self) -> &'static str {
+        match self {
+            Self::Lib => "--lib",
+            Self::Bins => "--bins",
+            Self::AllTargets => "--all-targets",
+        }
+    }
+}
+
+/// One additional Clippy invocation. The default matches the ordinary gate.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct TargetCheck {
+    pub target: Option<String>,
+    pub profile: String,
+    pub artifacts: Artifacts,
+    pub packages: Vec<String>,
+    pub all_features: bool,
+    pub no_default_features: bool,
+    pub features: Vec<String>,
+}
+
+impl Default for TargetCheck {
+    fn default() -> Self {
+        Self {
+            target: None,
+            profile: "dev".into(),
+            artifacts: Artifacts::AllTargets,
+            packages: Vec::new(),
+            all_features: true,
+            no_default_features: false,
+            features: Vec::new(),
+        }
+    }
+}
+
+impl TargetCheck {
+    fn validate(&mut self) -> Result<(), LockpickError> {
+        if self.all_features && (self.no_default_features || !self.features.is_empty()) {
+            return Err(LockpickError::Configuration(
+                "target-checks: set all-features = false when selecting features or disabling defaults".into(),
+            ));
+        }
+        for value in self
+            .target
+            .iter()
+            .chain(std::iter::once(&self.profile))
+            .chain(&self.packages)
+            .chain(&self.features)
+        {
+            if value.is_empty() || value.starts_with('-') || value.chars().any(char::is_control) {
+                return Err(LockpickError::Configuration(
+                    "target-checks: targets, profiles, packages and features must be nonempty values without control characters or leading '-'".into(),
+                ));
+            }
+        }
+        self.packages.sort();
+        self.packages.dedup();
+        self.features.sort();
+        self.features.dedup();
+        Ok(())
+    }
 }
 
 /// Lockpick config and workspace facts derived from a single
@@ -122,7 +203,7 @@ impl LockpickMetadata {
 }
 
 fn parse_config(section: Value) -> Result<Config, LockpickError> {
-    let config: Config =
+    let mut config: Config =
         serde_json::from_value(section).map_err(|e| LockpickError::Configuration(e.to_string()))?;
     if let Some(coverage) = config.coverage {
         for (name, threshold) in [
@@ -137,6 +218,9 @@ fn parse_config(section: Value) -> Result<Config, LockpickError> {
                 )));
             }
         }
+    }
+    for check in &mut config.target_checks {
+        check.validate()?;
     }
     Ok(config)
 }

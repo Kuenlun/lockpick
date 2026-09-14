@@ -48,7 +48,9 @@ const fn concat_clippy_args() -> [&'static str; COMMON_ARGS.len() + 1 + CLIPPY_L
     out
 }
 
-pub struct ClippyCheck;
+pub struct ClippyCheck {
+    pub options: super::util::BuildOptions,
+}
 
 impl Check for ClippyCheck {
     fn label(&self) -> &'static str {
@@ -56,11 +58,11 @@ impl Check for ClippyCheck {
     }
 
     fn cmd(&self) -> String {
-        fmt_cargo_cmd("clippy", CLIPPY_ARGS)
+        fmt_cargo_cmd("clippy", &self.options.args(CLIPPY_ARGS))
     }
 
     fn run(&self, runner: &dyn Runner) -> CheckOutcome {
-        cargo_outcome(runner, "clippy", CLIPPY_ARGS)
+        cargo_outcome(runner, "clippy", &self.options.args(CLIPPY_ARGS))
     }
 
     fn chain_position(&self) -> Option<u8> {

@@ -50,6 +50,7 @@ const LLVM_COV_NEXTEST_PLAIN_ARGS: &[&str] = &[
 ];
 
 pub struct TestCheck {
+    pub options: super::util::BuildOptions,
     /// Run tests through `cargo llvm-cov` to emit `.profraw` files.
     pub instrumented: bool,
     /// Prefer `cargo nextest` as the runner.
@@ -81,7 +82,7 @@ impl Check for TestCheck {
 
     fn cmd(&self) -> String {
         let (sub, args) = self.dispatch();
-        let command = fmt_cargo_cmd(sub, args);
+        let command = fmt_cargo_cmd(sub, &self.options.args(args));
         if self.instrumented {
             format!("cargo llvm-cov clean --workspace && {command}")
         } else {
@@ -97,7 +98,7 @@ impl Check for TestCheck {
                 return cleanup;
             }
         }
-        cargo_outcome(runner, sub, args)
+        cargo_outcome(runner, sub, &self.options.args(args))
     }
 
     fn chain_position(&self) -> Option<u8> {
@@ -128,6 +129,7 @@ mod tests {
         ];
         for ((instrumented, nextest, branch_coverage), expected) in cases {
             let check = TestCheck {
+                options: super::super::util::BuildOptions::default(),
                 instrumented,
                 nextest,
                 branch_coverage,
@@ -144,11 +146,13 @@ mod tests {
     fn branch_flag_is_inert_without_instrumentation() {
         for nextest in [true, false] {
             let on = TestCheck {
+                options: super::super::util::BuildOptions::default(),
                 instrumented: false,
                 nextest,
                 branch_coverage: true,
             };
             let off = TestCheck {
+                options: super::super::util::BuildOptions::default(),
                 instrumented: false,
                 nextest,
                 branch_coverage: false,
@@ -160,6 +164,7 @@ mod tests {
     #[test]
     fn cmd_renders_the_dispatched_argv() {
         let plain = TestCheck {
+            options: super::super::util::BuildOptions::default(),
             instrumented: false,
             nextest: false,
             branch_coverage: false,
@@ -194,6 +199,7 @@ mod tests {
     #[test]
     fn cleanup_precedes_instrumentation_and_failure_stops_tests() {
         let check = TestCheck {
+            options: super::super::util::BuildOptions::default(),
             instrumented: true,
             nextest: false,
             branch_coverage: false,

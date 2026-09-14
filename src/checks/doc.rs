@@ -12,7 +12,9 @@ use crate::reporter::CheckOutcome;
 const DOC_ARGS: &[&str] = &["--no-deps", "--workspace", "--all-features"];
 const DENY_WARNINGS: &str = "-D warnings";
 
-pub struct DocCheck;
+pub struct DocCheck {
+    pub options: super::util::BuildOptions,
+}
 
 impl Check for DocCheck {
     fn label(&self) -> &'static str {
@@ -24,13 +26,18 @@ impl Check for DocCheck {
             "{}={:?} {}",
             rustdocflags().0,
             rustdocflags().1,
-            fmt_cargo_cmd("doc", DOC_ARGS)
+            fmt_cargo_cmd("doc", &self.options.args(DOC_ARGS))
         )
     }
 
     fn run(&self, runner: &dyn Runner) -> CheckOutcome {
         let (key, flags) = rustdocflags();
-        cargo_outcome_with_env(runner, "doc", DOC_ARGS, &[(key, &flags)])
+        cargo_outcome_with_env(
+            runner,
+            "doc",
+            &self.options.args(DOC_ARGS),
+            &[(key, &flags)],
+        )
     }
 
     fn chain_position(&self) -> Option<u8> {

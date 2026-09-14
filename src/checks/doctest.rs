@@ -9,7 +9,9 @@ use crate::reporter::CheckOutcome;
 
 const DOCTEST_ARGS: &[&str] = &["--doc", "--workspace", "--all-features"];
 
-pub struct DocTestCheck;
+pub struct DocTestCheck {
+    pub options: super::util::BuildOptions,
+}
 
 impl Check for DocTestCheck {
     fn label(&self) -> &'static str {
@@ -17,11 +19,11 @@ impl Check for DocTestCheck {
     }
 
     fn cmd(&self) -> String {
-        fmt_cargo_cmd("test", DOCTEST_ARGS)
+        fmt_cargo_cmd("test", &self.options.args(DOCTEST_ARGS))
     }
 
     fn run(&self, runner: &dyn Runner) -> CheckOutcome {
-        cargo_outcome(runner, "test", DOCTEST_ARGS)
+        cargo_outcome(runner, "test", &self.options.args(DOCTEST_ARGS))
     }
 
     fn chain_position(&self) -> Option<u8> {

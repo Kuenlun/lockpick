@@ -20,6 +20,7 @@ pub mod doctest;
 pub mod fmt;
 pub mod license_header;
 pub mod machete;
+pub mod targets;
 pub mod test;
 
 pub mod plan;
