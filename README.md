@@ -92,7 +92,7 @@ regions   = 100
 
 CLI `--skip` is additive on top of the `skip` array. Workspace metadata takes precedence over package metadata. Package metadata is accepted only in single-package workspaces. Invalid or ambiguous configuration and failed metadata discovery stop the run with exit `2`, before checks or fixes. Coverage thresholds must be integers from 0 to 100.
 
-The `license` check compares the start of each file to the header template. Default globs are `src/**/*.rs`, `tests/**/*.rs`, `examples/**/*.rs`, `benches/**/*.rs`. Files marked `@generated` are skipped.
+The `license` check compares the start of each file to the header template. The template and explicit globs are relative to the workspace root, including when Lockpick starts in a member directory. Default globs are `src/**/*.rs`, `tests/**/*.rs`, `examples/**/*.rs`, `benches/**/*.rs` in every workspace package. Invalid patterns, traversal errors and patterns matching no source files fail the gate. Files marked `@generated` are skipped.
 
 The `coverage` check is opt-in: add the `[workspace.metadata.lockpick.coverage]` table (even empty) or pass `--coverage`. Once active it parses `cargo llvm-cov report --json` and enforces each threshold (100% unless configured) with exact integer comparison. Combining `--coverage` with `--skip coverage` or `--skip test` is a usage error (exit `2`). The `branches` metric is nightly-only (`rustup toolchain install nightly --component llvm-tools-preview`). On stable it is silently dropped, and an explicit `coverage.branches` aborts with exit `4`. On failure, drill in with `cargo llvm-cov --html` (`--branch` on nightly) and open `target/llvm-cov/html/index.html`.
 
