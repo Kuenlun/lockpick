@@ -34,8 +34,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@nightly-2026-09-14
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: nightly-2026-09-14
           components: rustfmt, clippy, llvm-tools-preview
       - name: Install external check tools
         uses: taiki-e/install-action@v2
