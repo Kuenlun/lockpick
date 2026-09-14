@@ -51,6 +51,8 @@ pub struct CargoCli {
     color: ColorMode,
     /// Working directory for every child. `None` inherits process cwd.
     workspace_root: Option<PathBuf>,
+    /// Concrete host target for tools that do not understand Cargo's alias.
+    coverage_host: Option<String>,
 }
 
 impl CargoCli {
@@ -68,6 +70,31 @@ impl CargoCli {
             }),
             color,
             workspace_root,
+            coverage_host: None,
+        }
+    }
+
+    /// Set the host target used by cargo-llvm-cov's direct rustc probes.
+    pub fn with_coverage_host(mut self, host: Option<String>) -> Self {
+        self.coverage_host = host;
+        self
+    }
+
+    fn append_args(&self, command: &mut Command, sub: &str, args: &[&str]) {
+        command.arg(sub);
+        if sub == "llvm-cov"
+            && let Some(host) = &self.coverage_host
+            && let Some(position) = args
+                .windows(2)
+                .position(|pair| pair == ["--target", "host-tuple"])
+        {
+            let (before, target_and_after) = args.split_at(position);
+            command
+                .args(before)
+                .args(["--target", host])
+                .args(target_and_after.iter().skip(2));
+        } else {
+            command.args(args);
         }
     }
 
@@ -77,10 +104,8 @@ impl CargoCli {
         if let Some(root) = &self.workspace_root {
             command.current_dir(root);
         }
-        command
-            .arg(sub)
-            .args(args)
-            .env("CARGO_TERM_COLOR", self.color.as_str());
+        self.append_args(&mut command, sub, args);
+        command.env("CARGO_TERM_COLOR", self.color.as_str());
         command.envs(envs.iter().copied());
         if let Some(directory) = &self.target_dir {
             command.env("CARGO_TARGET_DIR", directory);

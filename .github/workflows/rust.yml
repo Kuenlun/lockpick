@@ -20,6 +20,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.1
         with:
           components: rustfmt, clippy, llvm-tools-preview
+          targets: thumbv8m.main-none-eabihf
       - name: Install external check tools
         uses: taiki-e/install-action@v2
         with:
@@ -37,6 +38,7 @@ jobs:
         with:
           toolchain: nightly-2026-09-14
           components: rustfmt, clippy, llvm-tools-preview
+          targets: thumbv8m.main-none-eabihf
       - name: Install external check tools
         uses: taiki-e/install-action@v2
         with:

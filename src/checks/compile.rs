@@ -5,7 +5,9 @@
 use super::{COMMON_ARGS, Check, Runner, cargo_outcome, chain, fmt_cargo_cmd};
 use crate::reporter::CheckOutcome;
 
-pub struct CompileCheck;
+pub struct CompileCheck {
+    pub options: super::util::BuildOptions,
+}
 
 impl Check for CompileCheck {
     fn label(&self) -> &'static str {
@@ -13,11 +15,11 @@ impl Check for CompileCheck {
     }
 
     fn cmd(&self) -> String {
-        fmt_cargo_cmd("check", COMMON_ARGS)
+        fmt_cargo_cmd("check", &self.options.args(COMMON_ARGS))
     }
 
     fn run(&self, runner: &dyn Runner) -> CheckOutcome {
-        cargo_outcome(runner, "check", COMMON_ARGS)
+        cargo_outcome(runner, "check", &self.options.args(COMMON_ARGS))
     }
 
     fn chain_position(&self) -> Option<u8> {

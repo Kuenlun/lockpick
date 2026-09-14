@@ -21,6 +21,7 @@ pub enum SkipOption {
     Audit,
     License,
     Coverage,
+    Targets,
 }
 
 impl SkipOption {
@@ -40,6 +41,7 @@ impl SkipOption {
             Self::Audit => "audit",
             Self::License => "license",
             Self::Coverage => "coverage",
+            Self::Targets => "targets",
         }
     }
 
@@ -103,7 +105,7 @@ pub struct Cli {
                      `--skip clippy --skip fmt` or `--skip clippy,fmt`.\n\
                      \n\
                      Possible values: check, clippy, test, doc-test, fmt, doc, machete, \
-                     audit, license, coverage."
+                     audit, license, coverage, targets."
     )]
     pub skip: Vec<SkipOption>,
 
@@ -230,6 +232,13 @@ Configuration:
       skip = [\"audit\", \"machete\"]
       license-header = \".github/license_header.rs\"
       license-header-globs = [\"src/**/*.rs\", \"tests/**/*.rs\"]
+      # locked = true       # require a current Cargo.lock
+      # host-target = true  # ordinary gates use the host target
+
+      # [[workspace.metadata.lockpick.target-checks]]
+      # target = \"thumbv8m.main-none-eabihf\"
+      # artifacts = \"lib\"
+      # profile = \"release\"
 
       # Presence of this table (even empty) enables the coverage gate.
       [workspace.metadata.lockpick.coverage]

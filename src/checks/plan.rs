@@ -108,29 +108,34 @@ pub fn build_plan(
     branch_coverage: bool,
     color: ColorMode,
 ) -> Plan {
+    let options = super::util::BuildOptions {
+        locked: config.locked,
+        host_target: config.host_target,
+    };
     let mut items: Vec<Box<dyn Check>> = Vec::new();
 
     if !cli.skips(SkipOption::Check) {
-        items.push(Box::new(compile::CompileCheck));
+        items.push(Box::new(compile::CompileCheck { options }));
     }
     if !cli.skips(SkipOption::Clippy) {
-        items.push(Box::new(clippy::ClippyCheck));
+        items.push(Box::new(clippy::ClippyCheck { options }));
     }
     if !cli.skips(SkipOption::Fmt) {
         items.push(Box::new(fmt::FmtCheck { color }));
     }
     if !cli.skips(SkipOption::Test) {
         items.push(Box::new(test::TestCheck {
+            options,
             instrumented: coverage_active,
             nextest: toolchain.has(Tool::Nextest),
             branch_coverage,
         }));
     }
     if !cli.skips(SkipOption::Doc) {
-        items.push(Box::new(doc::DocCheck));
+        items.push(Box::new(doc::DocCheck { options }));
     }
     if !cli.skips(SkipOption::DocTest) && has_lib {
-        items.push(Box::new(doctest::DocTestCheck));
+        items.push(Box::new(doctest::DocTestCheck { options }));
     }
     if !cli.skips(SkipOption::Machete) {
         items.push(Box::new(machete::MacheteCheck));
@@ -151,6 +156,12 @@ pub fn build_plan(
         }));
     }
 
+    if !cli.skips(SkipOption::Targets) && !config.target_checks.is_empty() {
+        let check = super::targets::TargetChecks::new(config, !cli.skips(SkipOption::Clippy));
+        if !check.is_empty() {
+            items.push(Box::new(check));
+        }
+    }
     Plan { items }
 }
 

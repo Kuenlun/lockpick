@@ -122,6 +122,31 @@ pub fn is_nightly() -> bool {
         .is_some_and(|o| String::from_utf8_lossy(&o.stdout).contains("nightly"))
 }
 
+/// Resolve Cargo's host alias before passing a target to cargo-llvm-cov.
+pub fn coverage_host() -> Result<String, crate::error::LockpickError> {
+    let compiler = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    let output = Command::new(compiler)
+        .args(["--print", "host-tuple"])
+        .output()
+        .map_err(|error| {
+            crate::error::LockpickError::Configuration(format!(
+                "could not query the coverage host target: {error}"
+            ))
+        })?;
+    let host = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if !output.status.success()
+        || host.is_empty()
+        || host.starts_with('-')
+        || host.chars().any(char::is_whitespace)
+    {
+        return Err(crate::error::LockpickError::Configuration(format!(
+            "could not determine the coverage host target: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(host)
+}
+
 /// Optional cargo subcommand lockpick can drive. Each variant resolves
 /// to a `cargo-<binary>` lookup on `PATH`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

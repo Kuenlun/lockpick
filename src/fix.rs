@@ -12,8 +12,14 @@ use crate::reporter::Reporter;
 
 /// Run every enabled fix step in order. `Err(())` on a failed step or
 /// launch error. The caller maps it to the pipeline's failure exit.
-pub fn apply(cli: &Cli, runner: &CargoCli, reporter: &Reporter) -> Result<(), ()> {
-    let clippy_args = clippy_fix_args();
+pub fn apply(
+    cli: &Cli,
+    runner: &CargoCli,
+    reporter: &Reporter,
+    options: crate::checks::util::BuildOptions,
+) -> Result<(), ()> {
+    let base_args = clippy_fix_args();
+    let clippy_args = options.args(&base_args);
     let steps: [(SkipOption, &str, &[&str]); 3] = [
         (SkipOption::Clippy, "clippy", &clippy_args),
         (SkipOption::Machete, "machete", &["--fix"]),
