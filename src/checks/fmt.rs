@@ -13,8 +13,8 @@ use crate::tooling::ColorMode;
 const FMT_ARGS_ALWAYS: &[&str] = &["--all", "--check", "--", "--color", "always"];
 const FMT_ARGS_NEVER: &[&str] = &["--all", "--check", "--", "--color", "never"];
 
-pub struct FmtCheck {
-    pub color: ColorMode,
+pub(crate) struct FmtCheck {
+    pub(crate) color: ColorMode,
 }
 
 impl FmtCheck {

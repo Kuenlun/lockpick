@@ -22,7 +22,7 @@ fn encoded_rustdoc_flags_preserve_cfg_and_deny_documentation_warnings() -> commo
         )
         .output()?;
     let view = common::combined(&out);
-    assert_eq!(out.status.code(), Some(1), "{view}");
+    assert_eq!(out.status.code(), Some(1_i32), "{view}");
     assert!(view.contains("MissingType"), "{view}");
     assert!(!view.contains("custom rustdoc cfg was lost"), "{view}");
     assert!(!view.contains("Unrecognized option"), "{view}");

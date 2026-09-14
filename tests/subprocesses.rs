@@ -23,7 +23,7 @@ fn running_binary_is_isolated_from_custom_cargo_output() -> TestResult {
         let executable = directory
             .join("debug")
             .join(format!("lockpick{}", std::env::consts::EXE_SUFFIX));
-        std::fs::copy(common::lockpick_bin(), &executable)?;
+        let _copied = std::fs::copy(common::lockpick_bin(), &executable)?;
         if !use_environment {
             std::fs::create_dir_all(project.path().join(".cargo"))?;
             std::fs::write(
@@ -33,19 +33,19 @@ fn running_binary_is_isolated_from_custom_cargo_output() -> TestResult {
         }
         let environment = run_lockpick(project.path());
         let mut command = std::process::Command::new(executable);
-        command.env_clear().envs(
+        let _command = command.env_clear().envs(
             environment
                 .get_envs()
                 .filter_map(|(key, value)| value.map(|value| (key, value))),
         );
-        command
+        let _command = command
             .current_dir(project.path())
             .args(["--skip", "clippy,fmt,test,doc,doc-test,machete,audit"]);
         if use_environment {
-            command.env("CARGO_TARGET_DIR", &directory);
+            let _command = command.env("CARGO_TARGET_DIR", &directory);
         }
         let out = command.output()?;
-        assert_eq!(out.status.code(), Some(0), "{}", combined(&out));
+        assert_eq!(out.status.code(), Some(0_i32), "{}", combined(&out));
         assert!(directory.join("lockpick/debug").is_dir());
     }
     Ok(())
@@ -83,9 +83,12 @@ fn cancellation_stops_cargo_descendants() -> TestResult {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()?;
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let started = Instant::now();
     while !ready.exists() {
-        assert!(Instant::now() < deadline, "Cargo shim did not become ready");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "Cargo shim did not become ready"
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
     let signal = std::process::Command::new("kill")
@@ -94,12 +97,12 @@ fn cancellation_stops_cargo_descendants() -> TestResult {
     assert!(signal.success());
     while child.try_wait()?.is_none() {
         assert!(
-            Instant::now() < deadline,
+            started.elapsed() < Duration::from_secs(10),
             "Lockpick did not exit after SIGTERM"
         );
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert_eq!(child.wait()?.code(), Some(143));
+    assert_eq!(child.wait()?.code(), Some(143_i32));
     std::thread::sleep(Duration::from_millis(2200));
     assert!(!marker.exists(), "a Cargo descendant survived cancellation");
     Ok(())

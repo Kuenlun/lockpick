@@ -12,6 +12,7 @@ categories = ["development-tools", "command-line-utilities"]
 # Self-hosted lockpick configuration.
 [package.metadata.lockpick]
 license-header = ".github/license_header.rs"
+locked = true
 
 [dependencies]
 clap = { version = "4", features = ["derive", "wrap_help"] }
@@ -34,15 +35,58 @@ signal-hook = { version = "0.4", default-features = false, features = ["iterator
 tempfile = "3"
 
 [lints.rust]
-unsafe_code = "forbid"
 warnings = "deny"
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
+unsafe_code = "forbid"
+unexpected_cfgs = { level = "deny", check-cfg = ['cfg(coverage_nightly)'] }
+unsafe_op_in_unsafe_fn = "forbid"
+let_underscore_drop = "deny"
+non_ascii_idents = "deny"
+missing_docs = "deny"
+missing_debug_implementations = "deny"
+unreachable_pub = "deny"
+unused_crate_dependencies = "deny"
+unused_results = "deny"
+unused_qualifications = "deny"
+unused_lifetimes = "deny"
+elided_lifetimes_in_paths = "deny"
+trivial_casts = "deny"
+trivial_numeric_casts = "deny"
+variant_size_differences = "deny"
 
 [lints.clippy]
+all = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
 nursery = { level = "deny", priority = -1 }
-unwrap_used = "deny"
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+arithmetic_side_effects = "deny"
+as_conversions = "deny"
+dbg_macro = "deny"
+default_numeric_fallback = "deny"
+exit = "deny"
 expect_used = "deny"
+get_unwrap = "deny"
+indexing_slicing = "deny"
+let_underscore_must_use = "deny"
+lossy_float_literal = "deny"
+mem_forget = "deny"
+panic = "deny"
+print_stderr = "deny"
+print_stdout = "deny"
+rc_buffer = "deny"
+rc_mutex = "deny"
+rest_pat_in_fully_bound_structs = "deny"
+string_slice = "deny"
+todo = "deny"
+undocumented_unsafe_blocks = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+unseparated_literal_suffix = "deny"
+unwrap_used = "deny"
+wildcard_enum_match_arm = "deny"
+
+[lints.rustdoc]
+all = { level = "deny", priority = -1 }
 
 [profile.release]
 opt-level = 3

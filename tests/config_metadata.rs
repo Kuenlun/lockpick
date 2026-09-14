@@ -4,7 +4,6 @@
 
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![cfg_attr(coverage_nightly, coverage(off))]
-#![allow(clippy::unwrap_used)]
 
 //! `[*.metadata.lockpick]` discovery: package-level on a single-crate
 //! project and workspace-level on a multi-crate workspace. The
@@ -15,7 +14,8 @@
 mod common;
 
 #[cfg(unix)]
-use common::{FORMATTED_MAIN_RS, TestResult, cargo_toml_strict, combined, scratch_crate, stdout};
+use common::{FORMATTED_MAIN_RS, cargo_toml_strict};
+use common::{TestResult, combined, scratch_crate, stdout};
 
 #[cfg(unix)]
 #[test]
@@ -33,7 +33,7 @@ fn package_metadata_skip_list_is_honored() -> TestResult {
     let view = combined(&out);
     assert_eq!(
         out.status.code(),
-        Some(0),
+        Some(0_i32),
         "expected exit 0 with skipped optional checks, got code={code:?}, combined output=\n{view}",
         code = out.status.code(),
     );
@@ -82,7 +82,7 @@ fn workspace_metadata_skip_list_is_honored() -> TestResult {
     let view = combined(&out);
     assert_eq!(
         out.status.code(),
-        Some(0),
+        Some(0_i32),
         "expected exit 0 with workspace skip list honoured, got code={code:?}, combined output=\n{view}",
         code = out.status.code(),
     );
@@ -100,8 +100,8 @@ fn workspace_metadata_skip_list_is_honored() -> TestResult {
 }
 
 #[test]
-fn invalid_configuration_aborts_before_fixes() -> common::TestResult {
-    let project = common::scratch_crate(
+fn invalid_configuration_aborts_before_fixes() -> TestResult {
+    let project = scratch_crate(
         "invalid_config",
         "[package.metadata.lockpick]\nlicense-header = \"missing\"\n[package.metadata.lockpick.coverage]\nline = 100\n",
         &[("src/main.rs", common::UNFORMATTED_MAIN_RS)],
@@ -113,9 +113,9 @@ fn invalid_configuration_aborts_before_fixes() -> common::TestResult {
             "check,clippy,test,doc,doc-test,machete,audit",
         ])
         .output()?;
-    assert_eq!(out.status.code(), Some(2), "{}", common::combined(&out));
+    assert_eq!(out.status.code(), Some(2_i32), "{}", combined(&out));
     assert!(common::stderr(&out).contains("unknown field `line`"));
-    assert!(!common::stdout(&out).contains("PASS"));
+    assert!(!stdout(&out).contains("PASS"));
     assert_eq!(
         std::fs::read_to_string(project.path().join("src/main.rs"))?,
         common::UNFORMATTED_MAIN_RS
@@ -124,11 +124,47 @@ fn invalid_configuration_aborts_before_fixes() -> common::TestResult {
 }
 
 #[test]
-fn metadata_failure_is_reported_before_running_checks() -> common::TestResult {
+fn metadata_failure_is_reported_before_running_checks() -> TestResult {
     let directory = tempfile::tempdir()?;
     let out = common::run_lockpick(directory.path()).output()?;
-    assert_eq!(out.status.code(), Some(2), "{}", common::combined(&out));
+    assert_eq!(out.status.code(), Some(2_i32), "{}", combined(&out));
     assert!(common::stderr(&out).contains("cargo metadata failed"));
-    assert!(!common::stdout(&out).contains("PASS"));
+    assert!(!stdout(&out).contains("PASS"));
+    Ok(())
+}
+
+#[test]
+fn missing_or_empty_license_template_fails_the_gate() -> TestResult {
+    let project = scratch_crate(
+        "license_template",
+        "[package.metadata.lockpick]\nlicense-header=\"header.txt\"\n",
+        &[("src/lib.rs", "pub const VALUE: u8 = 1;\n")],
+    );
+    for diagnostic in ["could not read license header file", "is empty"] {
+        let out = common::run_lockpick(project.path())
+            .args(["--skip", "check,clippy,fmt,test,doc,doc-test,machete,audit"])
+            .output()?;
+        assert_eq!(out.status.code(), Some(1_i32), "{}", combined(&out));
+        assert!(combined(&out).contains(diagnostic));
+        std::fs::write(project.path().join("header.txt"), "")?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn missing_cargo_reports_the_launch_error_before_fixes() -> TestResult {
+    let project = scratch_crate("missing_cargo", "", &[("src/main.rs", "fn main() {}\n")]);
+    let path = tempfile::tempdir()?;
+    let out = common::run_lockpick(project.path())
+        .arg("--fix")
+        .env("PATH", path.path())
+        .output()?;
+    assert_eq!(out.status.code(), Some(2_i32), "{}", combined(&out));
+    assert!(common::stderr(&out).contains("could not run cargo metadata:"));
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("src/main.rs"))?,
+        "fn main() {}\n"
+    );
     Ok(())
 }

@@ -23,11 +23,11 @@ use crate::tooling::cargo_command;
 /// stable. An explicit value causes lockpick to refuse to run on stable.
 #[derive(Deserialize, Debug, Clone, Copy)]
 #[serde(default, deny_unknown_fields)]
-pub struct CoverageConfig {
-    pub functions: u8,
-    pub lines: u8,
-    pub regions: u8,
-    pub branches: Option<u8>,
+pub(crate) struct CoverageConfig {
+    pub(crate) functions: u8,
+    pub(crate) lines: u8,
+    pub(crate) regions: u8,
+    pub(crate) branches: Option<u8>,
 }
 
 impl Default for CoverageConfig {
@@ -43,29 +43,29 @@ impl Default for CoverageConfig {
 
 #[derive(Deserialize, Debug, Default, Clone)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
-pub struct Config {
+pub(crate) struct Config {
     /// Require an existing, current lockfile for Cargo build commands.
-    pub locked: bool,
+    pub(crate) locked: bool,
     /// Override Cargo's default compilation target with the host.
-    pub host_target: bool,
+    pub(crate) host_target: bool,
     /// Additional compilation and lint checks, without executing tests.
-    pub target_checks: Vec<TargetCheck>,
-    pub license_header: Option<PathBuf>,
-    pub license_header_globs: Option<Vec<String>>,
+    pub(crate) target_checks: Vec<TargetCheck>,
+    pub(crate) license_header: Option<PathBuf>,
+    pub(crate) license_header_globs: Option<Vec<String>>,
     /// Opt-in coverage gate. `Some` whenever the
     /// `[*.metadata.lockpick.coverage]` table exists, even empty, with
     /// per-metric thresholds defaulting to 100%. `None` keeps coverage
     /// off unless the CLI passes `--coverage`.
-    pub coverage: Option<CoverageConfig>,
+    pub(crate) coverage: Option<CoverageConfig>,
     /// Project-wide skip list. Same kebab-case identifiers `--skip`
     /// accepts on the CLI, merged with (not replaced by) any CLI flags.
-    pub skip: Vec<SkipOption>,
+    pub(crate) skip: Vec<SkipOption>,
 }
 
 /// Cargo artifact selection for an additional target check.
 #[derive(Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-pub enum Artifacts {
+pub(crate) enum Artifacts {
     Lib,
     Bins,
     #[default]
@@ -73,7 +73,7 @@ pub enum Artifacts {
 }
 
 impl Artifacts {
-    pub const fn flag(self) -> &'static str {
+    pub(crate) const fn flag(self) -> &'static str {
         match self {
             Self::Lib => "--lib",
             Self::Bins => "--bins",
@@ -85,14 +85,14 @@ impl Artifacts {
 /// One additional Clippy invocation. The default matches the ordinary gate.
 #[derive(Deserialize, Debug, Clone)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
-pub struct TargetCheck {
-    pub target: Option<String>,
-    pub profile: String,
-    pub artifacts: Artifacts,
-    pub packages: Vec<String>,
-    pub all_features: bool,
-    pub no_default_features: bool,
-    pub features: Vec<String>,
+pub(crate) struct TargetCheck {
+    pub(crate) target: Option<String>,
+    pub(crate) profile: String,
+    pub(crate) artifacts: Artifacts,
+    pub(crate) packages: Vec<String>,
+    pub(crate) all_features: bool,
+    pub(crate) no_default_features: bool,
+    pub(crate) features: Vec<String>,
 }
 
 impl Default for TargetCheck {
@@ -140,13 +140,12 @@ impl TargetCheck {
 /// Lockpick config and workspace facts derived from a single
 /// `cargo metadata` invocation.
 #[derive(Debug, Clone, Default)]
-pub struct LockpickMetadata {
-    pub target_directory: Option<PathBuf>,
-    pub config: Config,
-    pub has_lib_target: bool,
-    /// Absolute path of the enclosing workspace. `None` when the probe
-    /// failed (no Cargo.toml in scope, malformed JSON, ...).
-    pub workspace_root: Option<PathBuf>,
+pub(crate) struct LockpickMetadata {
+    pub(crate) target_directory: Option<PathBuf>,
+    pub(crate) config: Config,
+    pub(crate) has_lib_target: bool,
+    /// Absolute enclosing workspace path, populated after a successful probe.
+    pub(crate) workspace_root: Option<PathBuf>,
 }
 
 #[derive(Deserialize, Default)]
@@ -183,7 +182,7 @@ const LIB_KINDS: &[&str] = &["lib", "rlib", "dylib", "cdylib", "staticlib", "pro
 
 impl LockpickMetadata {
     /// Load workspace facts and validate configuration before any checks or fixes run.
-    pub fn load() -> Result<Self, LockpickError> {
+    pub(crate) fn load() -> Result<Self, LockpickError> {
         let metadata = run_cargo_metadata()?;
         let has_lib_target = metadata
             .packages
@@ -320,9 +319,12 @@ mod tests {
     use super::*;
     use crate::cli::SkipOption;
 
-    fn metadata_from(value: serde_json::Value) -> CargoMetadata {
+    fn metadata_from(value: Value) -> CargoMetadata {
         let mut value = value;
-        value["workspace_root"] = json!("/workspace");
+        let _previous = value
+            .as_object_mut()
+            .unwrap()
+            .insert("workspace_root".into(), json!("/workspace"));
         serde_json::from_value(value).unwrap()
     }
 
@@ -344,7 +346,7 @@ mod tests {
         let config: Config = serde_json::from_value(json!({
             "license-header": "hdr.txt",
             "skip": ["audit", "machete"],
-            "coverage": { "lines": 90 },
+            "coverage": { "lines": 90_i32 },
         }))
         .unwrap();
         assert_eq!(config.license_header.unwrap(), PathBuf::from("hdr.txt"));
@@ -356,17 +358,21 @@ mod tests {
     fn invalid_sections_and_thresholds_are_rejected() {
         for value in [
             json!({ "no-such-key": true }),
-            json!({ "coverage": { "line": 100 } }),
+            json!({ "coverage": { "line": 100_i32 } }),
             json!({ "skip": ["unknown"] }),
-            json!({ "coverage": { "lines": -1 } }),
-            json!({ "coverage": { "lines": 99.5 } }),
+            json!({ "coverage": { "lines": -1_i32 } }),
+            json!({ "coverage": { "lines": 99.5_f64 } }),
         ] {
             assert!(parse_config(value).is_err());
         }
         for metric in ["functions", "lines", "regions", "branches"] {
-            for threshold in [0, 100, 101, 255] {
+            for threshold in [0_i32, 100_i32, 101_i32, 255_i32] {
                 let result = parse_config(json!({ "coverage": { metric: threshold } }));
-                assert_eq!(result.is_ok(), threshold <= 100, "{metric}: {threshold}");
+                assert_eq!(
+                    result.is_ok(),
+                    threshold <= 100_i32,
+                    "{metric}: {threshold}"
+                );
             }
         }
     }

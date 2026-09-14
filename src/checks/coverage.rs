@@ -14,17 +14,17 @@ use crate::reporter::{CheckOutcome, TaskStatus};
 const COV_REPORT_BRANCH_ARGS: &[&str] = &["report", "--json", "--summary-only", "--branch"];
 const COV_REPORT_PLAIN_ARGS: &[&str] = &["report", "--json", "--summary-only"];
 
-pub struct CoverageCheck {
-    pub options: super::util::BuildOptions,
-    pub thresholds: CoverageConfig,
+pub(crate) struct CoverageCheck {
+    pub(crate) options: super::util::BuildOptions,
+    pub(crate) thresholds: CoverageConfig,
     /// Whether to ask `llvm-cov report` for branch coverage and to
     /// enforce the branches threshold. Off on stable Rust. The runner
     /// keys it on [`crate::tooling::is_nightly`].
-    pub branch_coverage: bool,
+    pub(crate) branch_coverage: bool,
 }
 
 impl CoverageCheck {
-    pub const LABEL: &'static str = "coverage";
+    pub(crate) const LABEL: &'static str = "coverage";
 
     /// Pick the `llvm-cov report` argv that matches the current
     /// branch-coverage stance. Centralised so `cmd()`, `run()`, and the
@@ -128,21 +128,23 @@ fn evaluate(report: &Report, t: CoverageConfig, branch_coverage: bool) -> CheckO
                 passed = false;
                 continue;
             }
-            if metric.count == 0 {
+            let Some(count) = std::num::NonZeroU64::new(metric.count) else {
                 lines.push(format!("ok   {name:<METRIC_NAME_WIDTH$}: 0/0 (vacuous)"));
                 continue;
-            }
+            };
             any_real = true;
             // Integer comparison rather than f64 percentages so the
             // gate is exact at ULP boundaries. u128 cannot overflow
             // for any conceivable count/threshold pair.
-            if u128::from(metric.covered) * 100 < u128::from(metric.count) * u128::from(threshold) {
+            if u128::from(metric.covered).saturating_mul(100)
+                < u128::from(metric.count).saturating_mul(u128::from(threshold))
+            {
                 let missing = metric.count.saturating_sub(metric.covered);
                 lines.push(format!(
                     "FAIL {name:<METRIC_NAME_WIDTH$}: {covered}/{total} ({pct}), threshold {threshold}%, missing {missing}",
                     covered = metric.covered,
                     total = metric.count,
-                    pct = format_pct(metric.covered, metric.count),
+                    pct = format_pct(metric.covered, count),
                 ));
                 passed = false;
             } else {
@@ -150,7 +152,7 @@ fn evaluate(report: &Report, t: CoverageConfig, branch_coverage: bool) -> CheckO
                     "ok   {name:<METRIC_NAME_WIDTH$}: {covered}/{total} ({pct})",
                     covered = metric.covered,
                     total = metric.count,
-                    pct = format_pct(metric.covered, metric.count),
+                    pct = format_pct(metric.covered, count),
                 ));
             }
         }
@@ -217,16 +219,16 @@ fn metric_rows(
 /// Render `covered/count` as a two-decimal percentage (e.g. `"99.50%"`).
 /// Integer arithmetic so the displayed value cannot disagree with the
 /// gate. Caller has already excluded `count == 0`.
-fn format_pct(covered: u64, count: u64) -> String {
+fn format_pct(covered: u64, count: std::num::NonZeroU64) -> String {
     // Scale by 10_000 to recover two decimal places as integers.
-    let scaled = u128::from(covered) * 10_000 / u128::from(count);
+    let scaled = u128::from(covered).saturating_mul(10_000) / std::num::NonZeroU128::from(count);
     let whole = scaled / 100;
     let frac = scaled % 100;
     format!("{whole}.{frac:02}%")
 }
 
 #[derive(Deserialize, Debug)]
-pub struct Report {
+pub(crate) struct Report {
     #[serde(rename = "type")]
     kind: String,
     version: String,
@@ -384,9 +386,10 @@ mod tests {
 
     #[test]
     fn format_pct_truncates_to_two_decimals() {
-        assert_eq!(format_pct(199, 200), "99.50%");
-        assert_eq!(format_pct(1, 3), "33.33%");
-        assert_eq!(format_pct(10, 10), "100.00%");
+        let count = |value| std::num::NonZeroU64::new(value).unwrap();
+        assert_eq!(format_pct(199, count(200)), "99.50%");
+        assert_eq!(format_pct(1, count(3)), "33.33%");
+        assert_eq!(format_pct(10, count(10)), "100.00%");
     }
 
     #[test]
@@ -431,7 +434,7 @@ mod tests {
         }
         for version in ["", "1.0", "20.0"] {
             let mut broken = valid.clone();
-            broken["version"] = json!(version);
+            *broken.get_mut("version").unwrap() = json!(version);
             assert!(parse_report(&serde_json::to_vec(&broken).unwrap()).is_err());
         }
         assert!(parse_report(b"not JSON").is_err());
@@ -446,7 +449,13 @@ mod tests {
             );
         }
         let mut missing = totals(10, 10);
-        missing.as_object_mut().unwrap().remove("branches");
+        assert!(
+            missing
+                .as_object_mut()
+                .unwrap()
+                .remove("branches")
+                .is_some()
+        );
         assert!(evaluate(&report(&missing), CoverageConfig::default(), true).failed());
         assert!(evaluate(&report(&missing), CoverageConfig::default(), false).passed());
     }
@@ -540,7 +549,7 @@ mod tests {
         });
         let parsed = parse_report(&serde_json::to_vec(&value).unwrap()).unwrap();
         assert!(evaluate(&parsed, CoverageConfig::default(), false).failed());
-        value["type"] = json!("another-report");
+        *value.get_mut("type").unwrap() = json!("another-report");
         assert!(parse_report(&serde_json::to_vec(&value).unwrap()).is_err());
     }
 }

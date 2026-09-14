@@ -12,7 +12,7 @@ use crate::reporter::Reporter;
 
 /// Run every enabled fix step in order. `Err(())` on a failed step or
 /// launch error. The caller maps it to the pipeline's failure exit.
-pub fn apply(
+pub(crate) fn apply(
     cli: &Cli,
     runner: &CargoCli,
     reporter: &Reporter,
@@ -54,14 +54,11 @@ fn run_step(runner: &CargoCli, reporter: &Reporter, sub: &str, args: &[&str]) ->
 /// (so WIP changes do not block the fix), then the shared lint tail
 /// behind `--`.
 fn clippy_fix_args() -> Vec<&'static str> {
-    let mut v = Vec::with_capacity(COMMON_ARGS.len() + CLIPPY_LINT_ARGS.len() + 4);
-    v.push("--fix");
-    v.extend_from_slice(COMMON_ARGS);
-    v.push("--allow-dirty");
-    v.push("--allow-staged");
-    v.push("--");
-    v.extend_from_slice(CLIPPY_LINT_ARGS);
-    v
+    std::iter::once("--fix")
+        .chain(COMMON_ARGS.iter().copied())
+        .chain(["--allow-dirty", "--allow-staged", "--"])
+        .chain(CLIPPY_LINT_ARGS.iter().copied())
+        .collect()
 }
 
 #[cfg(test)]
@@ -72,13 +69,19 @@ mod tests {
     #[test]
     fn clippy_fix_argv_keeps_fix_prefix_overrides_and_lint_tail() {
         let args = clippy_fix_args();
-        assert_eq!(args[0], "--fix");
+        assert_eq!(args.first(), Some(&"--fix"));
         assert!(args.contains(&"--allow-dirty"));
         assert!(args.contains(&"--allow-staged"));
         let separator = args
             .iter()
             .position(|a| *a == "--")
             .expect("missing `--` separator");
-        assert_eq!(&args[separator + 1..], CLIPPY_LINT_ARGS);
+        assert_eq!(
+            args.iter()
+                .skip(separator.saturating_add(1))
+                .copied()
+                .collect::<Vec<_>>(),
+            CLIPPY_LINT_ARGS
+        );
     }
 }

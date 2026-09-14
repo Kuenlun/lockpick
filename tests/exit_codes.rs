@@ -4,7 +4,6 @@
 
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![cfg_attr(coverage_nightly, coverage(off))]
-#![allow(clippy::unwrap_used)]
 
 //! End-to-end coverage of every non-success branch in `dispatch`:
 //! `1` (a check failed), `3` (missing tool) and `4`
@@ -27,7 +26,7 @@ fn failing_check_returns_one_and_lists_label() -> TestResult {
         .output()?;
     assert_eq!(
         out.status.code(),
-        Some(1),
+        Some(1_i32),
         "expected exit 1 on check failure, got code={code:?} stdout=\n{out_text}",
         code = out.status.code(),
         out_text = stdout(&out),
@@ -65,7 +64,7 @@ fn missing_tool_returns_exit_three_with_install_hint() -> TestResult {
     let out = run_lockpick(project.path()).env("PATH", &path).output()?;
     assert_eq!(
         out.status.code(),
-        Some(3),
+        Some(3_i32),
         "expected exit 3 on missing tools, got code={code:?} stderr=\n{err}",
         code = out.status.code(),
         err = stderr(&out),
@@ -100,7 +99,7 @@ fn unconfigured_coverage_does_not_require_llvm_cov() -> TestResult {
     let out = run_lockpick(project.path()).env("PATH", &path).output()?;
     assert_eq!(
         out.status.code(),
-        Some(3),
+        Some(3_i32),
         "expected exit 3 on missing tools, got code={code:?} stderr=\n{err}",
         code = out.status.code(),
         err = stderr(&out),
@@ -151,7 +150,7 @@ mod tests {
     let report = stdout(&out);
     assert_eq!(
         out.status.code(),
-        Some(1),
+        Some(1_i32),
         "expected exit 1 from the coverage gate, got code={code:?} stdout=\n{report}",
         code = out.status.code(),
     );
@@ -214,7 +213,7 @@ exec \"$LOCKPICK_TEST_REAL_RUSTC\" \"$@\"\n";
         .output()?;
     assert_eq!(
         out.status.code(),
-        Some(4),
+        Some(4_i32),
         "expected exit 4 on coverage.branches+stable, got code={code:?} stderr=\n{err}",
         code = out.status.code(),
         err = stderr(&out),

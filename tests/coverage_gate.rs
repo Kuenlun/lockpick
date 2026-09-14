@@ -37,11 +37,11 @@ fn fresh_coverage_cannot_reuse_a_previous_passing_run() -> TestResult {
         ]))
     };
     let first = execute()?;
-    assert_eq!(first.status.code(), Some(0), "{}", combined(&first));
+    assert_eq!(first.status.code(), Some(0_i32), "{}", combined(&first));
     assert!(combined(&first).contains("ok   functions"));
     std::fs::remove_file(marker)?;
     let second = execute()?;
-    assert_eq!(second.status.code(), Some(1), "{}", combined(&second));
+    assert_eq!(second.status.code(), Some(1_i32), "{}", combined(&second));
     assert!(
         combined(&second).contains("FAIL functions"),
         "{}",

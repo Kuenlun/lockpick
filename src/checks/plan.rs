@@ -20,16 +20,16 @@ use super::{audit, clippy, compile, doc, doctest, fmt, license_header, machete, 
 /// Running two cargo build subcommands in parallel would block on
 /// `target/.cargo-lock` and print `Blocking waiting for file lock`. See
 /// `## How it schedules` in the README for the cohort layout.
-pub mod chain {
-    pub const COMPILE: u8 = 0;
-    pub const TEST: u8 = 1;
-    pub const CLIPPY: u8 = 2;
-    pub const DOC: u8 = 3;
-    pub const DOCTEST: u8 = 4;
+pub(crate) mod chain {
+    pub(crate) const COMPILE: u8 = 0;
+    pub(crate) const TEST: u8 = 1;
+    pub(crate) const CLIPPY: u8 = 2;
+    pub(crate) const DOC: u8 = 3;
+    pub(crate) const DOCTEST: u8 = 4;
 }
 
 /// A single quality check.
-pub trait Check: Send + Sync {
+pub(crate) trait Check: Send + Sync {
     /// Label shown in spinners and section headers.
     fn label(&self) -> &'static str;
     /// Human-readable command line for `--verbose` output.
@@ -46,45 +46,26 @@ pub trait Check: Send + Sync {
 /// Items keep insertion order for stable reporting. The runner
 /// partitions them into an independent cohort and a serial chain that
 /// Cargo's per-`target/` lock allows to overlap.
-pub struct Plan {
+pub(crate) struct Plan {
     items: Vec<Box<dyn Check>>,
 }
 
 impl Plan {
     /// Number of checks scheduled, across both cohorts.
     #[must_use]
-    pub const fn len(&self) -> usize {
+    pub(crate) const fn len(&self) -> usize {
         self.items.len()
     }
 
     /// Whether the plan has zero checks to run.
     #[must_use]
-    pub const fn is_empty(&self) -> bool {
+    pub(crate) const fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
 
     /// Iterate every check with its insertion index, for display.
-    pub fn iter(&self) -> impl Iterator<Item = (usize, &dyn Check)> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (usize, &dyn Check)> {
         self.items.iter().enumerate().map(|(i, c)| (i, c.as_ref()))
-    }
-
-    /// Checks that do not touch `target/` and so run in parallel with
-    /// each other and with the serial chain.
-    pub fn independent(&self) -> impl Iterator<Item = (usize, &dyn Check)> {
-        self.iter().filter(|(_, c)| c.chain_position().is_none())
-    }
-
-    /// Checks that compete for `target/.cargo-lock`, sorted by chain
-    /// position so the runner walks them in the canonical
-    /// `compile, test, clippy, doc, doc-test` order regardless of
-    /// insertion order.
-    pub fn serial_chain(&self) -> impl Iterator<Item = (usize, &dyn Check)> {
-        let mut chain: Vec<(u8, usize, &dyn Check)> = self
-            .iter()
-            .filter_map(|(i, c)| c.chain_position().map(|p| (p, i, c)))
-            .collect();
-        chain.sort_by_key(|(p, _, _)| *p);
-        chain.into_iter().map(|(_, i, c)| (i, c))
     }
 }
 
@@ -99,7 +80,7 @@ impl Plan {
 /// * `color` is forwarded to the fmt check (rustfmt's diff ignores
 ///   `CARGO_TERM_COLOR`).
 #[must_use]
-pub fn build_plan(
+pub(crate) fn build_plan(
     cli: &Cli,
     coverage_active: bool,
     toolchain: &Toolchain,
@@ -226,15 +207,6 @@ mod tests {
         };
         assert!(labels(&plan_for(&["lockpick"], &config, true)).contains(&"license"));
         assert!(!labels(&plan_for(&["lockpick"], &Config::default(), true)).contains(&"license"));
-    }
-
-    #[test]
-    fn serial_chain_walks_canonical_order_and_the_rest_runs_parallel() {
-        let plan = plan_for(&["lockpick"], &Config::default(), true);
-        let chain: Vec<&str> = plan.serial_chain().map(|(_, c)| c.label()).collect();
-        assert_eq!(chain, ["check", "test", "clippy", "doc", "doc-test"]);
-        let independent: Vec<&str> = plan.independent().map(|(_, c)| c.label()).collect();
-        assert_eq!(independent, ["fmt", "machete", "audit"]);
     }
 
     #[test]

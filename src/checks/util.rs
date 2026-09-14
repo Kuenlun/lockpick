@@ -10,17 +10,17 @@ use crate::reporter::{CheckOutcome, TaskStatus};
 use super::runner::{Runner, SpawnResult};
 
 /// Workspace-wide argv prefix shared by build-flavored checks.
-pub const COMMON_ARGS: &[&str] = &["--workspace", "--all-targets", "--all-features"];
+pub(crate) const COMMON_ARGS: &[&str] = &["--workspace", "--all-targets", "--all-features"];
 
 /// Options shared by all Cargo compilation, test and report commands.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct BuildOptions {
-    pub locked: bool,
-    pub host_target: bool,
+pub(crate) struct BuildOptions {
+    pub(crate) locked: bool,
+    pub(crate) host_target: bool,
 }
 
 impl BuildOptions {
-    pub fn args<'a>(self, args: &[&'a str]) -> Vec<&'a str> {
+    pub(crate) fn args<'a>(self, args: &[&'a str]) -> Vec<&'a str> {
         let separator = args
             .iter()
             .position(|arg| *arg == "--")
@@ -41,7 +41,7 @@ impl BuildOptions {
 /// Concatenate `stdout` and `stderr`, inserting a newline between them
 /// when stdout does not already end with one.
 #[must_use]
-pub fn combine_streams(stdout: &[u8], stderr: &[u8]) -> String {
+pub(crate) fn combine_streams(stdout: &[u8], stderr: &[u8]) -> String {
     let mut combined = String::from_utf8_lossy(stdout).into_owned();
     if !combined.is_empty() && !combined.ends_with('\n') {
         combined.push('\n');
@@ -52,7 +52,7 @@ pub fn combine_streams(stdout: &[u8], stderr: &[u8]) -> String {
 
 /// Lower a [`Runner::spawn`] result into a [`CheckOutcome`]. A launch
 /// failure becomes [`TaskStatus::Fail`] with the original OS diagnostic.
-pub fn outcome_from(result: std::io::Result<SpawnResult>) -> CheckOutcome {
+pub(crate) fn outcome_from(result: std::io::Result<SpawnResult>) -> CheckOutcome {
     match result {
         Ok(sr) => CheckOutcome {
             status: if sr.success {
@@ -70,12 +70,12 @@ pub fn outcome_from(result: std::io::Result<SpawnResult>) -> CheckOutcome {
 }
 
 /// Spawn `cargo <sub> <args…>` and lower the result into a [`CheckOutcome`].
-pub fn cargo_outcome(runner: &dyn Runner, sub: &str, args: &[&str]) -> CheckOutcome {
+pub(crate) fn cargo_outcome(runner: &dyn Runner, sub: &str, args: &[&str]) -> CheckOutcome {
     outcome_from(runner.spawn(sub, args, &[]))
 }
 
 /// Like [`cargo_outcome`] but with extra env vars.
-pub fn cargo_outcome_with_env(
+pub(crate) fn cargo_outcome_with_env(
     runner: &dyn Runner,
     sub: &str,
     args: &[&str],
@@ -86,7 +86,7 @@ pub fn cargo_outcome_with_env(
 
 /// Format a cargo command line for display.
 #[must_use]
-pub fn fmt_cargo_cmd(subcommand: &str, args: &[&str]) -> String {
+pub(crate) fn fmt_cargo_cmd(subcommand: &str, args: &[&str]) -> String {
     if args.is_empty() {
         format!("cargo {subcommand}")
     } else {

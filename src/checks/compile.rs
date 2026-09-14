@@ -5,8 +5,8 @@
 use super::{COMMON_ARGS, Check, Runner, cargo_outcome, chain, fmt_cargo_cmd};
 use crate::reporter::CheckOutcome;
 
-pub struct CompileCheck {
-    pub options: super::util::BuildOptions,
+pub(crate) struct CompileCheck {
+    pub(crate) options: super::util::BuildOptions,
 }
 
 impl Check for CompileCheck {

@@ -11,24 +11,24 @@
 //! - [`util`]: shared helpers ([`cargo_outcome`], [`fmt_cargo_cmd`],
 //!   [`combine_streams`], [`COMMON_ARGS`]).
 
-pub mod audit;
-pub mod clippy;
-pub mod compile;
-pub mod coverage;
-pub mod doc;
-pub mod doctest;
-pub mod fmt;
-pub mod license_header;
-pub mod machete;
-pub mod targets;
-pub mod test;
+pub(crate) mod audit;
+pub(crate) mod clippy;
+pub(crate) mod compile;
+pub(crate) mod coverage;
+pub(crate) mod doc;
+pub(crate) mod doctest;
+pub(crate) mod fmt;
+pub(crate) mod license_header;
+pub(crate) mod machete;
+pub(crate) mod targets;
+pub(crate) mod test;
 
-pub mod plan;
-pub mod runner;
-pub mod util;
+pub(crate) mod plan;
+pub(crate) mod runner;
+pub(crate) mod util;
 
-pub use plan::{Check, Plan, build_plan, chain};
-pub use runner::{CargoCli, Runner};
-pub use util::{
+pub(crate) use plan::{Check, Plan, build_plan, chain};
+pub(crate) use runner::{CargoCli, Runner};
+pub(crate) use util::{
     COMMON_ARGS, cargo_outcome, cargo_outcome_with_env, combine_streams, fmt_cargo_cmd,
 };
