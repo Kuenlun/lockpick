@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/Kuenlun/lockpick/compare/v0.7.0...v0.7.1) - 2026-09-14
+
+### Added
+
+- *(targets)* check embedded profiles alongside host tests ([#70](https://github.com/Kuenlun/lockpick/pull/70))
+
+### Fixed
+
+- *(doc)* enforce warnings with encoded rustdoc flags ([#72](https://github.com/Kuenlun/lockpick/pull/72))
+- *(coverage)* clean measurements and reject malformed reports ([#69](https://github.com/Kuenlun/lockpick/pull/69))
+- *(runner)* isolate build outputs and cancel process groups ([#71](https://github.com/Kuenlun/lockpick/pull/71))
+- *(license)* scan all workspace packages from any directory ([#67](https://github.com/Kuenlun/lockpick/pull/67))
+- *(config)* reject invalid or ambiguous quality policy ([#65](https://github.com/Kuenlun/lockpick/pull/65))
+- *(audit)* fail on incomplete scans and advisory warnings ([#68](https://github.com/Kuenlun/lockpick/pull/68))
+
+### Other
+
+- harden internal policy and verify scheduling contracts ([#73](https://github.com/Kuenlun/lockpick/pull/73))
+- *(targets)* cover host coverage and compiler probe failures ([#75](https://github.com/Kuenlun/lockpick/pull/75))
+- pin stable Rust and the branch coverage toolchain ([#66](https://github.com/Kuenlun/lockpick/pull/66))
+
 ## [0.7.0](https://github.com/Kuenlun/lockpick/compare/v0.6.0...v0.7.0) - 2026-06-10
 
 ### Added
