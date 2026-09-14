@@ -5,7 +5,7 @@
 //! `RustSec` advisory scan via `cargo audit`. Requires network access.
 
 use super::{Check, Runner, cargo_outcome, fmt_cargo_cmd};
-use crate::reporter::{CheckOutcome, TaskStatus};
+use crate::reporter::CheckOutcome;
 
 pub struct AuditCheck;
 
@@ -15,50 +15,16 @@ impl Check for AuditCheck {
     }
 
     fn cmd(&self) -> String {
-        fmt_cargo_cmd("audit", &[])
+        fmt_cargo_cmd("audit", &["--deny", "warnings"])
     }
 
-    /// Convert a fetch-side failure (advisory DB unreachable) into
-    /// `Skip` with a short reason, so a flaky GitHub or an offline CI
-    /// box does not masquerade as a vulnerability finding. Real findings
-    /// and other audit errors still propagate as `Fail`. Detection is
-    /// substring-based because `cargo audit` exits `1` for both cases.
     fn run(&self, runner: &dyn Runner) -> CheckOutcome {
-        let outcome = cargo_outcome(runner, "audit", &[]);
-        if outcome.failed() && is_advisory_db_unreachable(&outcome.output) {
-            return CheckOutcome {
-                status: TaskStatus::Skip,
-                output: "advisory database unreachable".to_string(),
-            };
-        }
-        outcome
+        cargo_outcome(runner, "audit", &["--deny", "warnings"])
     }
 
     fn chain_position(&self) -> Option<u8> {
         None
     }
-}
-
-/// Lowercase substrings cargo-audit, libgit2, or the OS resolver print
-/// when the advisory database cannot be fetched. Each marker must be
-/// specific to an error path: `cargo audit` prints `Fetching advisory
-/// database from …` on every run, so a generic substring would also
-/// match successful runs that reported real vulnerabilities.
-const UNREACHABLE_MARKERS: &[&str] = &[
-    "couldn't fetch",
-    "failed to fetch",
-    "unable to access",
-    "could not resolve",
-    "network is unreachable",
-    "connection refused",
-    "connection timed out",
-    "operation timed out",
-    "temporary failure in name resolution",
-];
-
-fn is_advisory_db_unreachable(output: &str) -> bool {
-    let lower = output.to_ascii_lowercase();
-    UNREACHABLE_MARKERS.iter().any(|m| lower.contains(m))
 }
 
 #[cfg(test)]
@@ -89,14 +55,14 @@ mod tests {
     }
 
     #[test]
-    fn unreachable_advisory_db_downgrades_to_skip() {
+    fn unreachable_advisory_db_fails_with_original_diagnostic() {
         let runner = CannedRunner {
             success: false,
             stderr: "error: couldn't fetch advisory database",
         };
         let outcome = AuditCheck.run(&runner);
-        assert_eq!(outcome.status, TaskStatus::Skip);
-        assert!(outcome.output.contains("advisory database unreachable"));
+        assert!(outcome.failed());
+        assert!(outcome.output.contains("couldn't fetch advisory database"));
     }
 
     #[test]
@@ -115,13 +81,5 @@ mod tests {
             stderr: "Fetching advisory database from github",
         };
         assert!(AuditCheck.run(&runner).passed());
-    }
-
-    #[test]
-    fn detection_is_case_insensitive_and_marker_scoped() {
-        assert!(is_advisory_db_unreachable("Connection REFUSED"));
-        assert!(!is_advisory_db_unreachable(
-            "Fetching advisory database from https://github.com/RustSec/advisory-db.git"
-        ));
     }
 }
