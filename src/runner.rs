@@ -21,7 +21,7 @@ use crate::tooling::{self, ColorMode, Tool, Toolchain};
 pub fn run(mut cli: Cli) -> Result<(), LockpickError> {
     let reporter = Reporter::auto(cli.verbose);
     let toolchain = Toolchain::detect();
-    let metadata = LockpickMetadata::load();
+    let metadata = LockpickMetadata::load()?;
     // Fold any `skip = [...]` from Cargo.toml into the CLI's view of
     // skips so every downstream consumer reads from a single source.
     cli.merge_config_skips(&metadata.config.skip);

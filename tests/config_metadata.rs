@@ -98,3 +98,37 @@ fn workspace_metadata_skip_list_is_honored() -> TestResult {
     assert!(report.contains("OK:"), "missing success summary:\n{report}");
     Ok(())
 }
+
+#[test]
+fn invalid_configuration_aborts_before_fixes() -> common::TestResult {
+    let project = common::scratch_crate(
+        "invalid_config",
+        "[package.metadata.lockpick]\nlicense-header = \"missing\"\n[package.metadata.lockpick.coverage]\nline = 100\n",
+        &[("src/main.rs", common::UNFORMATTED_MAIN_RS)],
+    );
+    let out = common::run_lockpick(project.path())
+        .args([
+            "--fix",
+            "--skip",
+            "check,clippy,test,doc,doc-test,machete,audit",
+        ])
+        .output()?;
+    assert_eq!(out.status.code(), Some(2), "{}", common::combined(&out));
+    assert!(common::stderr(&out).contains("unknown field `line`"));
+    assert!(!common::stdout(&out).contains("PASS"));
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("src/main.rs"))?,
+        common::UNFORMATTED_MAIN_RS
+    );
+    Ok(())
+}
+
+#[test]
+fn metadata_failure_is_reported_before_running_checks() -> common::TestResult {
+    let directory = tempfile::tempdir()?;
+    let out = common::run_lockpick(directory.path()).output()?;
+    assert_eq!(out.status.code(), Some(2), "{}", common::combined(&out));
+    assert!(common::stderr(&out).contains("cargo metadata failed"));
+    assert!(!common::stdout(&out).contains("PASS"));
+    Ok(())
+}

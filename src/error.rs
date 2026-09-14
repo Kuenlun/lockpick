@@ -9,6 +9,9 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum LockpickError {
+    #[error("invalid Lockpick configuration: {0}")]
+    Configuration(String),
+
     #[error("{0} check(s) failed")]
     ChecksFailed(usize),
 
