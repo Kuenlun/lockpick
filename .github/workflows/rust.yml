@@ -2,7 +2,6 @@ name: Rust
 
 on:
   pull_request:
-    branches: ["master", "develop"]
   push:
     branches: ["master"]
 
@@ -18,7 +17,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@1.98.1
         with:
           components: rustfmt, clippy, llvm-tools-preview
       - name: Install external check tools
@@ -34,15 +33,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: nightly-2026-09-14
           components: rustfmt, clippy, llvm-tools-preview
       - name: Install external check tools
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov,cargo-machete,cargo-audit,cargo-nextest
       - name: Generate LCOV report
-        run: cargo llvm-cov --branch --workspace --all-targets --all-features --no-fail-fast --lcov --output-path lcov.info
+        run: cargo +nightly-2026-09-14 llvm-cov --branch --workspace --all-targets --all-features --no-fail-fast --lcov --output-path lcov.info
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:

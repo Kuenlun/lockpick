@@ -35,7 +35,7 @@ jobs:
           token: ${{ secrets.RELEASE_PLZ_TOKEN }}
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.1
 
       - name: Run release-plz
         id: release-plz
@@ -91,7 +91,7 @@ jobs:
 
       - name: Install Rust toolchain (dry-run)
         if: github.event_name == 'workflow_dispatch' && inputs.dry_run
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@1.98.1
         with:
           targets: ${{ matrix.target }}
 
@@ -119,7 +119,7 @@ jobs:
         shell: bash
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
-        run: cross build --release --target ${{ matrix.target }} --bin lockpick
+        run: cross build --release --locked --target ${{ matrix.target }} --bin lockpick
 
       - name: Dry-run build (cargo)
         if: >-
@@ -129,11 +129,11 @@ jobs:
         shell: bash
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
-        run: cargo build --release --target ${{ matrix.target }} --bin lockpick
+        run: cargo build --release --locked --target ${{ matrix.target }} --bin lockpick
 
       - name: Install Rust toolchain (release)
         if: github.event_name == 'push'
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@1.98.1
         with:
           targets: ${{ matrix.target }}
 
