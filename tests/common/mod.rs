@@ -244,3 +244,40 @@ fn write_file(root: &Path, rel: &str, body: &str) {
     }
     std::fs::write(&path, body).unwrap();
 }
+
+/// Capture a real-tool run without an unbounded wait or full output pipes.
+pub fn bounded_output(command: &mut Command) -> std::io::Result<Output> {
+    use std::io::{Read, Seek};
+    use std::time::{Duration, Instant};
+    let mut stdout = tempfile::tempfile()?;
+    let mut stderr = tempfile::tempfile()?;
+    let mut child = command
+        .stdout(stdout.try_clone()?)
+        .stderr(stderr.try_clone()?)
+        .spawn()?;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            child.kill()?;
+            child.wait()?;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Lockpick fixture exceeded 60 seconds",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    stdout.rewind()?;
+    stderr.rewind()?;
+    let mut out = Output {
+        status,
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+    };
+    stdout.read_to_end(&mut out.stdout)?;
+    stderr.read_to_end(&mut out.stderr)?;
+    Ok(out)
+}

@@ -81,11 +81,22 @@ impl Check for TestCheck {
 
     fn cmd(&self) -> String {
         let (sub, args) = self.dispatch();
-        fmt_cargo_cmd(sub, args)
+        let command = fmt_cargo_cmd(sub, args);
+        if self.instrumented {
+            format!("cargo llvm-cov clean --workspace && {command}")
+        } else {
+            command
+        }
     }
 
     fn run(&self, runner: &dyn Runner) -> CheckOutcome {
         let (sub, args) = self.dispatch();
+        if self.instrumented {
+            let cleanup = cargo_outcome(runner, "llvm-cov", &["clean", "--workspace"]);
+            if !cleanup.passed() {
+                return cleanup;
+            }
+        }
         cargo_outcome(runner, sub, args)
     }
 
@@ -157,5 +168,53 @@ mod tests {
             plain.cmd(),
             "cargo test --workspace --all-targets --all-features"
         );
+    }
+    #[derive(Default)]
+    struct SequenceRunner {
+        calls: std::sync::Mutex<Vec<String>>,
+        cleanup_succeeds: bool,
+    }
+
+    impl Runner for SequenceRunner {
+        fn spawn(
+            &self,
+            sub: &str,
+            args: &[&str],
+            _envs: &[(&str, &str)],
+        ) -> std::io::Result<super::super::runner::SpawnResult> {
+            self.calls.lock().unwrap().push(fmt_cargo_cmd(sub, args));
+            Ok(super::super::runner::SpawnResult {
+                success: args.first() != Some(&"clean") || self.cleanup_succeeds,
+                stdout: Vec::new(),
+                stderr: b"cleanup output".to_vec(),
+            })
+        }
+    }
+
+    #[test]
+    fn cleanup_precedes_instrumentation_and_failure_stops_tests() {
+        let check = TestCheck {
+            instrumented: true,
+            nextest: false,
+            branch_coverage: false,
+        };
+        for cleanup_succeeds in [true, false] {
+            let runner = SequenceRunner {
+                cleanup_succeeds,
+                ..SequenceRunner::default()
+            };
+            let result = check.run(&runner);
+            assert_eq!(result.passed(), cleanup_succeeds);
+            let calls = runner.calls.lock().unwrap();
+            assert_eq!(calls.first().unwrap(), "cargo llvm-cov clean --workspace");
+            assert_eq!(calls.len(), if cleanup_succeeds { 2 } else { 1 });
+        }
+        let runner = SequenceRunner::default();
+        let plain = TestCheck {
+            instrumented: false,
+            ..check
+        };
+        assert!(plain.run(&runner).passed());
+        assert_eq!(runner.calls.lock().unwrap().len(), 1);
     }
 }
