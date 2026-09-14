@@ -60,6 +60,7 @@ pub struct Config {
 /// `cargo metadata` invocation.
 #[derive(Debug, Clone, Default)]
 pub struct LockpickMetadata {
+    pub target_directory: Option<PathBuf>,
     pub config: Config,
     pub has_lib_target: bool,
     /// Absolute path of the enclosing workspace. `None` when the probe
@@ -69,6 +70,8 @@ pub struct LockpickMetadata {
 
 #[derive(Deserialize, Default)]
 struct CargoMetadata {
+    #[serde(default)]
+    target_directory: Option<PathBuf>,
     // Cargo emits this key as plain `metadata`, not `workspace_metadata`.
     #[serde(default, rename = "metadata")]
     workspace_metadata: Value,
@@ -78,6 +81,8 @@ struct CargoMetadata {
 
 #[derive(Deserialize, Default)]
 struct CargoPackage {
+    #[serde(default)]
+    manifest_path: PathBuf,
     #[serde(default)]
     metadata: Value,
     #[serde(default)]
@@ -104,9 +109,11 @@ impl LockpickMetadata {
             .iter()
             .flat_map(|p| &p.targets)
             .any(|t| t.kind.iter().any(|k| LIB_KINDS.contains(&k.as_str())));
-        let config =
+        let mut config =
             extract_lockpick(&metadata)?.map_or_else(|| Ok(Config::default()), parse_config)?;
+        resolve_license_paths(&mut config, &metadata);
         Ok(Self {
+            target_directory: metadata.target_directory,
             config,
             has_lib_target,
             workspace_root: Some(metadata.workspace_root),
@@ -132,6 +139,48 @@ fn parse_config(section: Value) -> Result<Config, LockpickError> {
         }
     }
     Ok(config)
+}
+
+/// License paths have the same workspace anchor as Cargo subprocesses.
+fn resolve_license_paths(config: &mut Config, metadata: &CargoMetadata) {
+    let root = &metadata.workspace_root;
+    if let Some(header) = &mut config.license_header {
+        *header = root.join(&*header);
+        let patterns = config.license_header_globs.take().unwrap_or_else(|| {
+            metadata
+                .packages
+                .iter()
+                .filter_map(|package| package.manifest_path.parent())
+                .flat_map(|directory| {
+                    crate::checks::license_header::default_globs()
+                        .into_iter()
+                        .map(move |pattern| {
+                            format!(
+                                "{}/{}",
+                                glob::Pattern::escape(&directory.to_string_lossy()),
+                                pattern
+                            )
+                        })
+                })
+                .collect()
+        });
+        config.license_header_globs = Some(
+            patterns
+                .into_iter()
+                .map(|pattern| {
+                    if std::path::Path::new(&pattern).is_absolute() {
+                        pattern
+                    } else {
+                        format!(
+                            "{}/{}",
+                            glob::Pattern::escape(&root.to_string_lossy()),
+                            pattern
+                        )
+                    }
+                })
+                .collect(),
+        );
+    }
 }
 
 fn run_cargo_metadata() -> Result<CargoMetadata, LockpickError> {

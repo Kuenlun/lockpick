@@ -94,9 +94,9 @@ regions   = 100
 
 CLI `--skip` is additive on top of the `skip` array. Workspace metadata takes precedence over package metadata. Package metadata is accepted only in single-package workspaces. Invalid or ambiguous configuration and failed metadata discovery stop the run with exit `2`, before checks or fixes. Coverage thresholds must be integers from 0 to 100.
 
-The `license` check compares the start of each file to the header template. Default globs are `src/**/*.rs`, `tests/**/*.rs`, `examples/**/*.rs`, `benches/**/*.rs`. Files marked `@generated` are skipped.
+The `license` check compares the start of each file to the header template. The template and explicit globs are relative to the workspace root, including when Lockpick starts in a member directory. Default globs are `src/**/*.rs`, `tests/**/*.rs`, `examples/**/*.rs`, `benches/**/*.rs` in every workspace package. Invalid patterns, traversal errors and patterns matching no source files fail the gate. Files marked `@generated` are skipped.
 
-The `coverage` check is opt-in: add the `[workspace.metadata.lockpick.coverage]` table (even empty) or pass `--coverage`. Once active it parses `cargo llvm-cov report --json` and enforces each threshold (100% unless configured) with exact integer comparison. Combining `--coverage` with `--skip coverage` or `--skip test` is a usage error (exit `2`). The `branches` metric is nightly-only (`rustup toolchain install nightly --component llvm-tools-preview`). On stable it is silently dropped, and an explicit `coverage.branches` aborts with exit `4`. On failure, drill in with `cargo llvm-cov --html` (`--branch` on nightly) and open `target/llvm-cov/html/index.html`.
+The `coverage` check is opt-in: add the `[workspace.metadata.lockpick.coverage]` table (even empty) or pass `--coverage`. Each instrumented run first executes `cargo llvm-cov clean --workspace`, so an earlier passing run cannot supply coverage for tests that no longer exercise the code. Cleanup failure stops the test and coverage gates. Once active it parses `cargo llvm-cov report --json` and enforces each threshold (100% unless configured) with exact integer comparison. Combining `--coverage` with `--skip coverage` or `--skip test` is a usage error (exit `2`). The `branches` metric is nightly-only (`rustup toolchain install nightly --component llvm-tools-preview`). On stable it is silently dropped, and an explicit `coverage.branches` aborts with exit `4`. Malformed reports, missing required metrics, impossible counts, empty files and all-zero totals fail the gate. On failure, inspect the existing measurement with `cargo llvm-cov report --html` (`--branch` on nightly) and open `target/llvm-cov/html/index.html`.
 
 ## Exit codes
 
@@ -125,6 +125,8 @@ Minimal GitHub Actions job:
     tool: lockpick,cargo-llvm-cov,cargo-machete,cargo-audit
 - run: lockpick -v
 ```
+
+On Unix, SIGINT and SIGTERM are forwarded to Cargo process groups, including their descendants. Later commands are not launched after interruption. Exit codes remain `128 + signal`. When the running Lockpick binary is inside Cargo's configured target directory, child builds use an isolated subdirectory, including custom `CARGO_TARGET_DIR` and `build.target-dir` configurations.
 
 ## How it schedules
 

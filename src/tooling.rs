@@ -60,6 +60,13 @@ fn has_cargo_subcommand_in(path_env: Option<&OsStr>, subcommand: &str) -> bool {
 }
 
 fn contains_executable(dir: &Path, name: &str) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(dir.join(name))
+            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
     if dir.join(name).is_file() {
         return true;
     }
@@ -69,7 +76,10 @@ fn contains_executable(dir: &Path, name: &str) -> bool {
             return true;
         }
     }
-    false
+    #[cfg(not(unix))]
+    {
+        false
+    }
 }
 
 /// Env var prefixes that describe the *current* package's build. Must
@@ -202,6 +212,19 @@ mod tests {
     fn subcommand_lookup_scans_path_entries() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("cargo-zzz"), "").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert!(!has_cargo_subcommand_in(
+                Some(dir.path().as_os_str()),
+                "zzz"
+            ));
+            std::fs::set_permissions(
+                dir.path().join("cargo-zzz"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
         let path = std::env::join_paths([dir.path()]).unwrap();
         assert!(has_cargo_subcommand_in(Some(&path), "zzz"));
         assert!(!has_cargo_subcommand_in(Some(&path), "absent"));

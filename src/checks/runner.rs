@@ -44,8 +44,8 @@ pub trait Runner: Send + Sync {
 /// checks walk up the manifest tree on their own and are unaffected.
 #[derive(Debug, Clone, Default)]
 pub struct CargoCli {
-    /// When true, children inherit `CARGO_TARGET_DIR=target/lockpick`.
-    redirect_target_dir: bool,
+    /// Isolated build directory when Cargo would overwrite this executable.
+    target_dir: Option<PathBuf>,
     /// Propagated to every child as `CARGO_TERM_COLOR` so captured
     /// output matches lockpick's own stream.
     color: ColorMode,
@@ -57,27 +57,46 @@ impl CargoCli {
     /// Decide whether children need `CARGO_TARGET_DIR` redirected, pin
     /// the propagated color mode, and record the workspace root.
     #[must_use]
-    pub fn detect(color: ColorMode, workspace_root: Option<PathBuf>) -> Self {
+    pub fn detect(
+        color: ColorMode,
+        workspace_root: Option<PathBuf>,
+        target_directory: Option<&Path>,
+    ) -> Self {
         Self {
-            redirect_target_dir: needs_target_dir_redirect(workspace_root.as_deref()),
+            target_dir: std::env::current_exe().ok().and_then(|exe| {
+                target_directory.and_then(|directory| isolated_target_dir(&exe, directory))
+            }),
             color,
             workspace_root,
         }
     }
 
-    /// Spawn `cargo <sub> <args…>` with both streams inherited so the
-    /// user sees live output. Same anchoring, env scrubbing and signal
-    /// forwarding as [`Runner::spawn`], minus the capture.
-    pub fn spawn_inherited(&self, sub: &str, args: &[&str]) -> std::io::Result<bool> {
-        let mut cmd = cargo_command();
+    /// Construct both captured and inherited subprocesses consistently.
+    fn command(&self, sub: &str, args: &[&str], envs: &[(&str, &str)]) -> Command {
+        let mut command = cargo_command();
         if let Some(root) = &self.workspace_root {
-            cmd.current_dir(root);
+            command.current_dir(root);
         }
-        cmd.arg(sub).args(args);
-        cmd.env("CARGO_TERM_COLOR", self.color.as_str());
-        if self.redirect_target_dir {
-            cmd.env("CARGO_TARGET_DIR", "target/lockpick");
+        command
+            .arg(sub)
+            .args(args)
+            .env("CARGO_TERM_COLOR", self.color.as_str());
+        command.envs(envs.iter().copied());
+        if let Some(directory) = &self.target_dir {
+            command.env("CARGO_TARGET_DIR", directory);
         }
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        command
+    }
+
+    /// Run a fix step with live output and the same cancellation behavior.
+    pub fn spawn_inherited(&self, sub: &str, args: &[&str]) -> std::io::Result<bool> {
+        ensure_running()?;
+        let mut cmd = self.command(sub, args, &[]);
         cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
         let mut child = cmd.spawn()?;
         let guard = crate::signals::state().register_child(child.id());
@@ -94,21 +113,8 @@ impl Runner for CargoCli {
         args: &[&str],
         envs: &[(&str, &str)],
     ) -> std::io::Result<SpawnResult> {
-        let mut cmd = cargo_command();
-        if let Some(root) = &self.workspace_root {
-            cmd.current_dir(root);
-        }
-        cmd.arg(sub).args(args);
-        // Set color first so caller-supplied `envs` can still override
-        // it per-invocation.
-        cmd.env("CARGO_TERM_COLOR", self.color.as_str());
-        for (k, v) in envs {
-            cmd.env(k, v);
-        }
-        if self.redirect_target_dir {
-            cmd.env("CARGO_TARGET_DIR", "target/lockpick");
-        }
-        execute(cmd)
+        ensure_running()?;
+        execute(self.command(sub, args, envs))
     }
 }
 
@@ -130,23 +136,59 @@ fn execute(mut cmd: Command) -> std::io::Result<SpawnResult> {
     })
 }
 
-/// Whether child cargo invocations should redirect their target dir.
-/// Redirects when the running binary lives under `<anchor>/target/`
-/// and `CARGO_TARGET_DIR` is unset. The anchor is `workspace_root`
-/// when known, otherwise the process cwd.
-fn needs_target_dir_redirect(workspace_root: Option<&Path>) -> bool {
-    if std::env::var_os("CARGO_TARGET_DIR").is_some() {
-        return false;
+fn ensure_running() -> std::io::Result<()> {
+    if crate::signals::state().captured().is_some() {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "Lockpick was interrupted",
+        ))
+    } else {
+        Ok(())
     }
-    let Ok(exe) = std::env::current_exe() else {
-        return false;
-    };
-    let anchor = match workspace_root {
-        Some(root) => root.to_path_buf(),
-        None => match std::env::current_dir() {
-            Ok(cwd) => cwd,
-            Err(_) => return false,
-        },
-    };
-    exe.starts_with(anchor.join("target"))
+}
+
+/// Cargo metadata accounts for `CARGO_TARGET_DIR` and `build.target-dir`.
+/// Keep descending until the chosen output directory excludes the running binary.
+fn isolated_target_dir(executable: &Path, target_directory: &Path) -> Option<PathBuf> {
+    let executable = executable
+        .canonicalize()
+        .unwrap_or_else(|_| executable.to_path_buf());
+    let directory = target_directory
+        .canonicalize()
+        .unwrap_or_else(|_| target_directory.to_path_buf());
+    if !executable.starts_with(&directory) {
+        return None;
+    }
+    let mut isolated = directory.join("lockpick");
+    while executable.starts_with(&isolated) {
+        isolated = isolated.join("lockpick");
+    }
+    Some(isolated)
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn isolation_accounts_for_custom_and_already_redirected_directories() {
+        let temporary = tempfile::tempdir().unwrap();
+        let directory = temporary
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("custom-build");
+        assert!(
+            isolated_target_dir(&temporary.path().join("installed/lockpick"), &directory).is_none()
+        );
+        assert_eq!(
+            isolated_target_dir(&directory.join("debug/lockpick"), &directory),
+            Some(directory.join("lockpick"))
+        );
+        assert_eq!(
+            isolated_target_dir(&directory.join("lockpick/debug/lockpick"), &directory),
+            Some(directory.join("lockpick/lockpick"))
+        );
+    }
 }

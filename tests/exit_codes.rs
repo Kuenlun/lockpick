@@ -145,9 +145,9 @@ mod tests {
         &[("src/main.rs", PARTIALLY_COVERED_MAIN_RS)],
     );
 
-    let out = run_lockpick(project.path())
-        .args(["--skip", "machete", "--skip", "audit"])
-        .output()?;
+    let out = common::bounded_output(
+        run_lockpick(project.path()).args(["--skip", "machete", "--skip", "audit"]),
+    )?;
     let report = stdout(&out);
     assert_eq!(
         out.status.code(),

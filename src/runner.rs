@@ -31,7 +31,11 @@ pub fn run(mut cli: Cli) -> Result<(), LockpickError> {
     let color = cli.color_mode(std::io::stdout().is_terminal());
     // Process-wide override: every other crate linked in inherits it.
     colored::control::set_override(color == ColorMode::Always);
-    let runner = CargoCli::detect(color, metadata.workspace_root.clone());
+    let runner = CargoCli::detect(
+        color,
+        metadata.workspace_root.clone(),
+        metadata.target_directory.as_deref(),
+    );
     let is_nightly = tooling::is_nightly();
     let config = &metadata.config;
     let has_lib = metadata.has_lib_target;
