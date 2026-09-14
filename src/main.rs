@@ -49,7 +49,11 @@ fn dispatch(result: Result<(), LockpickError>) -> u8 {
     match result {
         Ok(()) => 0,
         Err(LockpickError::ChecksFailed(_)) => 1,
-        Err(e @ (LockpickError::NoChecksToRun | LockpickError::CoverageConflict(_))) => {
+        Err(
+            e @ (LockpickError::NoChecksToRun
+            | LockpickError::CoverageConflict(_)
+            | LockpickError::Configuration(_)),
+        ) => {
             eprintln!("error: {e}");
             2
         }

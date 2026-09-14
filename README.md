@@ -88,7 +88,7 @@ regions   = 100
 # branches = 100  # opt-in, nightly-only (fails on stable with exit 4)
 ```
 
-CLI `--skip` is additive on top of the `skip` array.
+CLI `--skip` is additive on top of the `skip` array. Workspace metadata takes precedence over package metadata. Package metadata is accepted only in single-package workspaces. Invalid or ambiguous configuration and failed metadata discovery stop the run with exit `2`, before checks or fixes. Coverage thresholds must be integers from 0 to 100.
 
 The `license` check compares the start of each file to the header template. Default globs are `src/**/*.rs`, `tests/**/*.rs`, `examples/**/*.rs`, `benches/**/*.rs`. Files marked `@generated` are skipped.
 

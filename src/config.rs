@@ -6,12 +6,12 @@
 //! (preferred) or `[package.metadata.lockpick]` via `cargo metadata`.
 
 use std::path::PathBuf;
-use std::process::Stdio;
 
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::cli::SkipOption;
+use crate::error::LockpickError;
 use crate::tooling::cargo_command;
 
 /// Per-metric coverage thresholds.
@@ -72,9 +72,7 @@ struct CargoMetadata {
     // Cargo emits this key as plain `metadata`, not `workspace_metadata`.
     #[serde(default, rename = "metadata")]
     workspace_metadata: Value,
-    #[serde(default)]
-    workspace_root: Option<PathBuf>,
-    #[serde(default)]
+    workspace_root: PathBuf,
     packages: Vec<CargoPackage>,
 }
 
@@ -98,45 +96,57 @@ struct CargoTarget {
 const LIB_KINDS: &[&str] = &["lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"];
 
 impl LockpickMetadata {
-    /// Probe `cargo metadata` and fall back to defaults on any failure.
-    #[must_use]
-    pub fn load() -> Self {
-        let Some(metadata) = run_cargo_metadata() else {
-            return Self::default();
-        };
+    /// Load workspace facts and validate configuration before any checks or fixes run.
+    pub fn load() -> Result<Self, LockpickError> {
+        let metadata = run_cargo_metadata()?;
         let has_lib_target = metadata
             .packages
             .iter()
             .flat_map(|p| &p.targets)
             .any(|t| t.kind.iter().any(|k| LIB_KINDS.contains(&k.as_str())));
-        let config = extract_lockpick(&metadata).map_or_else(Config::default, deserialize_or_warn);
-        Self {
+        let config =
+            extract_lockpick(&metadata)?.map_or_else(|| Ok(Config::default()), parse_config)?;
+        Ok(Self {
             config,
             has_lib_target,
-            workspace_root: metadata.workspace_root,
+            workspace_root: Some(metadata.workspace_root),
+        })
+    }
+}
+
+fn parse_config(section: Value) -> Result<Config, LockpickError> {
+    let config: Config =
+        serde_json::from_value(section).map_err(|e| LockpickError::Configuration(e.to_string()))?;
+    if let Some(coverage) = config.coverage {
+        for (name, threshold) in [
+            ("functions", coverage.functions),
+            ("lines", coverage.lines),
+            ("regions", coverage.regions),
+            ("branches", coverage.branches.unwrap_or(100)),
+        ] {
+            if threshold > 100 {
+                return Err(LockpickError::Configuration(format!(
+                    "coverage.{name} must be between 0 and 100, got {threshold}"
+                )));
+            }
         }
     }
+    Ok(config)
 }
 
-fn deserialize_or_warn(section: Value) -> Config {
-    serde_json::from_value(section).unwrap_or_else(|e| {
-        eprintln!("warning: invalid [*.metadata.lockpick] section: {e}, using defaults");
-        Config::default()
-    })
-}
-
-/// Spawn `cargo metadata` and parse its JSON. Returns `None` on any
-/// failure (spawn error, non-zero exit, or malformed JSON).
-fn run_cargo_metadata() -> Option<CargoMetadata> {
+fn run_cargo_metadata() -> Result<CargoMetadata, LockpickError> {
     let output = cargo_command()
         .args(["metadata", "--format-version", "1", "--no-deps"])
-        .stderr(Stdio::null())
         .output()
-        .ok()?;
+        .map_err(|e| LockpickError::Configuration(format!("could not run cargo metadata: {e}")))?;
     if !output.status.success() {
-        return None;
+        return Err(LockpickError::Configuration(format!(
+            "cargo metadata failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
     }
-    serde_json::from_slice(&output.stdout).ok()
+    serde_json::from_slice(&output.stdout)
+        .map_err(|e| LockpickError::Configuration(format!("invalid cargo metadata JSON: {e}")))
 }
 
 /// Locate `[*.metadata.lockpick]` in priority order:
@@ -145,17 +155,16 @@ fn run_cargo_metadata() -> Option<CargoMetadata> {
 /// 2. `[package.metadata.lockpick]` of a single-package workspace.
 ///
 /// Multi-package workspaces that set `[package.metadata.lockpick]` without
-/// the workspace-scoped section get a warning: there is no safe winner to
-/// pick workspace-wide, so the configuration is dropped.
-fn extract_lockpick(metadata: &CargoMetadata) -> Option<Value> {
+/// the workspace-scoped section are rejected: there is no safe winner to pick workspace-wide.
+fn extract_lockpick(metadata: &CargoMetadata) -> Result<Option<Value>, LockpickError> {
     fn lockpick_in(value: &Value) -> Option<Value> {
         value.as_object().and_then(|m| m.get("lockpick")).cloned()
     }
     if let Some(ws) = lockpick_in(&metadata.workspace_metadata) {
-        return Some(ws);
+        return Ok(Some(ws));
     }
     if let [package] = metadata.packages.as_slice() {
-        return lockpick_in(&package.metadata);
+        return Ok(lockpick_in(&package.metadata));
     }
     let stray = metadata
         .packages
@@ -163,11 +172,11 @@ fn extract_lockpick(metadata: &CargoMetadata) -> Option<Value> {
         .filter(|p| lockpick_in(&p.metadata).is_some())
         .count();
     if stray > 0 {
-        eprintln!(
-            "warning: found `[package.metadata.lockpick]` in {stray} package(s) of a multi-crate workspace. Use `[workspace.metadata.lockpick]` to apply it workspace-wide"
-        );
+        return Err(LockpickError::Configuration(format!(
+            "found `[package.metadata.lockpick]` in {stray} package(s) of a multi-crate workspace. Use `[workspace.metadata.lockpick]` to apply it workspace-wide"
+        )));
     }
-    None
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -179,6 +188,8 @@ mod tests {
     use crate::cli::SkipOption;
 
     fn metadata_from(value: serde_json::Value) -> CargoMetadata {
+        let mut value = value;
+        value["workspace_root"] = json!("/workspace");
         serde_json::from_value(value).unwrap()
     }
 
@@ -209,10 +220,22 @@ mod tests {
     }
 
     #[test]
-    fn invalid_section_falls_back_to_defaults() {
-        let config = deserialize_or_warn(json!({ "no-such-key": true }));
-        assert!(config.coverage.is_none());
-        assert!(config.skip.is_empty());
+    fn invalid_sections_and_thresholds_are_rejected() {
+        for value in [
+            json!({ "no-such-key": true }),
+            json!({ "coverage": { "line": 100 } }),
+            json!({ "skip": ["unknown"] }),
+            json!({ "coverage": { "lines": -1 } }),
+            json!({ "coverage": { "lines": 99.5 } }),
+        ] {
+            assert!(parse_config(value).is_err());
+        }
+        for metric in ["functions", "lines", "regions", "branches"] {
+            for threshold in [0, 100, 101, 255] {
+                let result = parse_config(json!({ "coverage": { metric: threshold } }));
+                assert_eq!(result.is_ok(), threshold <= 100, "{metric}: {threshold}");
+            }
+        }
     }
 
     #[test]
@@ -223,7 +246,7 @@ mod tests {
                 { "metadata": { "lockpick": { "skip": ["fmt"] } }, "targets": [] },
             ],
         }));
-        let section = extract_lockpick(&metadata).unwrap();
+        let section = extract_lockpick(&metadata).unwrap().unwrap();
         assert_eq!(section, json!({ "skip": ["audit"] }));
     }
 
@@ -235,12 +258,12 @@ mod tests {
                 { "metadata": { "lockpick": { "skip": ["fmt"] } }, "targets": [] },
             ],
         }));
-        let section = extract_lockpick(&metadata).unwrap();
+        let section = extract_lockpick(&metadata).unwrap().unwrap();
         assert_eq!(section, json!({ "skip": ["fmt"] }));
     }
 
     #[test]
-    fn multi_package_metadata_without_workspace_section_is_dropped() {
+    fn multi_package_metadata_without_workspace_section_is_rejected() {
         let metadata = metadata_from(json!({
             "metadata": null,
             "packages": [
@@ -248,6 +271,6 @@ mod tests {
                 { "metadata": null, "targets": [] },
             ],
         }));
-        assert!(extract_lockpick(&metadata).is_none());
+        assert!(extract_lockpick(&metadata).is_err());
     }
 }
