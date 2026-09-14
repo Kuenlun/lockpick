@@ -40,15 +40,19 @@ fn host_tests_and_embedded_profiles_share_one_gate() -> TestResult {
         .current_dir(project.path())
         .output()?;
     assert!(lock.status.success(), "{}", combined(&lock));
-    let out = run_lockpick(project.path())
-        .args(["--skip", "machete,audit", "-v"])
-        .output()?;
+    let out = common::bounded_output(run_lockpick(project.path()).args([
+        "--skip",
+        "machete,audit",
+        "--coverage",
+        "-v",
+    ]))?;
     assert_eq!(out.status.code(), Some(0), "{}", combined(&out));
     let view = combined(&out);
     assert!(view.contains("executes_on_host"));
     assert!(view.contains("--target host-tuple"));
     assert!(view.contains("--profile release --locked --target thumbv8m.main-none-eabihf"));
     assert!(view.contains("targets"));
+    assert!(view.contains("ok   functions"), "{view}");
     Ok(())
 }
 
@@ -112,5 +116,59 @@ fn embedded_binaries_use_selected_features_and_enforce_release_profile() -> Test
     let out = execute()?;
     assert_eq!(out.status.code(), Some(1), "{}", combined(&out));
     assert!(combined(&out).contains("release check reached"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn invalid_host_probe_stops_before_fixes() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    let project = scratch_crate(
+        "invalid_host_probe",
+        "[package.metadata.lockpick]\nhost-target=true\n",
+        &[("src/main.rs", common::UNFORMATTED_MAIN_RS)],
+    );
+    let shim = tempfile::tempdir()?;
+    let compiler = shim.path().join("rustc");
+    std::fs::write(
+        &compiler,
+        "#!/bin/sh\nif [ \"$1\" = --print ] && [ \"$2\" = host-tuple ]; then printf '%s\\n' \"$LOCKPICK_HOST_RESPONSE\"; exit \"$LOCKPICK_HOST_STATUS\"; fi\nexec rustc \"$@\"\n",
+    )?;
+    std::fs::set_permissions(&compiler, std::fs::Permissions::from_mode(0o755))?;
+    for (response, status) in [("", "0"), ("invalid target", "0"), ("unused", "1")] {
+        let out = common::bounded_output(
+            run_lockpick(project.path())
+                .args(["--skip", "machete,audit", "--coverage", "--fix"])
+                .env("RUSTC", &compiler)
+                .env("LOCKPICK_HOST_RESPONSE", response)
+                .env("LOCKPICK_HOST_STATUS", status),
+        )?;
+        let view = combined(&out);
+        assert_eq!(out.status.code(), Some(2_i32), "{view}");
+        assert!(
+            view.contains("could not determine the coverage host target"),
+            "{view}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(project.path().join("src/main.rs"))?,
+            common::UNFORMATTED_MAIN_RS
+        );
+    }
+    std::fs::remove_file(&compiler)?;
+    let out = common::bounded_output(
+        run_lockpick(project.path())
+            .args(["--skip", "machete,audit", "--coverage", "--fix"])
+            .env("RUSTC", &compiler),
+    )?;
+    let view = combined(&out);
+    assert_eq!(out.status.code(), Some(2_i32), "{view}");
+    assert!(
+        view.contains("could not query the coverage host target"),
+        "{view}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("src/main.rs"))?,
+        common::UNFORMATTED_MAIN_RS
+    );
     Ok(())
 }
