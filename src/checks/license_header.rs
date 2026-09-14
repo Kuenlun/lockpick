@@ -94,10 +94,17 @@ impl Check for LicenseHeaderCheck {
             Err(e) => {
                 return CheckOutcome {
                     status: TaskStatus::Fail,
-                    output: format!("invalid glob in license-header-globs: {e}"),
+                    output: e,
                 };
             }
         };
+
+        if files.is_empty() {
+            return CheckOutcome {
+                status: TaskStatus::Fail,
+                output: "license-header-globs matched no source files".to_string(),
+            };
+        }
 
         // Canonicalize so the header file does not flag itself when a
         // glob picks it up under a different path spelling.
@@ -151,13 +158,18 @@ fn normalize(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-fn collect_files(patterns: &[String]) -> Result<Vec<PathBuf>, glob::PatternError> {
+fn collect_files(patterns: &[String]) -> Result<Vec<PathBuf>, String> {
     let mut files = Vec::new();
     for pattern in patterns {
-        for entry in glob::glob(pattern)? {
-            match entry {
-                Ok(path) if path.is_file() => files.push(path),
-                _ => {}
+        let entries = glob::glob(pattern)
+            .map_err(|e| format!("invalid license-header-globs pattern `{pattern}`: {e}"))?;
+        for entry in entries {
+            let path = entry.map_err(|e| format!("could not scan license sources: {e}"))?;
+            let metadata = fs::metadata(&path).map_err(|e| {
+                format!("could not inspect license source `{}`: {e}", path.display())
+            })?;
+            if metadata.is_file() {
+                files.push(path);
             }
         }
     }
