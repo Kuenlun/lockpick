@@ -261,3 +261,70 @@ fn skip_test_with_configured_coverage_notes_implied_skip() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn license_scan_is_workspace_relative_and_includes_all_members() -> TestResult {
+    let workspace = tempfile::tempdir()?;
+    // Brackets exercise glob escaping in the workspace directory prefix.
+    let root = workspace.path().join("workspace[1]");
+    std::fs::create_dir_all(&root)?;
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers=[\"alpha\",\"beta\"]\nresolver=\"3\"\n[workspace.metadata.lockpick]\nlicense-header=\"header.txt\"\n",
+    )?;
+    std::fs::write(root.join("header.txt"), "// license\n")?;
+    for name in ["alpha", "beta"] {
+        let member = root.join(name);
+        std::fs::create_dir_all(member.join("src"))?;
+        std::fs::write(
+            member.join("Cargo.toml"),
+            common::cargo_toml_strict(name, ""),
+        )?;
+        std::fs::write(
+            member.join("src/lib.rs"),
+            "// license\npub const VALUE: u8 = 1;\n",
+        )?;
+    }
+    let run = |cwd: &std::path::Path| {
+        run_lockpick(cwd)
+            .args([
+                "--skip",
+                "check,clippy,fmt,test,doc,doc-test,machete,audit",
+                "-v",
+            ])
+            .output()
+    };
+    for cwd in [&root, &root.join("alpha/src")] {
+        let out = run(cwd)?;
+        assert_eq!(out.status.code(), Some(0), "{}", common::combined(&out));
+        assert!(stdout(&out).contains("2 file(s) checked"));
+    }
+    std::fs::write(root.join("beta/src/lib.rs"), "pub const VALUE: u8 = 1;\n")?;
+    let out = run(&root.join("alpha"))?;
+    assert_eq!(out.status.code(), Some(1), "{}", common::combined(&out));
+    assert!(stdout(&out).contains("beta"));
+    Ok(())
+}
+
+#[test]
+fn license_scan_rejects_invalid_empty_and_unmatched_globs() -> TestResult {
+    for pattern in ["[", "missing/**/*.rs", ""] {
+        let extra = format!(
+            "[package.metadata.lockpick]\nlicense-header=\"header.txt\"\nlicense-header-globs=[{pattern:?}]\n"
+        );
+        let project = scratch_crate(
+            "bad_globs",
+            &extra,
+            &[
+                ("src/main.rs", FORMATTED_MAIN_RS),
+                ("header.txt", "// license\n"),
+            ],
+        );
+        let out = run_lockpick(project.path())
+            .args(["--skip", "check,clippy,fmt,test,doc,doc-test,machete,audit"])
+            .output()?;
+        assert_eq!(out.status.code(), Some(1), "{}", common::combined(&out));
+        assert!(stdout(&out).contains("license-header-globs"));
+    }
+    Ok(())
+}

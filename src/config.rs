@@ -79,6 +79,8 @@ struct CargoMetadata {
 #[derive(Deserialize, Default)]
 struct CargoPackage {
     #[serde(default)]
+    manifest_path: PathBuf,
+    #[serde(default)]
     metadata: Value,
     #[serde(default)]
     targets: Vec<CargoTarget>,
@@ -104,8 +106,9 @@ impl LockpickMetadata {
             .iter()
             .flat_map(|p| &p.targets)
             .any(|t| t.kind.iter().any(|k| LIB_KINDS.contains(&k.as_str())));
-        let config =
+        let mut config =
             extract_lockpick(&metadata)?.map_or_else(|| Ok(Config::default()), parse_config)?;
+        resolve_license_paths(&mut config, &metadata);
         Ok(Self {
             config,
             has_lib_target,
@@ -132,6 +135,48 @@ fn parse_config(section: Value) -> Result<Config, LockpickError> {
         }
     }
     Ok(config)
+}
+
+/// License paths have the same workspace anchor as Cargo subprocesses.
+fn resolve_license_paths(config: &mut Config, metadata: &CargoMetadata) {
+    let root = &metadata.workspace_root;
+    if let Some(header) = &mut config.license_header {
+        *header = root.join(&*header);
+        let patterns = config.license_header_globs.take().unwrap_or_else(|| {
+            metadata
+                .packages
+                .iter()
+                .filter_map(|package| package.manifest_path.parent())
+                .flat_map(|directory| {
+                    crate::checks::license_header::default_globs()
+                        .into_iter()
+                        .map(move |pattern| {
+                            format!(
+                                "{}/{}",
+                                glob::Pattern::escape(&directory.to_string_lossy()),
+                                pattern
+                            )
+                        })
+                })
+                .collect()
+        });
+        config.license_header_globs = Some(
+            patterns
+                .into_iter()
+                .map(|pattern| {
+                    if std::path::Path::new(&pattern).is_absolute() {
+                        pattern
+                    } else {
+                        format!(
+                            "{}/{}",
+                            glob::Pattern::escape(&root.to_string_lossy()),
+                            pattern
+                        )
+                    }
+                })
+                .collect(),
+        );
+    }
 }
 
 fn run_cargo_metadata() -> Result<CargoMetadata, LockpickError> {
