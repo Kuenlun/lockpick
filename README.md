@@ -70,6 +70,8 @@ lockpick --skip audit --skip doc  # skip checks (repeatable, or comma-separated)
 
 The audit gate fails on advisory warnings and on tool or network errors. An unavailable advisory database is not a successful security check. To intentionally omit the gate, use `--skip audit`.
 
+The documentation gate appends `-D warnings` to existing `RUSTDOCFLAGS`, or to `CARGO_ENCODED_RUSTDOCFLAGS` when present, preserving Cargo's encoded-flag precedence and argument boundaries.
+
 `--skip test` implies `--skip coverage`. `--skip license` and `--skip coverage` are no-ops when the matching gate is not configured. Run `lockpick -v` to see the exact cargo invocation each check fires.
 
 ## Configuration
