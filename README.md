@@ -150,6 +150,8 @@ at your option.
 
 ### Contribution
 
+Development and release builds use Rust 1.98.1, pinned in `rust-toolchain.toml`. CI measures production coverage with `cargo +nightly-2026-09-14 llvm-cov --branch`; nightly is needed only for branch instrumentation and excluding test modules. No minimum supported Rust version is declared.
+
 Unless you explicitly state otherwise, any contribution intentionally
 submitted for inclusion in the work by you, as defined in the
 Apache-2.0 license, shall be dual licensed as above, without any
