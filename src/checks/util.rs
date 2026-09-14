@@ -25,7 +25,7 @@ pub fn combine_streams(stdout: &[u8], stderr: &[u8]) -> String {
 }
 
 /// Lower a [`Runner::spawn`] result into a [`CheckOutcome`]. A launch
-/// failure becomes [`TaskStatus::Fail`] with empty output.
+/// failure becomes [`TaskStatus::Fail`] with the original OS diagnostic.
 pub fn outcome_from(result: std::io::Result<SpawnResult>) -> CheckOutcome {
     match result {
         Ok(sr) => CheckOutcome {
@@ -36,9 +36,9 @@ pub fn outcome_from(result: std::io::Result<SpawnResult>) -> CheckOutcome {
             },
             output: combine_streams(&sr.stdout, &sr.stderr),
         },
-        Err(_) => CheckOutcome {
+        Err(error) => CheckOutcome {
             status: TaskStatus::Fail,
-            output: String::new(),
+            output: format!("failed to launch Cargo command: {error}"),
         },
     }
 }
@@ -101,7 +101,7 @@ mod tests {
 
         let launch = outcome_from(Err(std::io::Error::other("no such binary")));
         assert!(launch.failed());
-        assert!(launch.output.is_empty());
+        assert!(launch.output.contains("no such binary"));
     }
 
     #[test]

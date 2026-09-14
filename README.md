@@ -124,6 +124,8 @@ Minimal GitHub Actions job:
 - run: lockpick -v
 ```
 
+On Unix, SIGINT and SIGTERM are forwarded to Cargo process groups, including their descendants. Later commands are not launched after interruption. Exit codes remain `128 + signal`. When the running Lockpick binary is inside Cargo's configured target directory, child builds use an isolated subdirectory, including custom `CARGO_TARGET_DIR` and `build.target-dir` configurations.
+
 ## How it schedules
 
 Cargo holds an exclusive lock on `target/.cargo-lock` while a build subcommand runs. lockpick schedules around it:
