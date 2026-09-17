@@ -115,7 +115,7 @@ pub(crate) fn cargo_command() -> Command {
 #[must_use]
 pub(crate) fn is_nightly() -> bool {
     crate::signals::output(
-        Command::new("rustc")
+        rustc_command()
             .arg("--version")
             .stdin(std::process::Stdio::null()),
     )
@@ -126,9 +126,8 @@ pub(crate) fn is_nightly() -> bool {
 
 /// Resolve Cargo's host alias before passing a target to cargo-llvm-cov.
 pub(crate) fn coverage_host() -> Result<String, crate::error::LockpickError> {
-    let compiler = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
     let output = crate::signals::output(
-        Command::new(compiler)
+        rustc_command()
             .args(["--print", "host-tuple"])
             .stdin(std::process::Stdio::null()),
     )
@@ -149,6 +148,11 @@ pub(crate) fn coverage_host() -> Result<String, crate::error::LockpickError> {
         )));
     }
     Ok(host)
+}
+
+/// Both compiler probes honor Cargo's explicit compiler override.
+fn rustc_command() -> Command {
+    Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
 }
 
 /// Optional cargo subcommand lockpick can drive. Each variant resolves
