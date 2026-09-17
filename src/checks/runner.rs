@@ -110,21 +110,14 @@ impl CargoCli {
         if let Some(directory) = &self.target_dir {
             let _command = command.env("CARGO_TARGET_DIR", directory);
         }
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            let _command = command.process_group(0);
-        }
         command
     }
 
     /// Run a fix step with live output and the same cancellation behavior.
     pub(crate) fn spawn_inherited(&self, sub: &str, args: &[&str]) -> std::io::Result<bool> {
-        ensure_running()?;
         let mut cmd = self.command(sub, args, &[]);
         let _command = cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
-        let mut child = cmd.spawn()?;
-        let guard = crate::signals::state().register_child(child.id());
+        let (mut child, guard) = crate::signals::spawn(&mut cmd)?;
         let status = child.wait();
         drop(guard);
         status.map(|s| s.success())
@@ -138,37 +131,11 @@ impl Runner for CargoCli {
         args: &[&str],
         envs: &[(&str, &str)],
     ) -> std::io::Result<SpawnResult> {
-        ensure_running()?;
-        execute(self.command(sub, args, envs))
-    }
-}
-
-/// Spawn the [`Command`], register its PID so the SIGINT/SIGTERM
-/// handler can forward signals to it, and capture both streams. The
-/// guard is dropped after `wait_with_output` reaps the child, so the
-/// PID-recycling race window is bounded to a handful of instructions
-/// (a fully race-free fix would need `pidfd_send_signal` or BSD's
-/// equivalent).
-fn execute(mut cmd: Command) -> std::io::Result<SpawnResult> {
-    let child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
-    let guard = crate::signals::state().register_child(child.id());
-    let output = child.wait_with_output();
-    drop(guard);
-    output.map(|out| SpawnResult {
-        success: out.status.success(),
-        stdout: out.stdout,
-        stderr: out.stderr,
-    })
-}
-
-fn ensure_running() -> std::io::Result<()> {
-    if crate::signals::state().captured().is_some() {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Interrupted,
-            "Lockpick was interrupted",
-        ))
-    } else {
-        Ok(())
+        crate::signals::output(&mut self.command(sub, args, envs)).map(|out| SpawnResult {
+            success: out.status.success(),
+            stdout: out.stdout,
+            stderr: out.stderr,
+        })
     }
 }
 

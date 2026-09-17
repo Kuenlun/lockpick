@@ -114,25 +114,29 @@ pub(crate) fn cargo_command() -> Command {
 /// exit reads as "not nightly": stable is the safe fallback.
 #[must_use]
 pub(crate) fn is_nightly() -> bool {
-    Command::new("rustc")
-        .arg("--version")
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .is_some_and(|o| String::from_utf8_lossy(&o.stdout).contains("nightly"))
+    crate::signals::output(
+        Command::new("rustc")
+            .arg("--version")
+            .stdin(std::process::Stdio::null()),
+    )
+    .ok()
+    .filter(|o| o.status.success())
+    .is_some_and(|o| String::from_utf8_lossy(&o.stdout).contains("nightly"))
 }
 
 /// Resolve Cargo's host alias before passing a target to cargo-llvm-cov.
 pub(crate) fn coverage_host() -> Result<String, crate::error::LockpickError> {
     let compiler = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
-    let output = Command::new(compiler)
-        .args(["--print", "host-tuple"])
-        .output()
-        .map_err(|error| {
-            crate::error::LockpickError::Configuration(format!(
-                "could not query the coverage host target: {error}"
-            ))
-        })?;
+    let output = crate::signals::output(
+        Command::new(compiler)
+            .args(["--print", "host-tuple"])
+            .stdin(std::process::Stdio::null()),
+    )
+    .map_err(|error| {
+        crate::error::LockpickError::Configuration(format!(
+            "could not query the coverage host target: {error}"
+        ))
+    })?;
     let host = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     if !output.status.success()
         || host.is_empty()
