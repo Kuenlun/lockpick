@@ -206,9 +206,10 @@ exec \"$LOCKPICK_TEST_REAL_RUSTC\" \"$@\"\n";
         &[("src/main.rs", FORMATTED_MAIN_RS)],
     );
 
+    // Select the same version-controlled compiler through both Cargo and PATH.
     let out = run_lockpick(project.path())
         .env("PATH", bin.to_str().ok_or("non-UTF8 shim dir")?)
-        .env("RUSTC", &real_rustc)
+        .env("RUSTC", &rustc_shim)
         .env("LOCKPICK_TEST_REAL_RUSTC", &real_rustc)
         .output()?;
     assert_eq!(
