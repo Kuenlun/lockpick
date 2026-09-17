@@ -250,3 +250,71 @@ fn resolve_on_path(name: &str) -> Result<std::path::PathBuf, Box<dyn std::error:
     }
     Err(format!("could not resolve `{name}` on PATH").into())
 }
+
+#[cfg(unix)]
+#[test]
+fn branch_gate_uses_rustc_override_and_falls_back_to_path() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+
+    let project = scratch_crate(
+        "compiler_selection",
+        "[package.metadata.lockpick.coverage]\nbranches=100\n",
+        &[("src/main.rs", FORMATTED_MAIN_RS)],
+    );
+    let shim = tempfile::tempdir()?;
+    let selected = shim.path().join("selected compiler");
+    for (path, channel) in [
+        (shim.path().join("rustc"), "LOCKPICK_PATH_CHANNEL"),
+        (selected.clone(), "LOCKPICK_SELECTED_CHANNEL"),
+    ] {
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = --version ]; then printf 'rustc %s\\n' \"${channel}\"; exit 0; fi\nexec \"$LOCKPICK_REAL_RUSTC\" \"$@\"\n"
+            ),
+        )?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))?;
+    }
+    let cargo = shim.path().join("cargo");
+    std::fs::write(
+        &cargo,
+        "#!/bin/sh\nif [ \"$1\" = metadata ]; then exec \"$LOCKPICK_REAL_CARGO\" \"$@\"; fi\nif [ \"$1:$2\" = llvm-cov:report ]; then\ncat <<'REPORT'\n{\"type\":\"llvm.coverage.json.export\",\"version\":\"2.0.1\",\"data\":[{\"files\":[{\"filename\":\"src/main.rs\"}],\"totals\":{\"functions\":{\"count\":1,\"covered\":1},\"lines\":{\"count\":1,\"covered\":1},\"regions\":{\"count\":1,\"covered\":1},\"branches\":{\"count\":1,\"covered\":1}}}]}\nREPORT\nfi\n",
+    )?;
+    std::fs::set_permissions(cargo, std::fs::Permissions::from_mode(0o755))?;
+    let path = std::env::var_os("PATH").ok_or("PATH is missing")?;
+    let search = std::env::join_paths(
+        std::iter::once(shim.path().to_path_buf()).chain(std::env::split_paths(&path)),
+    )?;
+    for (path_channel, override_channel, expected) in [
+        ("stable", Some("nightly"), 0_i32),
+        ("nightly", Some("stable"), 4_i32),
+        ("nightly", None, 0_i32),
+        ("stable", None, 4_i32),
+    ] {
+        let mut command = run_lockpick(project.path());
+        let _command = command
+            .args(["--skip", "check,clippy,fmt,doc,doc-test,machete,audit"])
+            .env("PATH", &search)
+            .env("LOCKPICK_REAL_CARGO", resolve_on_path("cargo")?)
+            .env("LOCKPICK_REAL_RUSTC", resolve_on_path("rustc")?)
+            .env("LOCKPICK_PATH_CHANNEL", path_channel);
+        if let Some(channel) = override_channel {
+            let _command = command
+                .env("RUSTC", &selected)
+                .env("LOCKPICK_SELECTED_CHANNEL", channel);
+        }
+        let out = common::bounded_output(&mut command)?;
+        assert_eq!(
+            out.status.code(),
+            Some(expected),
+            "{}",
+            common::combined(&out)
+        );
+        if expected == 0_i32 {
+            assert!(stdout(&out).contains("coverage   PASS"));
+        } else {
+            assert!(stderr(&out).contains("coverage.branches"));
+        }
+    }
+    Ok(())
+}
