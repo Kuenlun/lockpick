@@ -107,3 +107,77 @@ fn cancellation_stops_cargo_descendants() -> TestResult {
     assert!(!marker.exists(), "a Cargo descendant survived cancellation");
     Ok(())
 }
+
+#[cfg(unix)]
+#[test]
+fn cancellation_stops_startup_probes_and_their_descendants() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, Instant};
+
+    for probe in ["metadata", "version", "host"] {
+        let project = scratch_crate(
+            "startup_cancellation",
+            "[package.metadata.lockpick]\nhost-target=true\n[package.metadata.lockpick.coverage]\n",
+            &[("src/lib.rs", "pub const VALUE: u8 = 7;\n")],
+        );
+        let shim = tempfile::tempdir()?;
+        let ready = shim.path().join("ready");
+        let marker = shim.path().join("survived");
+        let path = std::env::var_os("PATH").ok_or("PATH is missing")?;
+        for name in ["cargo", "rustc"] {
+            let real = std::env::split_paths(&path)
+                .map(|directory| directory.join(name))
+                .find(|candidate| candidate.is_file())
+                .ok_or("Cargo tool is missing")?;
+            let script = shim.path().join(name);
+            std::fs::write(
+                &script,
+                format!(
+                    "#!/bin/sh\ncase \"$LOCKPICK_PROBE:$1:$2\" in metadata:metadata:*|version:--version:*|host:--print:host-tuple)\nsh -c 'sleep 2; echo survived > \"$LOCKPICK_MARKER\"' &\necho \"$PPID\" > \"$LOCKPICK_READY\"\nwait\nexit 1\n;;\nesac\nexec {real:?} \"$@\"\n"
+                ),
+            )?;
+            std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o755))?;
+        }
+        let search = std::env::join_paths(
+            std::iter::once(shim.path().to_path_buf()).chain(std::env::split_paths(&path)),
+        )?;
+        let mut command = run_lockpick(project.path());
+        let _command = command
+            .args(["--skip", "check,clippy,fmt,doc,doc-test,machete,audit"])
+            .env("PATH", search)
+            .env("LOCKPICK_PROBE", probe)
+            .env("LOCKPICK_READY", &ready)
+            .env("LOCKPICK_MARKER", &marker);
+        let out = std::thread::scope(|scope| -> TestResult {
+            let signal = scope.spawn(|| -> std::io::Result<()> {
+                let started = Instant::now();
+                while !ready.exists() {
+                    if started.elapsed() >= Duration::from_secs(10) {
+                        return Err(std::io::Error::other("startup probe did not become ready"));
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                let pid = std::fs::read_to_string(&ready)?;
+                let status = std::process::Command::new("kill")
+                    .args(["-TERM", pid.trim()])
+                    .status()?;
+                assert!(status.success());
+                Ok(())
+            });
+            let out = common::bounded_output(&mut command)?;
+            signal.join().expect("signal worker panicked")?;
+            assert_eq!(
+                out.status.code(),
+                Some(143_i32),
+                "{probe}: {}",
+                combined(&out)
+            );
+            assert!(!common::stdout(&out).contains("PASS"));
+            Ok(())
+        });
+        out?;
+        std::thread::sleep(Duration::from_millis(2200));
+        assert!(!marker.exists(), "{probe} descendant survived cancellation");
+    }
+    Ok(())
+}
