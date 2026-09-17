@@ -63,6 +63,14 @@ pub(crate) struct TestCheck {
 }
 
 impl TestCheck {
+    const fn cleanup_args(&self) -> &'static [&'static str] {
+        if self.options.locked {
+            &["clean", "--workspace", "--locked"]
+        } else {
+            &["clean", "--workspace"]
+        }
+    }
+
     const fn dispatch(&self) -> (&'static str, &'static [&'static str]) {
         match (self.instrumented, self.nextest, self.branch_coverage) {
             (true, true, true) => ("llvm-cov", LLVM_COV_NEXTEST_BRANCH_ARGS),
@@ -84,7 +92,10 @@ impl Check for TestCheck {
         let (sub, args) = self.dispatch();
         let command = fmt_cargo_cmd(sub, &self.options.args(args));
         if self.instrumented {
-            format!("cargo llvm-cov clean --workspace && {command}")
+            format!(
+                "{} && {command}",
+                fmt_cargo_cmd("llvm-cov", self.cleanup_args())
+            )
         } else {
             command
         }
@@ -93,7 +104,7 @@ impl Check for TestCheck {
     fn run(&self, runner: &dyn Runner) -> CheckOutcome {
         let (sub, args) = self.dispatch();
         if self.instrumented {
-            let cleanup = cargo_outcome(runner, "llvm-cov", &["clean", "--workspace"]);
+            let cleanup = cargo_outcome(runner, "llvm-cov", self.cleanup_args());
             if !cleanup.passed() {
                 return cleanup;
             }
