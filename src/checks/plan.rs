@@ -134,6 +134,7 @@ pub(crate) fn build_plan(
         items.push(Box::new(license_header::LicenseHeaderCheck {
             header_path,
             globs,
+            require_each_glob: config.license_header_globs_explicit,
         }));
     }
 

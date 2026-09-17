@@ -15,6 +15,7 @@ use crate::reporter::{CheckOutcome, TaskStatus};
 pub(crate) struct LicenseHeaderCheck {
     pub(crate) header_path: PathBuf,
     pub(crate) globs: Vec<String>,
+    pub(crate) require_each_glob: bool,
 }
 
 #[must_use]
@@ -89,7 +90,7 @@ impl Check for LicenseHeaderCheck {
             };
         }
 
-        let files = match collect_files(&self.globs) {
+        let files = match collect_files(&self.globs, self.require_each_glob) {
             Ok(f) => f,
             Err(e) => {
                 return CheckOutcome {
@@ -158,9 +159,10 @@ fn normalize(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-fn collect_files(patterns: &[String]) -> Result<Vec<PathBuf>, String> {
+fn collect_files(patterns: &[String], require_each: bool) -> Result<Vec<PathBuf>, String> {
     let mut files = Vec::new();
     for pattern in patterns {
+        let before = files.len();
         let entries = glob::glob(pattern)
             .map_err(|e| format!("invalid license-header-globs pattern `{pattern}`: {e}"))?;
         for entry in entries {
@@ -171,6 +173,11 @@ fn collect_files(patterns: &[String]) -> Result<Vec<PathBuf>, String> {
             if metadata.is_file() {
                 files.push(path);
             }
+        }
+        if require_each && files.len() == before {
+            return Err(format!(
+                "license-header-globs pattern `{pattern}` matched no source files"
+            ));
         }
     }
     // Dedup so overlapping globs do not scan twice and the offender

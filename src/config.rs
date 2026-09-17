@@ -52,6 +52,9 @@ pub(crate) struct Config {
     pub(crate) target_checks: Vec<TargetCheck>,
     pub(crate) license_header: Option<PathBuf>,
     pub(crate) license_header_globs: Option<Vec<String>>,
+    /// Explicit patterns must each match files, unlike optional default roots.
+    #[serde(skip)]
+    pub(crate) license_header_globs_explicit: bool,
     /// Opt-in coverage gate. `Some` whenever the
     /// `[*.metadata.lockpick.coverage]` table exists, even empty, with
     /// per-metric thresholds defaulting to 100%. `None` keeps coverage
@@ -229,6 +232,7 @@ fn resolve_license_paths(config: &mut Config, metadata: &CargoMetadata) {
     let root = &metadata.workspace_root;
     if let Some(header) = &mut config.license_header {
         *header = root.join(&*header);
+        config.license_header_globs_explicit = config.license_header_globs.is_some();
         let patterns = config.license_header_globs.take().unwrap_or_else(|| {
             metadata
                 .packages
