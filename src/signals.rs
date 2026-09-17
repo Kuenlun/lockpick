@@ -11,6 +11,7 @@
 //! terminal does not broadcast to children.
 
 use std::collections::HashSet;
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
@@ -80,6 +81,32 @@ pub(crate) fn state() -> &'static State {
     STATE.get_or_init(State::new)
 }
 
+/// Register every child, including startup probes, before waiting for its result.
+pub(crate) fn spawn(command: &mut Command) -> std::io::Result<(Child, ChildGuard<'static>)> {
+    if state().captured().is_some() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "Lockpick was interrupted",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let _command = command.process_group(0);
+    }
+    let child = command.spawn()?;
+    let guard = state().register_child(child.id());
+    Ok((child, guard))
+}
+
+/// Capture both streams while keeping the child registered until it has been reaped.
+pub(crate) fn output(command: &mut Command) -> std::io::Result<Output> {
+    let (child, guard) = spawn(command.stdout(Stdio::piped()).stderr(Stdio::piped()))?;
+    let result = child.wait_with_output();
+    drop(guard);
+    result
+}
+
 /// Process exit code for a signal-aware shutdown: `128 + signum` when
 /// interrupted, else `default`. Out-of-range signal numbers fall back
 /// too, since shells encode killed-by-signal exits in `[129, 255]`.
@@ -133,8 +160,6 @@ pub(crate) fn install() {
 /// signal *name* there.
 #[cfg(unix)]
 fn forward_via_kill(sig: i32, pid: u32) {
-    use std::process::{Command, Stdio};
-
     let _result = Command::new("kill")
         .args([&format!("-{sig}"), "--", &format!("-{pid}")])
         .stdout(Stdio::null())

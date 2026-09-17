@@ -267,10 +267,12 @@ fn resolve_license_paths(config: &mut Config, metadata: &CargoMetadata) {
 }
 
 fn run_cargo_metadata() -> Result<CargoMetadata, LockpickError> {
-    let output = cargo_command()
-        .args(["metadata", "--format-version", "1", "--no-deps"])
-        .output()
-        .map_err(|e| LockpickError::Configuration(format!("could not run cargo metadata: {e}")))?;
+    let output = crate::signals::output(
+        cargo_command()
+            .args(["metadata", "--format-version", "1", "--no-deps"])
+            .stdin(std::process::Stdio::null()),
+    )
+    .map_err(|e| LockpickError::Configuration(format!("could not run cargo metadata: {e}")))?;
     if !output.status.success() {
         return Err(LockpickError::Configuration(format!(
             "cargo metadata failed: {}",
