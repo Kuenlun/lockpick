@@ -294,6 +294,45 @@ fn license_scan_rejects_invalid_empty_and_unmatched_globs() -> TestResult {
 }
 
 #[test]
+fn license_scan_requires_each_explicit_glob_to_match_files() -> TestResult {
+    for (patterns, unmatched) in [
+        ("[\"src/**/*.rs\", \"test/**/*.rs\"]", Some("test/**/*.rs")),
+        ("[\"src/**/*.rs\", \"tests\"]", Some("tests")),
+        ("[\"src/**/*.rs\", \"src/main.rs\"]", None),
+    ] {
+        let extra = format!(
+            "[package.metadata.lockpick]\nlicense-header=\"header.txt\"\nlicense-header-globs={patterns}\n"
+        );
+        let project = scratch_crate(
+            "mixed_globs",
+            &extra,
+            &[
+                ("src/main.rs", "// license\nfn main() {}\n"),
+                ("header.txt", "// license\n"),
+            ],
+        );
+        std::fs::create_dir(project.path().join("tests"))?;
+        let out = run_lockpick(project.path())
+            .args([
+                "--skip",
+                "check,clippy,fmt,test,doc,doc-test,machete,audit",
+                "-v",
+            ])
+            .output()?;
+        let report = stdout(&out);
+        if let Some(pattern) = unmatched {
+            assert_eq!(out.status.code(), Some(1_i32), "{}", common::combined(&out));
+            assert!(report.contains("matched no source files"), "{report}");
+            assert!(report.contains(pattern), "{report}");
+        } else {
+            assert_eq!(out.status.code(), Some(0_i32), "{}", common::combined(&out));
+            assert!(report.contains("1 file(s) checked"), "{report}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn failed_fix_stops_before_the_check_pipeline() -> TestResult {
     let project = scratch_crate("failed_fix", "", &[("src/main.rs", common::BROKEN_MAIN_RS)]);
     let out = run_lockpick(project.path())
