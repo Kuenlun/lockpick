@@ -41,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 "#,
     )?;
-    let build = common::bounded_output(
+    let build = common::process::bounded_output(
         Command::new("rustc")
             .arg(&source)
             .arg("-o")
@@ -58,7 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .arg(&executable);
         command
     };
-    let error = common::bounded_output_with_timeout(
+    let error = common::process::bounded_output_with_timeout(
         command.arg("2").current_dir(directory.path()),
         Duration::from_secs(1),
     )

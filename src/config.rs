@@ -418,4 +418,30 @@ mod tests {
         }));
         assert!(extract_lockpick(&metadata).is_err());
     }
+
+    #[test]
+    fn target_values_reject_control_characters_and_normalize_selections() {
+        for field in ["target", "profile", "packages", "features"] {
+            for invalid in ["", "-option", "line\nbreak", "tab\tvalue", "nul\0value"] {
+                let value = if matches!(field, "packages" | "features") {
+                    json!([invalid])
+                } else {
+                    json!(invalid)
+                };
+                let section = json!({"target-checks": [{"all-features": false, field: value}]});
+                let error = parse_config(section).unwrap_err().to_string();
+                assert!(
+                    error.contains("nonempty values without control characters or leading '-'"),
+                    "{error}"
+                );
+            }
+        }
+        let config = parse_config(json!({"target-checks": [{
+            "all-features": false, "packages": ["z", "a", "z"], "features": ["b", "a", "b"]
+        }]}))
+        .unwrap();
+        let check = config.target_checks.first().unwrap();
+        assert_eq!(check.packages, ["a", "z"]);
+        assert_eq!(check.features, ["a", "b"]);
+    }
 }

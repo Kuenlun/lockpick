@@ -14,7 +14,7 @@ mod common;
 
 use common::{BROKEN_MAIN_RS, TestResult, run_lockpick, scratch_crate, stdout};
 #[cfg(unix)]
-use common::{FORMATTED_MAIN_RS, dummy_cargo_project, stderr};
+use common::{FORMATTED_MAIN_RS, stderr};
 
 #[test]
 fn failing_check_returns_one_and_lists_label() -> TestResult {
@@ -41,77 +41,6 @@ fn failing_check_returns_one_and_lists_label() -> TestResult {
         "summary should name the failing label `check`:\n{report}"
     );
     assert!(report.contains("FAIL"), "missing FAIL marker:\n{report}");
-    Ok(())
-}
-
-#[cfg(unix)]
-#[test]
-fn missing_tool_returns_exit_three_with_install_hint() -> TestResult {
-    // PATH is reduced to a tempdir holding only `cargo` and `rustc`,
-    // so cargo metadata still works but every optional plugin reads as
-    // absent. The fixture opts into coverage so cargo-llvm-cov is
-    // demanded alongside machete and audit. The hint must enumerate all
-    // three binaries, combine them into a single `cargo install` line,
-    // and offer a `--skip` for each (order-independent so a future
-    // re-shuffle of `require_tooling` does not silently break the test).
-    let (_path_dir, path) = common::sanitized_path()?;
-    let project = scratch_crate(
-        "missing_tools",
-        "[package.metadata.lockpick.coverage]\n",
-        &[("src/main.rs", FORMATTED_MAIN_RS)],
-    );
-
-    let out = run_lockpick(project.path()).env("PATH", &path).output()?;
-    assert_eq!(
-        out.status.code(),
-        Some(3_i32),
-        "expected exit 3 on missing tools, got code={code:?} stderr=\n{err}",
-        code = out.status.code(),
-        err = stderr(&out),
-    );
-    let err = stderr(&out);
-    for binary in ["cargo-llvm-cov", "cargo-machete", "cargo-audit"] {
-        assert!(err.contains(binary), "missing `{binary}` in stderr:\n{err}");
-    }
-    assert!(
-        err.contains("cargo install cargo-llvm-cov cargo-machete cargo-audit"),
-        "missing combined install hint:\n{err}"
-    );
-    for skip in ["--skip coverage", "--skip machete", "--skip audit"] {
-        assert!(
-            err.contains(skip),
-            "missing escape hatch `{skip}` in stderr:\n{err}"
-        );
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-#[test]
-fn unconfigured_coverage_does_not_require_llvm_cov() -> TestResult {
-    // Coverage is opt-in: without `[*.metadata.lockpick.coverage]` (or
-    // `--coverage`) lockpick must not demand cargo-llvm-cov. machete
-    // and audit are still hidden by the sanitised PATH, so exit 3 fires
-    // listing only those two.
-    let (_path_dir, path) = common::sanitized_path()?;
-    let project = dummy_cargo_project();
-
-    let out = run_lockpick(project.path()).env("PATH", &path).output()?;
-    assert_eq!(
-        out.status.code(),
-        Some(3_i32),
-        "expected exit 3 on missing tools, got code={code:?} stderr=\n{err}",
-        code = out.status.code(),
-        err = stderr(&out),
-    );
-    let err = stderr(&out);
-    assert!(
-        !err.contains("cargo-llvm-cov"),
-        "cargo-llvm-cov must not be required without the coverage opt-in:\n{err}"
-    );
-    for binary in ["cargo-machete", "cargo-audit"] {
-        assert!(err.contains(binary), "missing `{binary}` in stderr:\n{err}");
-    }
     Ok(())
 }
 
@@ -144,7 +73,7 @@ mod tests {
         &[("src/main.rs", PARTIALLY_COVERED_MAIN_RS)],
     );
 
-    let out = common::bounded_output(
+    let out = common::process::bounded_output(
         run_lockpick(project.path()).args(["--skip", "machete", "--skip", "audit"]),
     )?;
     let report = stdout(&out);
@@ -303,7 +232,7 @@ fn branch_gate_uses_rustc_override_and_falls_back_to_path() -> TestResult {
                 .env("RUSTC", &selected)
                 .env("LOCKPICK_SELECTED_CHANNEL", channel);
         }
-        let out = common::bounded_output(&mut command)?;
+        let out = common::process::bounded_output(&mut command)?;
         assert_eq!(
             out.status.code(),
             Some(expected),

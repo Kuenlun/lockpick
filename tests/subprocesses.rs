@@ -164,7 +164,7 @@ fn cancellation_stops_startup_probes_and_their_descendants() -> TestResult {
                 assert!(status.success());
                 Ok(())
             });
-            let out = common::bounded_output(&mut command)?;
+            let out = common::process::bounded_output(&mut command)?;
             signal.join().expect("signal worker panicked")?;
             assert_eq!(
                 out.status.code(),

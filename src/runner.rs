@@ -616,4 +616,60 @@ mod tests {
             }
         }
     }
+
+    struct PanickingRunner(&'static str);
+
+    impl Runner for PanickingRunner {
+        #[expect(
+            clippy::panic,
+            reason = "Exercise propagation of the original worker panic payload."
+        )]
+        fn spawn(
+            &self,
+            sub: &str,
+            _args: &[&str],
+            _envs: &[(&str, &str)],
+        ) -> std::io::Result<checks::runner::SpawnResult> {
+            if sub == self.0 {
+                std::panic::panic_any(self.0);
+            }
+            Ok(checks::runner::SpawnResult {
+                success: true,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn worker_panics_reach_the_caller_with_the_original_payload() {
+        for sub in ["fmt", "check", "llvm-cov"] {
+            let cli = Cli::parse_from(["lockpick", "--skip", "clippy,doc,doc-test,machete,audit"]);
+            let plan = checks::build_plan(
+                &cli,
+                false,
+                &Toolchain::default(),
+                &Config::default(),
+                false,
+                false,
+                ColorMode::Never,
+            );
+            let coverage = CoverageCheck {
+                options: checks::util::BuildOptions::default(),
+                thresholds: CoverageConfig::default(),
+                branch_coverage: false,
+            };
+            let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_pipeline(
+                    &plan,
+                    Some(&coverage),
+                    &Reporter::auto(false),
+                    &PanickingRunner(sub),
+                )
+            }))
+            .err()
+            .expect("worker panic was swallowed");
+            assert_eq!(panic.downcast_ref::<&str>(), Some(&sub));
+        }
+    }
 }

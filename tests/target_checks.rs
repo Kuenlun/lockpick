@@ -40,7 +40,7 @@ fn host_tests_and_embedded_profiles_share_one_gate() -> TestResult {
         .current_dir(project.path())
         .output()?;
     assert!(lock.status.success(), "{}", combined(&lock));
-    let out = common::bounded_output(run_lockpick(project.path()).args([
+    let out = common::process::bounded_output(run_lockpick(project.path()).args([
         "--skip",
         "machete,audit",
         "--coverage",
@@ -136,7 +136,7 @@ fn invalid_host_probe_stops_before_fixes() -> TestResult {
     )?;
     std::fs::set_permissions(&compiler, std::fs::Permissions::from_mode(0o755))?;
     for (response, status) in [("", "0"), ("invalid target", "0"), ("unused", "1")] {
-        let out = common::bounded_output(
+        let out = common::process::bounded_output(
             run_lockpick(project.path())
                 .args(["--skip", "machete,audit", "--coverage", "--fix"])
                 .env("RUSTC", &compiler)
@@ -155,7 +155,7 @@ fn invalid_host_probe_stops_before_fixes() -> TestResult {
         );
     }
     std::fs::remove_file(&compiler)?;
-    let out = common::bounded_output(
+    let out = common::process::bounded_output(
         run_lockpick(project.path())
             .args(["--skip", "machete,audit", "--coverage", "--fix"])
             .env("RUSTC", &compiler),

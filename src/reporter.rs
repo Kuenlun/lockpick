@@ -236,7 +236,7 @@ mod tests {
     fn outcome_predicates_track_status() {
         let skip = CheckOutcome::skipped();
         assert_eq!(skip.status, TaskStatus::Skip);
-        assert!(skip.output.is_empty());
+        assert_eq!(skip.output, "");
         assert!(!skip.passed() && !skip.failed());
 
         let pass = CheckOutcome {
@@ -250,5 +250,65 @@ mod tests {
             output: String::new(),
         };
         assert!(fail.failed() && !fail.passed());
+    }
+
+    #[test]
+    fn stream_routing_keeps_statuses_once_and_preserves_diagnostics() {
+        const CHILD: &str = "LOCKPICK_REPORTER_STREAMS";
+        if let Ok(mode) = std::env::var(CHILD) {
+            let stderr_tty = mode.starts_with('1');
+            let stdout_tty = mode.ends_with('1');
+            let reporter = Reporter::new(true, stderr_tty, stdout_tty);
+            for (label, status, tag) in [
+                ("compile", TaskStatus::Pass, "PASS"),
+                ("test", TaskStatus::Fail, "FAIL"),
+                ("coverage", TaskStatus::Skip, "SKIP"),
+            ] {
+                let spinner = reporter.add_spinner(label);
+                reporter.finish_spinner(&spinner, label, status);
+                assert!(spinner.is_finished());
+                if stderr_tty {
+                    assert!(spinner.message().contains(tag));
+                }
+            }
+            reporter.note("diagnostic-marker");
+            reporter.print_section("test", "first line\nsecond line", false);
+            reporter.print_section("compile", "", true);
+            reporter.summary(3, &["test"]);
+            return;
+        }
+        for mode in ["00", "01", "10", "11"] {
+            let out = crate::test_process::bounded_output(
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "reporter::tests::stream_routing_keeps_statuses_once_and_preserves_diagnostics", "--nocapture"])
+                    .env(CHILD, mode),
+            ).unwrap();
+            let report = String::from_utf8_lossy(&out.stdout);
+            let diagnostic = String::from_utf8_lossy(&out.stderr);
+            assert!(out.status.success(), "{report}\n{diagnostic}");
+            for tag in ["PASS", "FAIL", "SKIP"] {
+                assert_eq!(
+                    report.matches(tag).count(),
+                    usize::from(mode != "11"),
+                    "{report}"
+                );
+            }
+            assert!(report.contains("first line") && report.contains("second line"));
+            assert!(report.contains("(no output)"));
+            assert!(report.contains("Failed: 1/3 (test)"));
+            assert!(!report.contains("diagnostic-marker"));
+            if mode.starts_with('0') {
+                assert!(diagnostic.contains("diagnostic-marker"));
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_progress_template_still_finishes() {
+        let spinner = ProgressBar::hidden();
+        spinner.set_style(parse_template("{msg:invalid}"));
+        spinner.finish_with_message("done");
+        assert!(spinner.is_finished());
+        assert_eq!(spinner.message(), "done");
     }
 }

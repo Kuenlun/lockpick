@@ -224,7 +224,6 @@ mod tests {
             true,
         );
         assert!(plan.is_empty());
-        assert_eq!(plan.len(), 0);
     }
 
     #[test]
@@ -242,5 +241,26 @@ mod tests {
             );
         }
         assert!(CoverageCheck::LABEL.len() <= LABEL_WIDTH);
+    }
+
+    #[test]
+    fn duplicate_target_gate_is_omitted_but_replaces_skipped_clippy() {
+        let config = Config {
+            target_checks: vec![crate::config::TargetCheck::default()],
+            ..Config::default()
+        };
+        assert!(!labels(&plan_for(&["lockpick"], &config, false)).contains(&"targets"));
+        assert!(
+            labels(&plan_for(&["lockpick", "--skip", "clippy"], &config, false))
+                .contains(&"targets")
+        );
+        assert!(
+            !labels(&plan_for(
+                &["lockpick", "--skip", "clippy,targets"],
+                &config,
+                false
+            ))
+            .contains(&"targets")
+        );
     }
 }

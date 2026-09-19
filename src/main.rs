@@ -77,3 +77,7 @@ fn dispatch(result: Result<(), LockpickError>) -> u8 {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/common/process.rs"]
+mod test_process;

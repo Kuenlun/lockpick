@@ -268,6 +268,7 @@ mod tests {
 
     #[test]
     fn deserialize_rejects_unknown_identifier_with_hint() {
+        assert!(serde_json::from_value::<SkipOption>(serde_json::json!(42_i32)).is_err());
         let err = serde_json::from_value::<SkipOption>(serde_json::json!("wat")).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("unknown skip value `wat`"), "got: {msg}");

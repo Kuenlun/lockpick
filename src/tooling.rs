@@ -277,4 +277,44 @@ mod tests {
             assert!(!toolchain.has(*tool));
         }
     }
+
+    #[test]
+    fn plugin_lookup_rejects_directories_and_supports_windows_extensions() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join("cargo-folder")).unwrap();
+        assert!(!contains_executable(directory.path(), "cargo-folder"));
+        #[cfg(windows)]
+        for extension in ["exe", "cmd", "bat"] {
+            let path = directory.path().join(format!("cargo-plugin.{extension}"));
+            std::fs::write(&path, "").unwrap();
+            assert!(contains_executable(directory.path(), "cargo-plugin"));
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn automatic_color_obeys_no_color_without_affecting_explicit_choices() {
+        const CHILD: &str = "LOCKPICK_COLOR_TEST";
+        if let Ok(expected) = std::env::var(CHILD) {
+            let mode = <crate::cli::Cli as clap::Parser>::parse_from(["lockpick"]).color_mode(true);
+            assert_eq!(mode.as_str(), expected);
+            return;
+        }
+        for value in [None, Some(""), Some("1")] {
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            let _command = command
+                .args(["--exact", "tooling::tests::automatic_color_obeys_no_color_without_affecting_explicit_choices"])
+                .env(CHILD, if value == Some("1") { "never" } else { "always" })
+                .env_remove("NO_COLOR");
+            if let Some(value) = value {
+                let _command = command.env("NO_COLOR", value);
+            }
+            let output = crate::test_process::bounded_output(&mut command).unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
+    }
 }

@@ -493,7 +493,7 @@ mod tests {
         ) -> std::io::Result<super::super::runner::SpawnResult> {
             assert_eq!(sub, "llvm-cov");
             assert_eq!(args, COV_REPORT_PLAIN_ARGS);
-            assert!(envs.is_empty());
+            assert_eq!(envs, []);
             self.result
                 .as_ref()
                 .cloned()

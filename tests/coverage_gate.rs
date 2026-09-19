@@ -8,8 +8,9 @@
 //! Real coverage tools run only against an isolated fixture workspace.
 
 mod common;
+use common::process::bounded_output;
 
-use common::{TestResult, bounded_output, combined, run_lockpick, scratch_crate};
+use common::{TestResult, combined, run_lockpick, scratch_crate};
 
 #[test]
 fn fresh_coverage_cannot_reuse_a_previous_passing_run() -> TestResult {
