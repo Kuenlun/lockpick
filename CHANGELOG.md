@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/Kuenlun/lockpick/compare/v0.7.0...v0.7.1) - 2026-09-19
+
+### Added
+
+- *(targets)* check embedded profiles alongside host tests ([#70](https://github.com/Kuenlun/lockpick/pull/70))
+
+### Fixed
+
+- *(license)* reject each unmatched explicit source pattern ([#86](https://github.com/Kuenlun/lockpick/pull/86))
+- *(tooling)* honor RUSTC when detecting nightly ([#84](https://github.com/Kuenlun/lockpick/pull/84))
+- *(runner)* cancel startup probes with their descendants ([#81](https://github.com/Kuenlun/lockpick/pull/81))
+- *(coverage)* preserve locked policy during cleanup ([#79](https://github.com/Kuenlun/lockpick/pull/79))
+- *(test)* terminate fixture process trees on timeout ([#77](https://github.com/Kuenlun/lockpick/pull/77))
+- *(doc)* enforce warnings with encoded rustdoc flags ([#72](https://github.com/Kuenlun/lockpick/pull/72))
+- *(coverage)* clean measurements and reject malformed reports ([#69](https://github.com/Kuenlun/lockpick/pull/69))
+- *(runner)* isolate build outputs and cancel process groups ([#71](https://github.com/Kuenlun/lockpick/pull/71))
+- *(license)* scan all workspace packages from any directory ([#67](https://github.com/Kuenlun/lockpick/pull/67))
+- *(config)* reject invalid or ambiguous quality policy ([#65](https://github.com/Kuenlun/lockpick/pull/65))
+- *(audit)* fail on incomplete scans and advisory warnings ([#68](https://github.com/Kuenlun/lockpick/pull/68))
+
+### Other
+
+- require complete coverage on every supported host ([#91](https://github.com/Kuenlun/lockpick/pull/91))
+- cover complete CLI, filesystem, terminal and worker contracts ([#90](https://github.com/Kuenlun/lockpick/pull/90))
+- simplify independent checks and terminal setup ([#89](https://github.com/Kuenlun/lockpick/pull/89))
+- *(license)* cover partial matches and overlapping patterns ([#87](https://github.com/Kuenlun/lockpick/pull/87))
+- *(tooling)* cover compiler overrides and PATH fallback ([#85](https://github.com/Kuenlun/lockpick/pull/85))
+- *(tooling)* select one compiler in the stable probe fixture ([#83](https://github.com/Kuenlun/lockpick/pull/83))
+- *(runner)* interrupt metadata and compiler probes ([#82](https://github.com/Kuenlun/lockpick/pull/82))
+- *(coverage)* preserve missing and stale lockfiles ([#80](https://github.com/Kuenlun/lockpick/pull/80))
+- verify timeout cleanup across descendant groups ([#78](https://github.com/Kuenlun/lockpick/pull/78))
+- harden internal policy and verify scheduling contracts ([#73](https://github.com/Kuenlun/lockpick/pull/73))
+- *(targets)* cover host coverage and compiler probe failures ([#75](https://github.com/Kuenlun/lockpick/pull/75))
+- pin stable Rust and the branch coverage toolchain ([#66](https://github.com/Kuenlun/lockpick/pull/66))
+
 ## [0.7.0](https://github.com/Kuenlun/lockpick/compare/v0.6.0...v0.7.0) - 2026-06-10
 
 ### Added
