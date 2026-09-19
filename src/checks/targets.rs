@@ -4,7 +4,7 @@
 
 //! Additional target/profile Clippy checks. No linking or test execution.
 
-use super::{Check, Runner, cargo_outcome, clippy::CLIPPY_LINT_ARGS, util::BuildOptions};
+use super::{Check, Runner, cargo_outcome, util::BuildOptions};
 use crate::config::{Config, TargetCheck};
 use crate::reporter::{CheckOutcome, TaskStatus};
 
@@ -64,8 +64,6 @@ fn arguments(check: &TargetCheck, options: BuildOptions) -> Vec<String> {
     } else if options.host_target {
         args.extend(["--target".into(), "host-tuple".into()]);
     }
-    args.push("--".into());
-    args.extend(CLIPPY_LINT_ARGS.iter().map(|arg| (*arg).to_owned()));
     args
 }
 
@@ -157,12 +155,8 @@ mod tests {
             host_target: true,
         };
         let args = arguments(&check, options);
-        let separator = args.iter().position(|arg| arg == "--").unwrap();
         assert_eq!(
-            args.iter()
-                .take(separator)
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
+            args.iter().map(String::as_str).collect::<Vec<_>>(),
             [
                 "--package",
                 "logic",

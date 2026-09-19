@@ -74,16 +74,6 @@ pub(crate) fn cargo_outcome(runner: &dyn Runner, sub: &str, args: &[&str]) -> Ch
     outcome_from(runner.spawn(sub, args, &[]))
 }
 
-/// Like [`cargo_outcome`] but with extra env vars.
-pub(crate) fn cargo_outcome_with_env(
-    runner: &dyn Runner,
-    sub: &str,
-    args: &[&str],
-    envs: &[(&str, &str)],
-) -> CheckOutcome {
-    outcome_from(runner.spawn(sub, args, envs))
-}
-
 /// Format a cargo command line for display.
 #[must_use]
 pub(crate) fn fmt_cargo_cmd(subcommand: &str, args: &[&str]) -> String {

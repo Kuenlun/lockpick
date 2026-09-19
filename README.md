@@ -56,10 +56,10 @@ lockpick --skip audit --skip doc  # skip checks (repeatable, or comma-separated)
 | Check      | What it does                                                            | `--skip`   |
 |------------|-------------------------------------------------------------------------|------------|
 | `check`    | `cargo check` on every target and feature                               | `check`    |
-| `clippy`   | `cargo clippy` with `pedantic` + `nursery` + `cargo`* and `-D warnings` | `clippy`   |
+| `clippy`   | `cargo clippy` using the project's lint configuration                   | `clippy`   |
 | `fmt`      | `cargo fmt --all --check`                                               | `fmt`      |
 | `test`     | `cargo test`, auto-routed through `nextest` or `llvm-cov` when present  | `test`     |
-| `doc`      | `cargo doc --no-deps` with `RUSTDOCFLAGS=-D warnings`                   | `doc`      |
+| `doc`      | `cargo doc --no-deps` using the project's lint configuration             | `doc`      |
 | `doc-test` | doctests, skipped on bin-only workspaces                                | `doc-test` |
 | `machete`  | unused-dependency scan (`cargo machete`)                                | `machete`  |
 | `audit`    | RustSec advisory scan (`cargo audit --deny warnings`, requires network)                 | `audit`    |
@@ -67,12 +67,12 @@ lockpick --skip audit --skip doc  # skip checks (repeatable, or comma-separated)
 | `targets`  | additional Clippy checks for configured targets and profiles           | `targets` |
 | `coverage` | per-metric `llvm-cov` gate, opt-in via config or `--coverage`           | `coverage` |
 
-\* `clippy::multiple_crate_versions` is exempted from the `cargo` group: duplicate versions almost always come from transitive dependencies the checked project cannot fix.
+Configure Rust, Clippy, and rustdoc lint levels in `Cargo.toml`, including workspace
+inheritance where applicable. Lockpick preserves those levels and the user's compiler
+flags in checks, target checks, and `--fix`. Projects without a lint policy use the
+tools' default levels.
 
 The audit gate fails on advisory warnings and on tool or network errors. An unavailable advisory database is not a successful security check. To intentionally omit the gate, use `--skip audit`.
-
-The documentation gate appends `-D warnings` to existing `RUSTDOCFLAGS`, or to `CARGO_ENCODED_RUSTDOCFLAGS` when present, preserving Cargo's encoded-flag precedence and argument boundaries.
-
 
 `--skip test` implies `--skip coverage`. `--skip license` and `--skip coverage` are no-ops when the matching gate is not configured. Run `lockpick -v` to see the exact cargo invocation each check fires.
 
