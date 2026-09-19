@@ -63,10 +63,6 @@ impl Check for LicenseHeaderCheck {
         )
     }
 
-    fn chain_position(&self) -> Option<u8> {
-        None
-    }
-
     fn run(&self, _runner: &dyn Runner) -> CheckOutcome {
         let header = match fs::read(&self.header_path) {
             Ok(bytes) => bytes,

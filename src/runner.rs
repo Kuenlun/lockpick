@@ -233,11 +233,6 @@ fn run_one(
 ) -> CheckOutcome {
     let outcome = check.run(runner);
     reporter.finish_spinner(pb, check.label(), outcome.status);
-    // A `Skip` downgrade carries a short reason in `output`. Surface
-    // it so the user sees why instead of an unexplained SKIP.
-    if outcome.status == TaskStatus::Skip && !outcome.output.is_empty() {
-        reporter.note(&format!("{}: {}", check.label(), outcome.output));
-    }
     outcome
 }
 
