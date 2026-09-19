@@ -31,7 +31,17 @@ jobs:
         run: ./target/release/lockpick -v
 
   coverage:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    env:
+      RUSTUP_TOOLCHAIN: nightly-2026-09-14
+      CARGO_BUILD_JOBS: 2
+      RUST_TEST_THREADS: 2
+      NEXTEST_TEST_THREADS: 2
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -43,12 +53,30 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov,cargo-machete,cargo-audit,cargo-nextest
-      - name: Generate LCOV report
-        run: cargo +nightly-2026-09-14 llvm-cov --branch --workspace --all-targets --all-features --no-fail-fast --lcov --output-path lcov.info
+      # Keep Windows tests under PowerShell. MSYS2 enables privileges that bypass file ACLs.
+      - name: Build Lockpick outside its measurement directory
+        run: cargo build --release --locked --target-dir ../lockpick-bootstrap
+      - name: Require complete coverage with Lockpick
+        run: ../lockpick-bootstrap/release/lockpick --coverage -v
+      - name: Export existing coverage
+        if: always()
+        run: |
+          cargo llvm-cov report --branch --json --output-path coverage.json
+          cargo llvm-cov report --branch --lcov --output-path lcov.info
+      - name: Preserve coverage reports
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: coverage-${{ runner.os }}
+          path: |
+            coverage.json
+            lcov.info
+          if-no-files-found: error
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7.1.1
         with:
           files: lcov.info
+          flags: ${{ runner.os }}
           fail_ci_if_error: true
           token: ${{ secrets.CODECOV_TOKEN }}
 
