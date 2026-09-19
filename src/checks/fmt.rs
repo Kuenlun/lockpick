@@ -38,8 +38,4 @@ impl Check for FmtCheck {
     fn run(&self, runner: &dyn Runner) -> CheckOutcome {
         cargo_outcome(runner, "fmt", self.args())
     }
-
-    fn chain_position(&self) -> Option<u8> {
-        None
-    }
 }

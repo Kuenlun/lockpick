@@ -39,7 +39,9 @@ pub(crate) trait Check: Send + Sync {
     /// Slot inside the serial chain (lower runs first). `None` marks
     /// an independent check safe to run in parallel with everything
     /// else. Canonical positions live in [`chain`].
-    fn chain_position(&self) -> Option<u8>;
+    fn chain_position(&self) -> Option<u8> {
+        None
+    }
 }
 
 /// The full schedule of checks that survived CLI/config gating.

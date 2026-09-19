@@ -59,14 +59,6 @@ impl Check for CoverageCheck {
             },
         }
     }
-
-    /// Coverage is never scheduled through [`crate::checks::Plan`].
-    /// The runner forks it off after the chain's `test` slot passes.
-    /// `None` is also correct on its own terms: `llvm-cov report` only
-    /// reads cached profraws and does not take `target/.cargo-lock`.
-    fn chain_position(&self) -> Option<u8> {
-        None
-    }
 }
 
 fn collect_report(runner: &dyn Runner, args: &[&str]) -> Result<Report, String> {

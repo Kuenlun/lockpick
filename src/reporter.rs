@@ -76,8 +76,14 @@ impl Reporter {
     /// probed from the process's own streams.
     #[must_use]
     pub(crate) fn auto(is_verbose: bool) -> Self {
-        let is_tty = std::io::stderr().is_terminal();
-        let stdout_is_tty = std::io::stdout().is_terminal();
+        Self::new(
+            is_verbose,
+            std::io::stderr().is_terminal(),
+            std::io::stdout().is_terminal(),
+        )
+    }
+
+    fn new(is_verbose: bool, is_tty: bool, stdout_is_tty: bool) -> Self {
         let spin_style = parse_template(&spin_template()).tick_chars(TICK_CHARS);
         let done_style = parse_template(DONE_TEMPLATE);
         let mp = if is_tty {

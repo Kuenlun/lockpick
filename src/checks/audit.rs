@@ -21,10 +21,6 @@ impl Check for AuditCheck {
     fn run(&self, runner: &dyn Runner) -> CheckOutcome {
         cargo_outcome(runner, "audit", &["--deny", "warnings"])
     }
-
-    fn chain_position(&self) -> Option<u8> {
-        None
-    }
 }
 
 #[cfg(test)]
