@@ -242,4 +242,13 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn normalization_preserves_the_diagnostic_path_after_a_source_disappears() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("deleted.rs");
+        fs::write(&source, HEADER).unwrap();
+        assert_eq!(normalize(&source), source.canonicalize().unwrap());
+        fs::remove_file(&source).unwrap();
+        assert_eq!(normalize(&source), source);
+    }
 }

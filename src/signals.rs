@@ -213,4 +213,125 @@ mod tests {
         }
         assert!(state.lock_children().is_empty());
     }
+    #[cfg(unix)]
+    #[test]
+    fn late_child_registration_delivers_the_captured_signal() -> std::io::Result<()> {
+        use std::os::unix::process::{CommandExt, ExitStatusExt};
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let state = State::new();
+        state
+            .received
+            .store(signal_hook::consts::SIGTERM, Ordering::SeqCst);
+        let guard = state.register_child(child.id());
+        let started = std::time::Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            if started.elapsed() > std::time::Duration::from_secs(2) {
+                child.kill()?;
+                let _reaped = child.wait()?;
+                return Err(std::io::Error::other(
+                    "late child did not receive the signal",
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert_eq!(status.signal(), Some(signal_hook::consts::SIGTERM));
+        drop(guard);
+        assert!(state.lock_children().is_empty());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn signal_installation_recovers_after_resource_exhaustion() {
+        const CHILD: &str = "LOCKPICK_SIGNAL_RESOURCE_TEST";
+        if std::env::var_os(CHILD).is_some() {
+            let mut files = Vec::new();
+            while let Ok(file) = std::fs::File::open("/dev/null") {
+                files.push(file);
+            }
+            install();
+            drop(files);
+            install();
+            let output = output(Command::new("sh").args(["-c", "printf recovered"])).unwrap();
+            assert!(output.status.success());
+            assert_eq!(output.stdout, b"recovered");
+            assert!(state().captured().is_none());
+            let signal = Command::new("kill")
+                .args(["-TERM", &std::process::id().to_string()])
+                .status()
+                .unwrap();
+            assert!(signal.success());
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while state().captured().is_none() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "signal installation did not recover"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let error = spawn(Command::new("sh").args(["-c", "exit 0"]))
+                .err()
+                .expect("cancelled state launched another command");
+            assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+            return;
+        }
+        let output = crate::test_process::bounded_output(
+            Command::new("sh")
+                .args(["-c", "ulimit -n 64; exec \"$@\"", "signal-test"])
+                .arg(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "signals::tests::signal_installation_recovers_after_resource_exhaustion",
+                ])
+                .env(CHILD, "1"),
+        )
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    #[test]
+    fn cancellation_prevents_later_process_creation() {
+        const CHILD: &str = "LOCKPICK_CANCELLED_STATE_TEST";
+        if std::env::var_os(CHILD).is_some() {
+            let missing = tempfile::tempdir().unwrap();
+            let error = output(&mut Command::new(missing.path().join("absent")))
+                .expect_err("missing executable unexpectedly launched");
+            assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+            assert!(state().lock_children().is_empty());
+            let executable = std::env::current_exe().unwrap();
+            let first = output(Command::new(executable).arg("--list")).unwrap();
+            assert!(first.status.success());
+            state().received.store(2, Ordering::SeqCst);
+            let error = output(&mut Command::new("must-not-be-launched"))
+                .expect_err("cancelled state launched a process");
+            assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+            return;
+        }
+        let output = crate::test_process::bounded_output(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "signals::tests::cancellation_prevents_later_process_creation",
+                ])
+                .env(CHILD, "1"),
+        )
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }

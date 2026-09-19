@@ -183,4 +183,53 @@ mod tests {
             Some(directory.join("lockpick/lockpick"))
         );
     }
+
+    #[test]
+    fn commands_keep_cargo_options_and_resolve_only_the_coverage_host_alias() {
+        let runner = CargoCli::default().with_coverage_host(Some("test-host".into()));
+        for (sub, args, expected) in [
+            (
+                "llvm-cov",
+                vec!["--target", "host-tuple", "--locked"],
+                vec!["--target", "test-host", "--locked"],
+            ),
+            (
+                "llvm-cov",
+                vec!["clean", "--workspace"],
+                vec!["clean", "--workspace"],
+            ),
+            (
+                "llvm-cov",
+                vec!["--target", "explicit-host"],
+                vec!["--target", "explicit-host"],
+            ),
+            (
+                "check",
+                vec!["--target", "host-tuple"],
+                vec!["--target", "host-tuple"],
+            ),
+        ] {
+            let command = runner.command(sub, &args, &[("CUSTOM", "preserved")]);
+            assert!(command.get_current_dir().is_none());
+            assert_eq!(command.get_args().skip(1).collect::<Vec<_>>(), expected);
+            assert!(
+                command.get_envs().any(|(key, value)| key == "CUSTOM"
+                    && value == Some(std::ffi::OsStr::new("preserved")))
+            );
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let isolated = directory.path().join("isolated");
+        let runner = CargoCli {
+            target_dir: Some(isolated.clone()),
+            workspace_root: Some(directory.path().to_path_buf()),
+            ..CargoCli::default()
+        };
+        let command = runner.command("check", &[], &[("CARGO_TARGET_DIR", "overridden")]);
+        assert_eq!(command.get_current_dir(), Some(directory.path()));
+        assert!(
+            command.get_envs().any(
+                |(key, value)| key == "CARGO_TARGET_DIR" && value == Some(isolated.as_os_str())
+            )
+        );
+    }
 }

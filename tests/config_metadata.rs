@@ -151,7 +151,6 @@ fn missing_or_empty_license_template_fails_the_gate() -> TestResult {
     Ok(())
 }
 
-#[cfg(unix)]
 #[test]
 fn missing_cargo_reports_the_launch_error_before_fixes() -> TestResult {
     let project = scratch_crate("missing_cargo", "", &[("src/main.rs", "fn main() {}\n")]);

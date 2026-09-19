@@ -229,4 +229,20 @@ mod tests {
         assert!(outcome.output.contains("--profile release"));
         assert!(outcome.output.contains("target diagnostic"));
     }
+
+    #[test]
+    fn command_display_quotes_values_that_need_argument_boundaries() {
+        let config = Config {
+            target_checks: vec![TargetCheck {
+                target: Some("targets/device board.json".into()),
+                ..TargetCheck::default()
+            }],
+            ..Config::default()
+        };
+        let command = TargetChecks::new(&config, false).cmd();
+        assert!(
+            command.contains("--target \"targets/device board.json\""),
+            "{command}"
+        );
+    }
 }
