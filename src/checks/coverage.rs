@@ -159,9 +159,9 @@ fn evaluate(report: &Report, t: CoverageConfig, branch_coverage: bool) -> CheckO
 
     lines.push(String::new());
     let inspect_cmd = if branch_coverage {
-        "Inspect: cargo llvm-cov --branch --html"
+        "Inspect: cargo llvm-cov report --branch --html"
     } else {
-        "Inspect: cargo llvm-cov --html"
+        "Inspect: cargo llvm-cov report --html"
     };
     lines.push(inspect_cmd.to_string());
     lines.push("         target/llvm-cov/html/index.html".to_string());
@@ -328,11 +328,18 @@ mod tests {
     fn branches_row_and_inspect_hint_follow_branch_coverage() {
         let with = evaluate(&report(&totals(10, 10)), CoverageConfig::default(), true);
         assert!(with.output.contains("branches"));
-        assert!(with.output.contains("--branch --html"));
+        assert!(
+            with.output
+                .contains("Inspect: cargo llvm-cov report --branch --html")
+        );
 
         let without = evaluate(&report(&totals(10, 10)), CoverageConfig::default(), false);
         assert!(!without.output.contains("branches"));
-        assert!(!without.output.contains("--branch"));
+        assert!(
+            without
+                .output
+                .contains("Inspect: cargo llvm-cov report --html")
+        );
     }
 
     #[test]
