@@ -20,15 +20,6 @@
 //! quarantines lockpick from the harness env. Unix-only helpers (PATH
 //! sanitiser, symlink layout) gate themselves with `#[cfg(unix)]`.
 
-// Cargo passes application dependencies to each integration binary. The CLI is
-// exercised through subprocesses, so declare those inherited dependencies here.
-#[cfg(unix)]
-use signal_hook as _;
-use {
-    clap as _, clap_cargo as _, clap_complete as _, colored as _, glob as _, indicatif as _,
-    serde as _, serde_json as _, thiserror as _,
-};
-
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 

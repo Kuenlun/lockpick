@@ -2,6 +2,10 @@
 // lockpick - Run every Rust quality gate in one command
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
+#![allow(
+    unused_crate_dependencies,
+    reason = "These tests run Lockpick as a subprocess; Cargo also supplies its application dependencies."
+)]
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![cfg_attr(coverage_nightly, coverage(off))]
 
