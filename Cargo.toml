@@ -57,6 +57,8 @@ variant_size_differences = "deny"
 all = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
 nursery = { level = "deny", priority = -1 }
+# Prefer explicit pub(crate) visibility
+redundant_pub_crate = "allow"
 allow_attributes = "deny"
 allow_attributes_without_reason = "deny"
 arithmetic_side_effects = "deny"

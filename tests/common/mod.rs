@@ -2,10 +2,6 @@
 // lockpick - Run every Rust quality gate in one command
 // Copyright (c) 2026 Juan Luis Leal Contreras (Kuenlun)
 
-#![expect(
-    clippy::redundant_pub_crate,
-    reason = "Explicit internal visibility satisfies unreachable_pub."
-)]
 // `feature(coverage_attribute)` is declared by each test binary at its
 // own crate root; this submodule only opts out of instrumentation.
 #![cfg_attr(coverage_nightly, coverage(off))]

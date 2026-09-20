@@ -29,6 +29,4 @@ pub(crate) mod util;
 
 pub(crate) use plan::{Check, Plan, build_plan, chain};
 pub(crate) use runner::{CargoCli, Runner};
-pub(crate) use util::{
-    COMMON_ARGS, cargo_outcome, cargo_outcome_with_env, combine_streams, fmt_cargo_cmd,
-};
+pub(crate) use util::{COMMON_ARGS, cargo_outcome, combine_streams, fmt_cargo_cmd};

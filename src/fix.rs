@@ -6,7 +6,7 @@
 //! before the verify pipeline. Streams subprocess output live and
 //! aborts at the first failing step.
 
-use crate::checks::{COMMON_ARGS, CargoCli, clippy::CLIPPY_LINT_ARGS, fmt_cargo_cmd};
+use crate::checks::{COMMON_ARGS, CargoCli, fmt_cargo_cmd};
 use crate::cli::{Cli, SkipOption};
 use crate::reporter::Reporter;
 
@@ -51,13 +51,11 @@ fn run_step(runner: &CargoCli, reporter: &Reporter, sub: &str, args: &[&str]) ->
 }
 
 /// Clippy fix argv: `--fix`, workspace prefix, dirty/staged overrides
-/// (so WIP changes do not block the fix), then the shared lint tail
-/// behind `--`.
+/// (so WIP changes do not block the fix). Lint levels come from the project.
 fn clippy_fix_args() -> Vec<&'static str> {
     std::iter::once("--fix")
         .chain(COMMON_ARGS.iter().copied())
-        .chain(["--allow-dirty", "--allow-staged", "--"])
-        .chain(CLIPPY_LINT_ARGS.iter().copied())
+        .chain(["--allow-dirty", "--allow-staged"])
         .collect()
 }
 
@@ -67,21 +65,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn clippy_fix_argv_keeps_fix_prefix_overrides_and_lint_tail() {
+    fn clippy_fix_argv_preserves_project_lint_levels() {
         let args = clippy_fix_args();
         assert_eq!(args.first(), Some(&"--fix"));
         assert!(args.contains(&"--allow-dirty"));
         assert!(args.contains(&"--allow-staged"));
-        let separator = args
-            .iter()
-            .position(|a| *a == "--")
-            .expect("missing `--` separator");
-        assert_eq!(
-            args.iter()
-                .skip(separator.saturating_add(1))
-                .copied()
-                .collect::<Vec<_>>(),
-            CLIPPY_LINT_ARGS
-        );
+        assert!(!args.contains(&"--"));
     }
 }

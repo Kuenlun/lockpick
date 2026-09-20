@@ -7,10 +7,6 @@
 // `coverage(off)` on unit-test modules keeps `cargo llvm-cov` focused
 // on production code. The cfg is injected by cargo-llvm-cov on nightly.
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-#![expect(
-    clippy::redundant_pub_crate,
-    reason = "Explicit internal visibility satisfies unreachable_pub."
-)]
 
 mod checks;
 mod cli;
