@@ -134,13 +134,16 @@ const PASSTHROUGH_ENV: &[&str] = &[
     "PATHEXT",
 ];
 
-/// Build a `Command` that runs the lockpick test binary with a tightly
-/// scoped env: cleared first, then `PATH` plus the rustup shim chain
-/// re-exported from the harness. Override by calling `.env("PATH", ...)`
-/// on the returned `Command` (e.g. with [`sanitized_path`]).
+/// Run the Lockpick test binary with the fixture's isolated environment.
 #[must_use]
 pub(crate) fn run_lockpick(cwd: &Path) -> Command {
-    let mut cmd = Command::new(lockpick_bin());
+    isolated_command(lockpick_bin(), cwd)
+}
+
+/// Run a fixture command with only PATH and the toolchain environment forwarded.
+#[must_use]
+pub(crate) fn isolated_command(program: impl AsRef<std::ffi::OsStr>, cwd: &Path) -> Command {
+    let mut cmd = Command::new(program);
     let _command = cmd.env_clear();
     forward_env(&mut cmd, "PATH");
     for key in PASSTHROUGH_ENV {

@@ -28,7 +28,7 @@ fn fresh_coverage_cannot_reuse_a_previous_passing_run() -> TestResult {
             ),
             (
                 "tests/exercise.rs",
-                "#[test] fn exercise() { if std::path::Path::new(\"exercise\").exists() { assert_eq!(fresh_coverage::value(), 7); } }\n",
+                "#[test] fn exercise() { std::fs::write(\"ran\", \"\").unwrap(); if std::path::Path::new(\"exercise\").exists() { assert_eq!(fresh_coverage::value(), 7); } }\n",
             ),
         ],
     );
@@ -53,6 +53,25 @@ fn fresh_coverage_cannot_reuse_a_previous_passing_run() -> TestResult {
         combined(&second)
     );
     assert!(combined(&second).contains("(coverage)"));
+
+    let ran = project.path().join("ran");
+    std::fs::remove_file(&ran)?;
+    let view = combined(&second);
+    let hint = view
+        .lines()
+        .find_map(|line| line.split_once("Inspect: ").map(|(_, hint)| hint))
+        .ok_or("missing coverage inspection command")?;
+    let mut args = hint.split_whitespace();
+    let program = args.next().ok_or("empty coverage inspection command")?;
+    let report = bounded_output(common::isolated_command(program, project.path()).args(args))?;
+    assert!(report.status.success(), "{}", combined(&report));
+    assert!(!ran.exists(), "coverage inspection reran the tests");
+    assert!(
+        project
+            .path()
+            .join("target/llvm-cov/html/index.html")
+            .is_file()
+    );
     Ok(())
 }
 
