@@ -63,11 +63,7 @@ fn fresh_coverage_cannot_reuse_a_previous_passing_run() -> TestResult {
         .ok_or("missing coverage inspection command")?;
     let mut args = hint.split_whitespace();
     let program = args.next().ok_or("empty coverage inspection command")?;
-    let report = bounded_output(
-        std::process::Command::new(program)
-            .args(args)
-            .current_dir(project.path()),
-    )?;
+    let report = bounded_output(common::isolated_command(program, project.path()).args(args))?;
     assert!(report.status.success(), "{}", combined(&report));
     assert!(!ran.exists(), "coverage inspection reran the tests");
     assert!(
