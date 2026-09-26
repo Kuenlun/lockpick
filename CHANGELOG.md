@@ -2,49 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased](https://github.com/Kuenlun/lockpick/compare/v0.8.0...HEAD)
 
-## [0.7.1](https://github.com/Kuenlun/lockpick/compare/v0.7.0...v0.7.1) - 2026-09-20
+## [0.8.0](https://github.com/Kuenlun/lockpick/compare/v0.7.0...v0.8.0) - 2026-09-26
 
 ### Added
 
-- *(targets)* check embedded profiles alongside host tests ([#70](https://github.com/Kuenlun/lockpick/pull/70))
+- Configure additional Clippy checks through `target-checks`, selecting target, profile, artifacts, packages and features. Check embedded dev/release profiles alongside host tests, deduplicate equivalent checks, and skip the gate with `--skip targets`. These checks do not link release artifacts ([#70](https://github.com/Kuenlun/lockpick/pull/70)).
+- Set `host-target = true` to run ordinary checks, tests and coverage on the host even when Cargo defaults to an embedded target ([#70](https://github.com/Kuenlun/lockpick/pull/70), [#75](https://github.com/Kuenlun/lockpick/pull/75)).
+- Set `locked = true` to require an existing, current `Cargo.lock` for build commands and Clippy fixes, including coverage cleanup. Both `locked` and `host-target` default to false ([#70](https://github.com/Kuenlun/lockpick/pull/70), [#79](https://github.com/Kuenlun/lockpick/pull/79)).
+
+### Changed
+
+- **BREAKING:** Clippy, target checks, `--fix` and rustdoc now respect the project's lint levels and compiler flags. Lockpick no longer injects Clippy's `pedantic`, `nursery` and `cargo` groups, its `multiple_crate_versions` exemption, or `-D warnings`. Declare the desired lint policy in `Cargo.toml`, including workspace inheritance. Projects without a policy use the tools' defaults ([#93](https://github.com/Kuenlun/lockpick/pull/93)).
+- **BREAKING:** Invalid configuration or failed Cargo metadata discovery now stops execution with exit code `2` before checks or fixes, instead of falling back to defaults. Coverage thresholds must be integers from 0 to 100. Multi-package workspaces must put shared configuration in `[workspace.metadata.lockpick]` rather than relying on package-only metadata ([#65](https://github.com/Kuenlun/lockpick/pull/65)).
+- **BREAKING:** The audit gate now fails on advisory warnings and tool or network errors, including an unreachable advisory database. Use `--skip audit` to explicitly omit this check ([#68](https://github.com/Kuenlun/lockpick/pull/68)).
+- Require 100% function, line, region and branch coverage of Lockpick's production code separately on Linux, macOS and Windows in CI, with expanded CLI, filesystem, terminal, scheduling and subprocess regression tests ([#90](https://github.com/Kuenlun/lockpick/pull/90), [#91](https://github.com/Kuenlun/lockpick/pull/91)).
+- Pin development and release builds to Rust 1.98.1, branch coverage to nightly-2026-09-14, and CI check/release tools and actions to explicit versions or revisions ([#66](https://github.com/Kuenlun/lockpick/pull/66), [#97](https://github.com/Kuenlun/lockpick/pull/97)).
 
 ### Fixed
 
-- *(coverage)* inspect reports without rerunning tests ([#96](https://github.com/Kuenlun/lockpick/pull/96))
-- replace dummy dependency imports with scoped exceptions ([#95](https://github.com/Kuenlun/lockpick/pull/95))
-- respect project lint configuration ([#93](https://github.com/Kuenlun/lockpick/pull/93))
-- *(license)* reject each unmatched explicit source pattern ([#86](https://github.com/Kuenlun/lockpick/pull/86))
-- *(tooling)* honor RUSTC when detecting nightly ([#84](https://github.com/Kuenlun/lockpick/pull/84))
-- *(runner)* cancel startup probes with their descendants ([#81](https://github.com/Kuenlun/lockpick/pull/81))
-- *(coverage)* preserve locked policy during cleanup ([#79](https://github.com/Kuenlun/lockpick/pull/79))
-- *(test)* terminate fixture process trees on timeout ([#77](https://github.com/Kuenlun/lockpick/pull/77))
-- *(doc)* enforce warnings with encoded rustdoc flags ([#72](https://github.com/Kuenlun/lockpick/pull/72))
-- *(coverage)* clean measurements and reject malformed reports ([#69](https://github.com/Kuenlun/lockpick/pull/69))
-- *(runner)* isolate build outputs and cancel process groups ([#71](https://github.com/Kuenlun/lockpick/pull/71))
-- *(license)* scan all workspace packages from any directory ([#67](https://github.com/Kuenlun/lockpick/pull/67))
-- *(config)* reject invalid or ambiguous quality policy ([#65](https://github.com/Kuenlun/lockpick/pull/65))
-- *(audit)* fail on incomplete scans and advisory warnings ([#68](https://github.com/Kuenlun/lockpick/pull/68))
-
-### Other
-
-- pin check and release tool versions ([#97](https://github.com/Kuenlun/lockpick/pull/97))
-- require complete coverage on every supported host ([#91](https://github.com/Kuenlun/lockpick/pull/91))
-- cover complete CLI, filesystem, terminal and worker contracts ([#90](https://github.com/Kuenlun/lockpick/pull/90))
-- simplify independent checks and terminal setup ([#89](https://github.com/Kuenlun/lockpick/pull/89))
-- *(license)* cover partial matches and overlapping patterns ([#87](https://github.com/Kuenlun/lockpick/pull/87))
-- *(tooling)* cover compiler overrides and PATH fallback ([#85](https://github.com/Kuenlun/lockpick/pull/85))
-- *(tooling)* select one compiler in the stable probe fixture ([#83](https://github.com/Kuenlun/lockpick/pull/83))
-- *(runner)* interrupt metadata and compiler probes ([#82](https://github.com/Kuenlun/lockpick/pull/82))
-- *(coverage)* preserve missing and stale lockfiles ([#80](https://github.com/Kuenlun/lockpick/pull/80))
-- verify timeout cleanup across descendant groups ([#78](https://github.com/Kuenlun/lockpick/pull/78))
-- harden internal policy and verify scheduling contracts ([#73](https://github.com/Kuenlun/lockpick/pull/73))
-- *(targets)* cover host coverage and compiler probe failures ([#75](https://github.com/Kuenlun/lockpick/pull/75))
-- pin stable Rust and the branch coverage toolchain ([#66](https://github.com/Kuenlun/lockpick/pull/66))
+- Clear previous coverage measurements before instrumented tests and fail if cleanup fails. Reject malformed or unsupported reports, missing required metrics or source filenames, impossible counts and empty measurements. HTML inspection now uses `cargo llvm-cov report` to preserve the measurement without rerunning tests ([#69](https://github.com/Kuenlun/lockpick/pull/69), [#79](https://github.com/Kuenlun/lockpick/pull/79), [#96](https://github.com/Kuenlun/lockpick/pull/96)).
+- Resolve license templates and explicit globs from the workspace root, and scan every workspace package with the default globs even when started from a member directory. Invalid patterns, traversal errors, empty scans and each unmatched explicit pattern now fail the gate ([#67](https://github.com/Kuenlun/lockpick/pull/67), [#86](https://github.com/Kuenlun/lockpick/pull/86)).
+- Forward Unix interruption signals to subprocess groups, including Cargo metadata and compiler probes and their descendants. Stop launching subsequent commands after interruption and preserve signal-based exit codes ([#71](https://github.com/Kuenlun/lockpick/pull/71), [#81](https://github.com/Kuenlun/lockpick/pull/81)).
+- Isolate child build outputs when they could overwrite the running Lockpick executable, including custom `CARGO_TARGET_DIR`, `build.target-dir` and already redirected directories ([#71](https://github.com/Kuenlun/lockpick/pull/71)).
+- Honor `RUSTC` when detecting nightly and resolving the coverage host target, falling back to `rustc` on `PATH` only when no override is set ([#84](https://github.com/Kuenlun/lockpick/pull/84)).
+- Preserve operating-system diagnostics when a Cargo command cannot be launched ([#73](https://github.com/Kuenlun/lockpick/pull/73)).
 
 ## [0.7.0](https://github.com/Kuenlun/lockpick/compare/v0.6.0...v0.7.0) - 2026-06-10
 
