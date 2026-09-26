@@ -102,7 +102,7 @@ The `coverage` check is opt-in: add the `[workspace.metadata.lockpick.coverage]`
 
 ## Host tests and embedded targets
 
-Additional checks run Clippy, which also checks compilation, without executing tests or linking an executable. They use the same strict lint policy as the ordinary Clippy gate. Default gates remain enabled.
+Additional checks run Clippy, which also checks compilation, without executing tests or linking an executable. They use the project's lint configuration, like the ordinary Clippy gate. Default gates remain enabled.
 
 ```toml
 [workspace.metadata.lockpick]
@@ -152,7 +152,7 @@ For a firmware executable, select `artifacts = "bins"` (and `packages` if needed
 |------|----------------------------------------------------------------------------------------|
 | 0    | All checks passed                                                                      |
 | 1    | One or more checks failed                                                              |
-| 2    | Usage error (unknown flag, invalid `--skip` value, contradictory `--coverage`, or every check skipped) |
+| 2    | Usage or configuration error (including failed Cargo metadata discovery, contradictory `--coverage`, or every check skipped) |
 | 3    | A required external tool (`cargo-llvm-cov`, `cargo-machete`, `cargo-audit`) is absent  |
 | 4    | `coverage.branches` is configured but the active toolchain is stable                   |
 
@@ -186,7 +186,7 @@ Cargo holds an exclusive lock on `target/.cargo-lock` while a build subcommand r
   audit      │
   license    ┘
 
-  check ──► test ──► clippy ──► doc ──► doc-test    serial (share target/.cargo-lock)
+  check ──► test ──► clippy ──► doc ──► doc-test ──► targets    serial (share target/.cargo-lock)
               │
               └──► coverage (when active)           post-test, parallel with chain tail
 ```
