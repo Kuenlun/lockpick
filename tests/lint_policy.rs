@@ -40,9 +40,8 @@ fn clippy_preserves_individual_and_group_levels() -> common::TestResult {
 fn clippy_fix_leaves_explicitly_allowed_code_unchanged() -> common::TestResult {
     let config = "[lints.clippy]\npedantic=\"allow\"\nnursery=\"allow\"\ncargo=\"allow\"\n";
     let project = common::scratch_crate("lint_fix", config, &[("src/lib.rs", SOURCE)]);
-    let init = std::process::Command::new("git")
+    let init = common::isolated_command("git", project.path())
         .args(["init", "--quiet"])
-        .current_dir(project.path())
         .output()?;
     assert!(init.status.success(), "{}", common::combined(&init));
     let out = common::run_lockpick(project.path())
