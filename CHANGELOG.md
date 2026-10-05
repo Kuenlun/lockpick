@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased](https://github.com/Kuenlun/lockpick/compare/v0.8.0...HEAD)
 
+## [0.8.1](https://github.com/Kuenlun/lockpick/compare/v0.8.0...v0.8.1) - 2026-10-05
+
+### Other
+
+- base the changelog on Keep a Changelog 2.0.0 ([#100](https://github.com/Kuenlun/lockpick/pull/100))
+- isolate fixture setup commands from the inherited environment ([#102](https://github.com/Kuenlun/lockpick/pull/102))
+
 ## [0.8.0](https://github.com/Kuenlun/lockpick/compare/v0.7.0...v0.8.0) - 2026-09-26
 
 ### Added
