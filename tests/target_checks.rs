@@ -39,9 +39,8 @@ fn host_tests_and_embedded_profiles_share_one_gate() -> TestResult {
             ),
         ],
     );
-    let lock = std::process::Command::new("cargo")
+    let lock = common::isolated_command("cargo", project.path())
         .arg("generate-lockfile")
-        .current_dir(project.path())
         .output()?;
     assert!(lock.status.success(), "{}", combined(&lock));
     let out = common::process::bounded_output(run_lockpick(project.path()).args([

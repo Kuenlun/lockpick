@@ -113,9 +113,8 @@ fn locked_coverage_preserves_missing_stale_and_current_lockfiles() -> TestResult
 
     let generate = || {
         bounded_output(
-            std::process::Command::new("cargo")
-                .args(["generate-lockfile", "--offline"])
-                .current_dir(project.path()),
+            common::isolated_command("cargo", project.path())
+                .args(["generate-lockfile", "--offline"]),
         )
     };
     let generated = generate()?;
